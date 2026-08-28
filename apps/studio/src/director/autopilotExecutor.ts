@@ -3,8 +3,7 @@ import type { ImpactReport, ProjectCommand } from '@makewatch/contracts';
 import { AutopilotCancelledError, AutopilotExecutionControl, controlledDelay } from './autopilotControl';
 import type { AutopilotPlan, AutopilotStep, AutopilotUiState } from './autopilotTypes';
 
-const DEFAULT_STEP_DEADLINE_MS = 10_000;
-const APPLY_STEP_DEADLINE_MS = 15_000;
+const PRESENTATION_STEP_DEADLINE_MS = 10_000;
 
 class AutopilotStepTimeoutError extends Error {
   constructor(stepId: string, timeoutMs: number) {
@@ -40,29 +39,23 @@ function stepActivity(step: AutopilotStep) {
   }
 }
 
-function stepDeadline(step: AutopilotStep) {
-  if (step.type === 'applyCommands') return APPLY_STEP_DEADLINE_MS;
-  return DEFAULT_STEP_DEADLINE_MS;
-}
-
-async function runBoundedStep(
+async function runBoundedPresentationStep(
   step: AutopilotStep,
   control: AutopilotExecutionControl,
   action: () => Promise<void>,
 ) {
-  const timeoutMs = stepDeadline(step);
   let timeoutId = 0;
-
   const timeout = new Promise<never>((_, reject) => {
-    timeoutId = window.setTimeout(() => reject(new AutopilotStepTimeoutError(step.id, timeoutMs)), timeoutMs);
+    timeoutId = window.setTimeout(
+      () => reject(new AutopilotStepTimeoutError(step.id, PRESENTATION_STEP_DEADLINE_MS)),
+      PRESENTATION_STEP_DEADLINE_MS,
+    );
   });
 
   try {
     await Promise.race([action(), timeout]);
   } catch (error) {
-    if (error instanceof AutopilotStepTimeoutError) {
-      control.cancel();
-    }
+    if (error instanceof AutopilotStepTimeoutError) control.cancel();
     throw error;
   } finally {
     window.clearTimeout(timeoutId);
@@ -108,27 +101,31 @@ export async function executeAutopilotPlan(
           await controlledDelay(control, step.holdMs ?? 650);
           break;
         case 'focusNode':
-          await runBoundedStep(step, control, () => runtime.focusNode(step.nodeId, step.zoom));
+          await runBoundedPresentationStep(step, control, () => runtime.focusNode(step.nodeId, step.zoom));
           break;
         case 'dragNode':
-          await runBoundedStep(step, control, () => runtime.dragNode(step.nodeId, step.to, step.durationMs ?? 680, activity));
+          await runBoundedPresentationStep(step, control, () => runtime.dragNode(step.nodeId, step.to, step.durationMs ?? 680, activity));
           break;
         case 'previewImpact':
-          await runBoundedStep(step, control, async () => {
+          await runBoundedPresentationStep(step, control, async () => {
             await runtime.previewImpact(step.nodeId);
           });
           break;
         case 'arrangeWorkflow':
-          await runBoundedStep(step, control, runtime.arrangeWorkflow);
+          await runBoundedPresentationStep(step, control, runtime.arrangeWorkflow);
           break;
         case 'fitWorkflow':
-          await runBoundedStep(step, control, runtime.fitWorkflow);
+          await runBoundedPresentationStep(step, control, runtime.fitWorkflow);
           break;
         case 'applyCommands':
-          await runBoundedStep(step, control, () => runtime.applyCommands(step.commands, {
+          // Semantic commits are authoritative transactions. Do not add a
+          // second UI-only race timeout that could report failure while a
+          // native commit is still completing. Transport/native correlation
+          // and timeout policy own this boundary.
+          await runtime.applyCommands(step.commands, {
             planId: plan.planId,
             reason: step.reason,
-          }));
+          });
           break;
         case 'checkpoint': {
           runtime.setUiState({
@@ -160,7 +157,7 @@ export async function executeAutopilotPlan(
         ...base,
         status: 'failed',
         stepIndex: 0,
-        activity: 'AI Director stopped a stalled workflow step safely',
+        activity: 'AI Director stopped a stalled presentation step safely',
         error: error.message,
       });
       throw error;
