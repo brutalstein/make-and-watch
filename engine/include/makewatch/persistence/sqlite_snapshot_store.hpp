@@ -30,7 +30,8 @@ class SqliteSnapshotStore final : public SnapshotStore {
   [[nodiscard]] core::Status save(const project::ProjectSnapshot& snapshot) override;
   [[nodiscard]] core::Status save_commit(
       const project::ProjectSnapshot& snapshot,
-      const std::vector<project::Event>& events) override;
+      const std::vector<project::Event>& events,
+      const CommitContext& context = {}) override;
   [[nodiscard]] LoadSnapshotResult load() override;
   [[nodiscard]] LoadJournalResult load_journal(std::size_t limit) override;
 
