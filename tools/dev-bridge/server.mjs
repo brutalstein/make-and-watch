@@ -163,7 +163,10 @@ async function systemTelemetry() {
 
 async function ensureDevelopmentFixture(initialHealth) {
   if (initialHealth.result.nodeCount === 0) {
-    const seeded = await rpc('project.apply', { commands: DEV_SEED_COMMANDS });
+    const seeded = await rpc('project.apply', {
+      commands: DEV_SEED_COMMANDS,
+      context: { actor: 'system', source: 'development-seed', reason: 'initialize bundled development fixture' },
+    });
     if (!seeded.ok) throw new Error(`development seed failed: ${seeded.error?.message ?? 'unknown error'}`);
     console.log(`[bridge] created persistent development project seed v${DEV_SEED_VERSION}`);
     return;
@@ -193,7 +196,10 @@ async function ensureDevelopmentFixture(initialHealth) {
   for (const node of snapshot.nodes) commands.push({ type: 'node.markFresh', id: node.id });
   if (relockSeries) commands.push({ type: 'node.lock', id: series.id, locked: true });
 
-  const migrated = await rpc('project.apply', { commands });
+  const migrated = await rpc('project.apply', {
+    commands,
+    context: { actor: 'system', source: 'development-seed-migration', reason: `upgrade bundled fixture to v${DEV_SEED_VERSION}` },
+  });
   if (!migrated.ok) {
     throw new Error(`development fixture migration failed: ${migrated.error?.message ?? 'unknown error'}`);
   }
@@ -235,7 +241,10 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === 'POST' && url.pathname === '/api/project/apply') {
       const body = await readJsonBody(request);
-      sendJson(request, response, 200, await rpc('project.apply', { commands: body.commands }));
+      sendJson(request, response, 200, await rpc('project.apply', {
+        commands: body.commands,
+        context: body.context,
+      }));
       return;
     }
     if (request.method === 'POST' && url.pathname === '/api/project/impact') {
