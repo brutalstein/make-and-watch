@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <vector>
 
 #include "makewatch/core/status.hpp"
@@ -20,6 +21,7 @@ class ProjectSession final {
   [[nodiscard]] project::CommandResult apply_batch(const std::vector<project::Command>& commands);
   [[nodiscard]] project::ImpactReport preview_impact(const core::EntityId& source) const;
   [[nodiscard]] project::ProjectSnapshot snapshot() const { return engine_.snapshot(); }
+  [[nodiscard]] persistence::LoadJournalResult history(std::size_t limit);
   [[nodiscard]] core::Status replace(const project::ProjectSnapshot& snapshot);
 
   [[nodiscard]] const project::ProjectEngine& engine() const noexcept { return engine_; }
