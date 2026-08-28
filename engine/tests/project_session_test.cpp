@@ -16,11 +16,14 @@ using makewatch::application::ProjectSession;
 using makewatch::core::EntityId;
 using makewatch::core::ErrorCode;
 using makewatch::core::Status;
+using makewatch::persistence::CommitActor;
+using makewatch::persistence::CommitContext;
 using makewatch::persistence::LoadSnapshotResult;
 using makewatch::persistence::SnapshotStore;
 using makewatch::project::Command;
 using makewatch::project::CreateNode;
 using makewatch::project::Event;
+using makewatch::project::EventType;
 using makewatch::project::Node;
 using makewatch::project::NodeKind;
 using makewatch::project::PatchNode;
@@ -42,9 +45,16 @@ class FakeStore final : public SnapshotStore {
     return Status::success();
   }
 
-  Status save_commit(const ProjectSnapshot& snapshot, const std::vector<Event>& events) override {
+  Status save_commit(
+      const ProjectSnapshot& snapshot,
+      const std::vector<Event>& events,
+      const CommitContext& context) override {
     const auto status = save(snapshot);
-    if (status.ok()) journaled_events += events.size();
+    if (status.ok()) {
+      journaled_events += events.size();
+      last_events = events;
+      last_context = context;
+    }
     return status;
   }
 
@@ -55,6 +65,8 @@ class FakeStore final : public SnapshotStore {
   bool fail_save{false};
   int save_attempts{0};
   std::size_t journaled_events{0};
+  std::vector<Event> last_events;
+  CommitContext last_context;
 };
 
 Node make_node(const char* id, NodeKind kind, const char* title) {
@@ -97,6 +109,37 @@ void test_persist_before_live_commit() {
           "failed persistence must not append journal events");
 }
 
+void test_commit_context_is_durable_event_provenance() {
+  FakeStore store;
+  ProjectSession session{store};
+  require(session.load().ok(), "session should load before provenance test");
+
+  CommitContext context;
+  context.actor = CommitActor::kAiDirector;
+  context.source = "studio-autopilot";
+  context.plan_id = "plan-42";
+  context.reason = "organize approved scene structure";
+
+  const auto result = session.apply(
+      Command{CreateNode{make_node("scene.ai", NodeKind::kScene, "AI Scene")}}, context);
+  require(result.ok(), "AI-attributed command should commit");
+  require(store.last_context.actor == CommitActor::kAiDirector &&
+              store.last_context.source == "studio-autopilot" &&
+              store.last_context.plan_id == "plan-42",
+          "commit context must reach persistence unchanged");
+
+  const Event* transaction = nullptr;
+  for (const auto& event : store.last_events) {
+    if (event.type == EventType::kTransactionCommitted) transaction = &event;
+  }
+  require(transaction != nullptr, "successful native commit should contain transaction event");
+  require(transaction->detail.find("mwctx1|actor=ai_director") != std::string::npos &&
+              transaction->detail.find("source=studio-autopilot") != std::string::npos &&
+              transaction->detail.find("plan=plan-42") != std::string::npos &&
+              transaction->detail.find("reason=organize approved scene structure") != std::string::npos,
+          "transaction event should encode durable AI provenance");
+}
+
 void test_replace_validates_before_persisting() {
   FakeStore store;
   ProjectSession session{store};
@@ -131,6 +174,7 @@ void test_load_failure_does_not_destroy_live_state() {
 
 int main() {
   test_persist_before_live_commit();
+  test_commit_context_is_durable_event_provenance();
   test_replace_validates_before_persisting();
   test_load_failure_does_not_destroy_live_state();
   std::cout << "project_session_test: all checks passed\n";
