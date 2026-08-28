@@ -6,6 +6,9 @@
   "engines": {
     "node": ">=22.0.0"
   },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  },
   "scripts": {
     "dev": "pnpm --filter @makewatch/studio dev",
     "build:web": "pnpm --filter @makewatch/studio build",
