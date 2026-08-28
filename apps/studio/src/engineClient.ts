@@ -4,6 +4,7 @@ import type {
   ImpactReport,
   ProjectCommand,
   ProjectGraphSnapshot,
+  ProjectHistoryResult,
   SystemTelemetry,
 } from '@makewatch/contracts';
 
@@ -27,6 +28,7 @@ type Envelope<T> = SuccessEnvelope<T> | FailureEnvelope;
 
 export interface ProjectCommitContext {
   actor?: 'user' | 'ai_director' | 'system';
+  source?: string;
   planId?: string;
   reason?: string;
 }
@@ -51,6 +53,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const engineClient = {
   health: () => request<EngineHealth>('/health'),
   snapshot: () => request<ProjectGraphSnapshot>('/project'),
+  history: (limit = 10) => request<ProjectHistoryResult>(`/project/history?limit=${encodeURIComponent(String(limit))}`),
   system: () => request<SystemTelemetry>('/system'),
   impact: (source: string) => request<ImpactReport>('/project/impact', {
     method: 'POST',
