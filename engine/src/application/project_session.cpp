@@ -18,18 +18,22 @@ core::Status ProjectSession::load() {
   return core::Status::success();
 }
 
-project::CommandResult ProjectSession::apply(const project::Command& command) {
-  return apply_batch(std::vector<project::Command>{command});
+project::CommandResult ProjectSession::apply(
+    const project::Command& command,
+    const persistence::CommitContext& context) {
+  return apply_batch(std::vector<project::Command>{command}, context);
 }
 
-project::CommandResult ProjectSession::apply_batch(const std::vector<project::Command>& commands) {
+project::CommandResult ProjectSession::apply_batch(
+    const std::vector<project::Command>& commands,
+    const persistence::CommitContext& context) {
   project::ProjectEngine staged = engine_;
   auto result = staged.apply_batch(commands);
   if (!result.ok()) {
     return result;
   }
 
-  if (const auto status = store_.save_commit(staged.snapshot(), result.events); !status.ok()) {
+  if (const auto status = store_.save_commit(staged.snapshot(), result.events, context); !status.ok()) {
     return project::CommandResult{status, engine_.project_revision(), {}};
   }
 
