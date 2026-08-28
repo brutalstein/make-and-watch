@@ -26,7 +26,6 @@ export const DEV_SEED_COMMANDS = [
       kind: 'character',
       title: 'Mira',
       approval: 'approved',
-      locked: true,
       metadata: { role: 'lead', identity: 'locked', voice: 'mira-v1' },
     },
   },
@@ -53,7 +52,6 @@ export const DEV_SEED_COMMANDS = [
       kind: 'scene',
       title,
       approval,
-      locked: approval === 'locked',
       metadata: {
         index,
         durationSeconds,
@@ -90,6 +88,10 @@ export const DEV_SEED_COMMANDS = [
       metadata: { status: 'ready', mode: 'I2V', qualityTarget: '0.91' },
     },
   },
+
+  // Establish dependency topology while all new nodes are editable. Locking is
+  // deliberately a finalization phase because the native engine correctly
+  // forbids topology changes on locked dependent nodes.
   { type: 'dependency.add', dependent: 'episode.001', dependency: 'series.afterlight' },
   ...['scene.01', 'scene.02', 'scene.03', 'scene.04', 'scene.05'].map((scene) => ({
     type: 'dependency.add', dependent: scene, dependency: 'episode.001',
@@ -100,4 +102,8 @@ export const DEV_SEED_COMMANDS = [
   { type: 'dependency.add', dependent: 'shot.031', dependency: 'character.mira' },
   { type: 'dependency.add', dependent: 'shot.031', dependency: 'location.cafe' },
   { type: 'dependency.add', dependent: 'generation.031', dependency: 'shot.031' },
+
+  // Finalize immutable creative anchors only after the graph is complete.
+  { type: 'node.lock', id: 'character.mira', locked: true },
+  { type: 'node.lock', id: 'scene.01', locked: true },
 ];
