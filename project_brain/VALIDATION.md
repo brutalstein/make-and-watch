@@ -69,11 +69,60 @@ CI caught a missing Vite `ImportMeta.env` type declaration on the first bridge b
 
 ## 2026-08-29 — Native executable process smoke
 
-CTest now launches the real `makewatch_engine_host` executable, feeds JSONL through stdin, performs an SQLite-backed `node.create`, requests a snapshot, verifies three successful RPC responses, verifies the persisted node is returned, and confirms the project database was created. GitHub Actions passed the complete native suite including this process boundary.
+CTest launches the real `makewatch_engine_host` executable, feeds JSONL through stdin, performs an SQLite-backed `node.create`, requests a snapshot, verifies successful RPC responses, verifies the persisted node is returned, and confirms the project database is created. GitHub Actions passed the complete native suite including this process boundary.
+
+## 2026-08-29 — Windows live Studio seed bug and regression protection
+
+The first live `./dev.ps1` run on Windows exposed a legitimate development-fixture defect: `scene.01` was created locked before its dependency edge to the episode was added. The native engine correctly rejected this with `locked node dependency topology cannot change`.
+
+The engine invariant was preserved. The fixture was changed to create nodes unlocked, build the full topology, finalize freshness, then lock creative anchors. `dev-seed-check.mjs` now fails CI if topology is changed after locking or if a fixture node is not finalized fresh.
+
+The user subsequently opened the live Studio successfully on Windows, proving the native host, bridge, SQLite project, real NVIDIA telemetry, and native graph rendering path on the product machine.
+
+## 2026-08-29 — Draggable workflow workspace
+
+Studio was converted to a controlled React Flow canvas with presentation-only drag state.
+
+Latest CI passed:
+
+- strict TypeScript for controlled React Flow node state;
+- production Vite build;
+- bridge/seed JavaScript checks.
+
+Implemented behavior includes draggable nodes, 8 px snap grid, locally persisted layout, dependency-aware deterministic Arrange, Fit action / `F` shortcut, double-click focus, Scene Strip focus, smooth semantic edges, and selected/dragging visual states.
+
+The important invariant is validated architecturally: drag/layout state does not call `project.apply`, does not change native project revision, and does not alter semantic dependency topology.
+
+## 2026-08-29 — Development fixture v2 migration
+
+The bundled development fixture now carries `devSeedVersion=2` and marks its complete topology fresh before applying final locks. The localhost development bridge detects the known old `series.afterlight` fixture and performs a narrowly scoped native migration without deleting the user's local development SQLite database.
+
+This migration path is intentionally limited to the bundled development fixture and is not a generic user-project auto-mutation mechanism.
+
+## 2026-08-29 — SQLite schema v2 append-only journal
+
+SQLite schema was advanced from v1 to v2. `ProjectSession` now forwards the successful native event batch together with the staged snapshot to `SnapshotStore::save_commit`.
+
+GitHub Actions passed the native build and test suite covering:
+
+- atomic snapshot + event-journal commit;
+- no journal append when persistence fails;
+- append-only history across later snapshot replacement;
+- stable event order within a project revision;
+- affected-entity persistence;
+- journal survival across close/reopen;
+- closed-store rejection;
+- construction of a real schema-v1 SQLite fixture;
+- in-place v1 -> v2 migration;
+- successful snapshot+journal commit after migration.
+
+The latest code-level CI is green for both Studio and Native core after these changes.
 
 ## Current required product-machine gate
 
-The latest code-level CI is green. The new native-host + Node bridge + live Studio integration must now be pulled and exercised on the primary Windows machine:
+The latest draggable-layout + fixture-v2 + SQLite-journal code has passed CI but has not yet been re-run on the primary Windows machine.
+
+From the repository root:
 
 ```powershell
 git pull
@@ -81,4 +130,15 @@ git pull
 .\dev.ps1
 ```
 
-The current `verify.ps1` additionally validates local bridge syntax and the expanded native suite. After it passes, perform the interaction/restart persistence checks listed in `HANDOFF.md` before beginning local media-provider integration.
+Verify:
+
+1. the existing development database migrates without manual deletion;
+2. the fixture no longer starts with almost every node stale;
+3. nodes can be dragged and snap smoothly;
+4. dragged positions survive a Studio/runtime restart;
+5. **Arrange** restores deterministic dependency-aware positions;
+6. `F` fits the graph;
+7. native approval/lock mutations still persist after restart;
+8. no Windows path/process/SQLite regression appears after schema v2 migration.
+
+Only after this hands-on gate should the journal be surfaced through IPC/Studio history and media-provider work proceed.
