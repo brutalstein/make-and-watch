@@ -11,7 +11,8 @@ This folder is the canonical context handoff for **Make & Watch**. A new enginee
 5. `DECISIONS.md` — architecture decisions already made.
 6. `QUALITY_GATES.md` — objective standards behind the project's quality target.
 7. `ROADMAP.md` — milestone sequence and quality gates.
-8. `HANDOFF.md` — current repository state and immediate continuation point.
+8. `VALIDATION.md` — commands that were actually executed and their results.
+9. `HANDOFF.md` — current repository state and immediate continuation point.
 
 ## One-sentence product definition
 

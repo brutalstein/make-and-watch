@@ -18,16 +18,17 @@ Implemented foundation pieces:
 
 ## Validation status
 
-The connector-based branch updates did not automatically produce a GitHub Actions run, so CI has not yet provided external build confirmation. Source-level review caught and fixed explicit `<utility>` portability includes and moved `enable_testing()` to the root CMake scope. Before merging to `main`, run the local bootstrap/build/tests or trigger CI through the normal Git workflow.
+Native foundation has been independently configured, built, and tested in an isolated environment using GCC 14.2.0, CMake 3.31.6, and Ninja 1.12.1. `ctest` passed 1/1 tests. See `VALIDATION.md` for the exact record.
+
+Studio validation remains pending because the available execution environment lacks `pnpm` and cannot reach the package registry. Before merge, run `pnpm install`, `pnpm typecheck`, and `pnpm build:web` on a normal development machine and fix any failures on this branch.
 
 ## Immediate next steps
 
-1. Run `./doctor.sh` or `.\doctor.ps1` on a development machine.
-2. Run bootstrap, native build/tests, and Studio typecheck/build.
-3. Fix any environment-specific issues discovered by real execution.
-4. Review the Studio foundation visually and tune interaction/design before persistence work.
-5. Implement Foundation v1 persistent project graph (SQLite + migrations + command/event boundary).
-6. Keep patent-sensitive scheduler/synthesis novelty private until IP strategy is cleared.
+1. Run `.\doctor.ps1` on the primary Windows development machine.
+2. Run bootstrap, Studio typecheck/build, and native tests from the actual checkout.
+3. Review the Studio foundation visually and tune interaction/design before persistence work.
+4. Implement Foundation v1 persistent project graph (SQLite + migrations + command/event boundary).
+5. Keep patent-sensitive scheduler/synthesis novelty private until IP strategy is cleared.
 
 ## What not to do next
 
