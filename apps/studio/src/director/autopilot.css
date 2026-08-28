@@ -42,6 +42,26 @@
 .studio-shell--autopilot .workspace { filter: saturate(.94); }
 .studio-shell--autopilot .react-flow__node { cursor: default; }
 
+/* The camera follower owns only presentation state. Its frame is intentionally
+   subtle: users can feel that the viewport is tracking the AI without turning
+   the workflow into a game HUD. */
+.flow-surface { position: relative; overflow: hidden; }
+.flow-surface--ai-following::before {
+  content: '';
+  position: absolute; inset: 8px; z-index: 45; pointer-events: none;
+  border: 1px solid rgba(139, 119, 255, .20); border-radius: 15px;
+  box-shadow: inset 0 0 34px rgba(114, 91, 255, .035), 0 0 28px rgba(104, 82, 230, .045);
+  animation: aiCameraFrame 1.8s ease-in-out infinite;
+}
+.flow-surface--ai-following::after {
+  content: 'AI CAMERA  ·  SMART FOLLOW';
+  position: absolute; top: 12px; right: 13px; z-index: 46; pointer-events: none;
+  padding: 5px 7px 5px 17px; border: 1px solid rgba(121, 105, 210, .30); border-radius: 999px;
+  color: rgba(202, 195, 244, .74); background: rgba(15, 16, 27, .72); backdrop-filter: blur(12px);
+  box-shadow: 0 8px 22px rgba(0,0,0,.22); font-size: 7px; font-weight: 800; letter-spacing: .11em;
+  animation: aiCameraHudIn 180ms ease-out both;
+}
+
 .autopilot-banner {
   position: fixed; top: 74px; left: 50%; transform: translateX(-50%);
   z-index: 80; width: min(850px, calc(100vw - 42px)); min-height: 58px;
@@ -102,7 +122,10 @@
   padding: 6px 8px; border: 1px solid rgba(102,91,164,.7); border-radius: 8px;
   color: #dad5f7; background: rgba(20,18,34,.94); backdrop-filter: blur(12px);
   box-shadow: 0 10px 28px rgba(0,0,0,.34); font-size: 8px; line-height: 1.35; white-space: normal;
+  transform-origin: top left; transition: left 120ms ease, right 120ms ease, top 120ms ease, bottom 120ms ease;
 }
+.ai-cursor--label-left .ai-cursor__label { left: auto; right: 18px; text-align: right; transform-origin: top right; }
+.ai-cursor--label-above .ai-cursor__label { top: auto; bottom: 18px; }
 .ai-cursor__ripple {
   position: absolute; left: -11px; top: -11px; width: 24px; height: 24px;
   border: 1px solid rgba(157,139,255,.74); border-radius: 50%; opacity: 0;
@@ -130,7 +153,21 @@
   0%, 58% { opacity: 1; transform: translateX(-50%) translateY(0); }
   100% { opacity: 0; transform: translateX(-50%) translateY(-8px); visibility: hidden; }
 }
+@keyframes aiCameraFrame {
+  0%, 100% { opacity: .48; box-shadow: inset 0 0 26px rgba(114,91,255,.025), 0 0 20px rgba(104,82,230,.025); }
+  50% { opacity: .9; box-shadow: inset 0 0 42px rgba(114,91,255,.05), 0 0 34px rgba(104,82,230,.06); }
+}
+@keyframes aiCameraHudIn {
+  from { opacity: 0; transform: translateY(-3px) scale(.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
 
 @media (prefers-reduced-motion: reduce) {
-  .autopilot-orb, .ai-cursor__trail, .ai-cursor__ripple, .autopilot-banner--completed, .autopilot-banner--cancelled { animation: none; }
+  .autopilot-orb,
+  .ai-cursor__trail,
+  .ai-cursor__ripple,
+  .autopilot-banner--completed,
+  .autopilot-banner--cancelled,
+  .flow-surface--ai-following::before,
+  .flow-surface--ai-following::after { animation: none; }
 }
