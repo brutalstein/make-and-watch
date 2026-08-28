@@ -11,7 +11,8 @@ export function VirtualCursor({ state }: VirtualCursorProps) {
   if (!state.visible) return null;
 
   const surface = document.querySelector<HTMLElement>('.flow-surface');
-  const surfaceRect = surface?.getBoundingClientRect() ?? null;
+  const cameraEngaged = surface?.classList.contains('flow-surface--ai-engaged') ?? false;
+  const surfaceRect = cameraEngaged ? surface?.getBoundingClientRect() ?? null : null;
   const visible = resolveVisibleCursorPoint({ x: state.x, y: state.y }, surfaceRect);
   const frame = surfaceRect ? cameraFrameForSurface(surfaceRect) : null;
   const flipLabelX = frame
