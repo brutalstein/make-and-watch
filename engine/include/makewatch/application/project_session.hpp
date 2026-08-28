@@ -17,8 +17,12 @@ class ProjectSession final {
   explicit ProjectSession(persistence::SnapshotStore& store) : store_(store) {}
 
   [[nodiscard]] core::Status load();
-  [[nodiscard]] project::CommandResult apply(const project::Command& command);
-  [[nodiscard]] project::CommandResult apply_batch(const std::vector<project::Command>& commands);
+  [[nodiscard]] project::CommandResult apply(
+      const project::Command& command,
+      const persistence::CommitContext& context = {});
+  [[nodiscard]] project::CommandResult apply_batch(
+      const std::vector<project::Command>& commands,
+      const persistence::CommitContext& context = {});
   [[nodiscard]] project::ImpactReport preview_impact(const core::EntityId& source) const;
   [[nodiscard]] project::ProjectSnapshot snapshot() const { return engine_.snapshot(); }
   [[nodiscard]] persistence::LoadJournalResult history(std::size_t limit);
