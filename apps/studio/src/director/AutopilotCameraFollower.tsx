@@ -14,6 +14,8 @@ const FALLBACK_NODE_WIDTH = 235;
 const FALLBACK_NODE_HEIGHT = 82;
 const FOLLOW_EPSILON = 1.25;
 const MOTION_GRACE_MS = 220;
+const MIN_AUTOPILOT_ZOOM = 0.46;
+const MAX_AUTOPILOT_ZOOM = 1.16;
 
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.min(maximum, Math.max(minimum, value));
@@ -80,12 +82,13 @@ interface AutopilotCameraFollowerProps {
 }
 
 /**
- * Keeps the AI-operated node and virtual cursor inside a cinematic safe frame.
+ * Presentation-only camera controller for AI takeover.
  *
- * This deliberately follows the selected React Flow node rather than blindly
- * tracking screen coordinates. During a programmatic drag the node remains
- * physically under the clamped cursor while the viewport pans beneath it.
- * The controller only owns presentation state; it never mutates project data.
+ * Search motion widens the shot so distant workflow areas become legible;
+ * active drag motion gently tightens it again. The selected semantic node is
+ * the anchor, so viewport motion never changes project truth or workspace
+ * coordinates. Camera ownership is released as soon as cursor motion settles,
+ * allowing explicit focus/fit commands to run without fighting this loop.
  */
 export function AutopilotCameraFollower({ state }: AutopilotCameraFollowerProps) {
   const reactFlow = useReactFlow();
@@ -93,6 +96,7 @@ export function AutopilotCameraFollower({ state }: AutopilotCameraFollowerProps)
   const engagedRef = useRef(false);
   const previousCursorRef = useRef<XYPosition | null>(null);
   const motionUntilRef = useRef(0);
+  const homeZoomRef = useRef<number | null>(null);
   const surfaceRef = useRef<HTMLElement | null>(null);
   const activeClassRef = useRef(false);
   const engagedClassRef = useRef(false);
@@ -103,6 +107,7 @@ export function AutopilotCameraFollower({ state }: AutopilotCameraFollowerProps)
       engagedRef.current = false;
       previousCursorRef.current = null;
       motionUntilRef.current = 0;
+      homeZoomRef.current = null;
     }
   }, [state]);
 
@@ -133,6 +138,7 @@ export function AutopilotCameraFollower({ state }: AutopilotCameraFollowerProps)
         engagedRef.current = false;
         previousCursorRef.current = null;
         motionUntilRef.current = 0;
+        homeZoomRef.current = null;
         setFollowingClass(false);
         setEngagedClass(false);
         animationFrame = requestAnimationFrame(tick);
@@ -143,15 +149,14 @@ export function AutopilotCameraFollower({ state }: AutopilotCameraFollowerProps)
       const surfaceRect = surface.getBoundingClientRect();
       const rawCursor = { x: current.x, y: current.y };
       const previousCursor = previousCursorRef.current;
-      const cursorMoved = previousCursor ? distance(previousCursor, rawCursor) > 0.35 : false;
+      const cursorTravel = previousCursor ? distance(previousCursor, rawCursor) : 0;
+      const cursorMoved = cursorTravel > 0.35;
       previousCursorRef.current = rawCursor;
       if (cursorMoved) motionUntilRef.current = now + MOTION_GRACE_MS;
 
-      // The cursor initially appears in the top takeover banner. Camera
-      // ownership starts only after it actually enters the workflow once, so
-      // startup UI choreography cannot unexpectedly move the graph.
       if (!engagedRef.current && pointInsideRect(rawCursor, surfaceRect, 4)) {
         engagedRef.current = true;
+        homeZoomRef.current = clamp(reactFlow.getViewport().zoom, MIN_AUTOPILOT_ZOOM, MAX_AUTOPILOT_ZOOM);
       }
       setEngagedClass(engagedRef.current);
       if (!engagedRef.current) {
@@ -160,9 +165,6 @@ export function AutopilotCameraFollower({ state }: AutopilotCameraFollowerProps)
         return;
       }
 
-      // Camera ownership is transient. A fitView, explicit focus tween, or
-      // other viewport command must be free to run once the cursor has stopped.
-      // This prevents two independent camera systems from fighting each other.
       const cursorDrivingCamera = current.pressed || cursorMoved || now < motionUntilRef.current;
       if (!cursorDrivingCamera) {
         setFollowingClass(false);
@@ -179,34 +181,52 @@ export function AutopilotCameraFollower({ state }: AutopilotCameraFollowerProps)
 
       const frame = cameraFrameForSurface(surfaceRect);
       const visibleCursor = clampPointToCameraFrame(rawCursor, frame);
-      const selectedScreen = reactFlow.flowToScreenPosition(nodeAnchor(selected));
+      const anchor = nodeAnchor(selected);
+      const selectedScreen = reactFlow.flowToScreenPosition(anchor);
       const cursorWasClipped = distance(rawCursor, visibleCursor) > FOLLOW_EPSILON;
       const safeNodePoint = clampPointToCameraFrame(selectedScreen, frame);
+      const desiredScreen = cursorWasClipped ? visibleCursor : safeNodePoint;
+      const errorX = desiredScreen.x - selectedScreen.x;
+      const errorY = desiredScreen.y - selectedScreen.y;
 
-      // If the raw AI cursor reaches the edge, keep the selected node directly
-      // beneath the visible cursor. Otherwise only correct a node that is
-      // leaving the camera's safe frame. This creates a dead-zone instead of a
-      // nauseating always-centered camera.
-      const desired = cursorWasClipped ? visibleCursor : safeNodePoint;
-      const errorX = desired.x - selectedScreen.x;
-      const errorY = desired.y - selectedScreen.y;
-      const needsFollow = Math.abs(errorX) > FOLLOW_EPSILON || Math.abs(errorY) > FOLLOW_EPSILON;
+      const viewport = reactFlow.getViewport();
+      const homeZoom = homeZoomRef.current ?? viewport.zoom;
+      // Travelling to find a node uses a wider composition. Once the AI presses
+      // and starts manipulating the node, tighten the shot slightly so the
+      // action feels intentional rather than like a static map pan.
+      const targetZoom = clamp(
+        current.pressed ? homeZoom * 0.92 : homeZoom * 0.76,
+        MIN_AUTOPILOT_ZOOM,
+        current.pressed ? 1.04 : 0.92,
+      );
+      const zoomDelta = boundedStep(targetZoom - viewport.zoom, 0.16, 0.026);
+      const nextZoom = clamp(viewport.zoom + zoomDelta, MIN_AUTOPILOT_ZOOM, MAX_AUTOPILOT_ZOOM);
+      const needsZoom = Math.abs(nextZoom - viewport.zoom) > 0.001;
+      const needsPan = Math.abs(errorX) > FOLLOW_EPSILON || Math.abs(errorY) > FOLLOW_EPSILON;
 
-      setFollowingClass(needsFollow);
-      if (needsFollow) {
-        const viewport = reactFlow.getViewport();
-        const gain = current.pressed ? 0.28 : 0.20;
-        const maxStep = current.pressed ? 42 : 34;
-        const stepX = boundedStep(errorX, gain, maxStep);
-        const stepY = boundedStep(errorY, gain, maxStep);
+      setFollowingClass(needsPan || needsZoom);
+      if (needsPan || needsZoom) {
+        const panGain = current.pressed ? 0.30 : 0.22;
+        const maxPanStep = current.pressed ? 44 : 36;
+        const stepX = boundedStep(errorX, panGain, maxPanStep);
+        const stepY = boundedStep(errorY, panGain, maxPanStep);
+        const nextAnchorScreen = {
+          x: selectedScreen.x + stepX,
+          y: selectedScreen.y + stepY,
+        };
 
-        // No duration here: this controller already runs at animation-frame
-        // cadence. Small bounded viewport deltas produce a smooth damped follow
-        // and avoid stacking competing React Flow tween promises.
+        // flowToScreenPosition = flow * zoom + viewport translation + pane
+        // offset. Recover that offset from the current transform so zooming can
+        // preserve the selected node's screen anchor without visible jumping.
+        const paneOffsetX = selectedScreen.x - (anchor.x * viewport.zoom + viewport.x);
+        const paneOffsetY = selectedScreen.y - (anchor.y * viewport.zoom + viewport.y);
+        const nextViewportX = nextAnchorScreen.x - paneOffsetX - anchor.x * nextZoom;
+        const nextViewportY = nextAnchorScreen.y - paneOffsetY - anchor.y * nextZoom;
+
         void reactFlow.setViewport({
-          x: viewport.x + stepX,
-          y: viewport.y + stepY,
-          zoom: viewport.zoom,
+          x: nextViewportX,
+          y: nextViewportY,
+          zoom: nextZoom,
         });
       }
 
