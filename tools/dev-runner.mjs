@@ -66,11 +66,13 @@ try {
   process.exit(1);
 }
 
-const studio = start(
-  'pnpm',
-  ['--filter', '@makewatch/studio', 'dev'],
-  isWindows ? { shell: true } : {},
-);
+const studio = isWindows
+  ? start(
+      process.env.ComSpec ?? 'cmd.exe',
+      ['/d', '/s', '/c', 'pnpm --filter @makewatch/studio dev'],
+    )
+  : start('pnpm', ['--filter', '@makewatch/studio', 'dev']);
+
 studio.on('exit', (code) => {
   if (!shuttingDown) shutdown(code ?? 0);
 });
