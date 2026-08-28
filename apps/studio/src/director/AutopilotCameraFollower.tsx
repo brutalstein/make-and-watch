@@ -13,6 +13,7 @@ export interface CameraFrame {
 const FALLBACK_NODE_WIDTH = 235;
 const FALLBACK_NODE_HEIGHT = 82;
 const FOLLOW_EPSILON = 1.25;
+const MOTION_GRACE_MS = 220;
 
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.min(maximum, Math.max(minimum, value));
@@ -90,21 +91,36 @@ export function AutopilotCameraFollower({ state }: AutopilotCameraFollowerProps)
   const reactFlow = useReactFlow();
   const stateRef = useRef(state);
   const engagedRef = useRef(false);
+  const previousCursorRef = useRef<XYPosition | null>(null);
+  const motionUntilRef = useRef(0);
   const surfaceRef = useRef<HTMLElement | null>(null);
   const activeClassRef = useRef(false);
+  const engagedClassRef = useRef(false);
 
   useEffect(() => {
     stateRef.current = state;
-    if (!state.visible) engagedRef.current = false;
+    if (!state.visible) {
+      engagedRef.current = false;
+      previousCursorRef.current = null;
+      motionUntilRef.current = 0;
+    }
   }, [state]);
 
   useEffect(() => {
     let animationFrame = 0;
 
+    const setSurfaceClass = (className: string, active: boolean, stateHolder: { current: boolean }) => {
+      if (stateHolder.current === active) return;
+      stateHolder.current = active;
+      surfaceRef.current?.classList.toggle(className, active);
+    };
+
     const setFollowingClass = (active: boolean) => {
-      if (activeClassRef.current === active) return;
-      activeClassRef.current = active;
-      surfaceRef.current?.classList.toggle('flow-surface--ai-following', active);
+      setSurfaceClass('flow-surface--ai-following', active, activeClassRef);
+    };
+
+    const setEngagedClass = (active: boolean) => {
+      setSurfaceClass('flow-surface--ai-engaged', active, engagedClassRef);
     };
 
     const tick = () => {
@@ -114,13 +130,22 @@ export function AutopilotCameraFollower({ state }: AutopilotCameraFollowerProps)
       surfaceRef.current = surface;
 
       if (!current.visible || !takeoverActive || !surface || !reactFlow.viewportInitialized) {
+        engagedRef.current = false;
+        previousCursorRef.current = null;
+        motionUntilRef.current = 0;
         setFollowingClass(false);
+        setEngagedClass(false);
         animationFrame = requestAnimationFrame(tick);
         return;
       }
 
+      const now = performance.now();
       const surfaceRect = surface.getBoundingClientRect();
       const rawCursor = { x: current.x, y: current.y };
+      const previousCursor = previousCursorRef.current;
+      const cursorMoved = previousCursor ? distance(previousCursor, rawCursor) > 0.35 : false;
+      previousCursorRef.current = rawCursor;
+      if (cursorMoved) motionUntilRef.current = now + MOTION_GRACE_MS;
 
       // The cursor initially appears in the top takeover banner. Camera
       // ownership starts only after it actually enters the workflow once, so
@@ -128,7 +153,18 @@ export function AutopilotCameraFollower({ state }: AutopilotCameraFollowerProps)
       if (!engagedRef.current && pointInsideRect(rawCursor, surfaceRect, 4)) {
         engagedRef.current = true;
       }
+      setEngagedClass(engagedRef.current);
       if (!engagedRef.current) {
+        setFollowingClass(false);
+        animationFrame = requestAnimationFrame(tick);
+        return;
+      }
+
+      // Camera ownership is transient. A fitView, explicit focus tween, or
+      // other viewport command must be free to run once the cursor has stopped.
+      // This prevents two independent camera systems from fighting each other.
+      const cursorDrivingCamera = current.pressed || cursorMoved || now < motionUntilRef.current;
+      if (!cursorDrivingCamera) {
         setFollowingClass(false);
         animationFrame = requestAnimationFrame(tick);
         return;
@@ -180,8 +216,9 @@ export function AutopilotCameraFollower({ state }: AutopilotCameraFollowerProps)
     animationFrame = requestAnimationFrame(tick);
     return () => {
       cancelAnimationFrame(animationFrame);
-      surfaceRef.current?.classList.remove('flow-surface--ai-following');
+      surfaceRef.current?.classList.remove('flow-surface--ai-following', 'flow-surface--ai-engaged');
       activeClassRef.current = false;
+      engagedClassRef.current = false;
     };
   }, [reactFlow]);
 
