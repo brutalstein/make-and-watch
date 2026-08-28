@@ -3,10 +3,14 @@ import type { ProjectGraphSnapshot } from '@makewatch/contracts';
 import { defaultWorkflowPositions, type WorkflowPositions } from '../workflowLayout';
 import type { AutopilotPlan, AutopilotStep } from './autopilotTypes';
 
-const MAX_VISIBLE_DRAGS = 6;
+const MAX_VISIBLE_DRAGS = 5;
 
 function distance(left: { x: number; y: number }, right: { x: number; y: number }) {
   return Math.hypot(left.x - right.x, left.y - right.y);
+}
+
+function clamp(value: number, minimum: number, maximum: number) {
+  return Math.min(maximum, Math.max(minimum, value));
 }
 
 function kindWeight(kind: string) {
@@ -16,6 +20,13 @@ function kindWeight(kind: string) {
   if (kind === 'scene') return 3;
   if (kind === 'shot') return 4;
   return 5;
+}
+
+function dragDurationMs(distanceUnits: number) {
+  // Layout-space distance produces deterministic pacing regardless of monitor
+  // refresh rate. Very short drags still read as intentional; long drags do not
+  // race across the workflow faster than the user can visually follow.
+  return Math.round(clamp(760 + distanceUnits * 0.42, 820, 1500));
 }
 
 export function buildWorkspaceAutopilotPlan(
@@ -28,10 +39,10 @@ export function buildWorkspaceAutopilotPlan(
       id: 'announce.start',
       type: 'announce',
       message: 'I’ll read the workflow, organize the important areas, and hand control back when the pass is complete.',
-      holdMs: 620,
+      holdMs: 760,
     },
     { id: 'fit.before', type: 'fitWorkflow', label: 'Scanning the full production graph' },
-    { id: 'wait.scan', type: 'wait', durationMs: 180, label: 'Reading workflow structure' },
+    { id: 'wait.scan', type: 'wait', durationMs: 320, label: 'Reading workflow structure' },
   ];
 
   const candidates = snapshot.nodes
@@ -52,23 +63,25 @@ export function buildWorkspaceAutopilotPlan(
   const visibleCandidates = candidates.slice(0, MAX_VISIBLE_DRAGS);
   for (const [index, entry] of visibleCandidates.entries()) {
     if (!entry.from || !entry.to) continue;
+    const travel = distance(entry.from, entry.to);
     steps.push({
       id: `drag.${index}.${entry.node.id}`,
       type: 'dragNode',
       nodeId: entry.node.id,
       to: entry.to,
-      durationMs: 520,
+      durationMs: dragDurationMs(travel),
       label: `Finding and placing ${entry.node.title}`,
     });
 
-    // Periodically widen the shot so the workflow feels explored rather than
-    // mechanically traversed one card at a time.
-    if ((index + 1) % 3 === 0 && index + 1 < visibleCandidates.length) {
-      steps.push({
-        id: `fit.rescan.${index}`,
-        type: 'fitWorkflow',
-        label: 'Reframing the workflow before continuing',
-      });
+    if ((index + 1) % 2 === 0 && index + 1 < visibleCandidates.length) {
+      steps.push(
+        { id: `wait.breathe.${index}`, type: 'wait', durationMs: 180, label: 'Checking the composition' },
+        {
+          id: `fit.rescan.${index}`,
+          type: 'fitWorkflow',
+          label: 'Reframing the workflow before continuing',
+        },
+      );
     }
   }
 
@@ -79,7 +92,7 @@ export function buildWorkspaceAutopilotPlan(
         id: 'announce.bulk-settle',
         type: 'announce',
         message: `${remaining} additional workspace items follow the same dependency layout. I’ll settle those together instead of wasting your time with repetitive cursor motion.`,
-        holdMs: 420,
+        holdMs: 520,
       },
       {
         id: 'arrange.remaining',
@@ -99,7 +112,7 @@ export function buildWorkspaceAutopilotPlan(
         id: `focus.${reviewTarget.id}`,
         type: 'focusNode',
         nodeId: reviewTarget.id,
-        zoom: 1.04,
+        zoom: 1.02,
         label: `Reviewing ${reviewTarget.title}`,
       },
       {
@@ -117,7 +130,7 @@ export function buildWorkspaceAutopilotPlan(
     message: candidates.length > 0
       ? 'Workspace pass complete. The layout is organized and semantic project state was not changed.'
       : 'Workspace pass complete. The graph was already organized, so I only inspected its structure.',
-    holdMs: 520,
+    holdMs: 680,
   });
 
   return {
