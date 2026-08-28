@@ -1,12 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { cpus, freemem, platform, totalmem } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { spawn } from 'node:child_process';
 
 import { DEV_SEED_COMMANDS } from './dev-seed.mjs';
 
@@ -21,6 +20,11 @@ const nativeHost = resolve(
   process.platform === 'win32' ? 'makewatch_engine_host.exe' : 'makewatch_engine_host',
 );
 const databasePath = resolve(root, process.env.MAKEWATCH_PROJECT_DB ?? '.makewatch/dev-project.sqlite3');
+
+if (!Number.isInteger(bridgePort) || bridgePort < 1024 || bridgePort > 65535) {
+  console.error(`[bridge] invalid MAKEWATCH_BRIDGE_PORT: ${process.env.MAKEWATCH_BRIDGE_PORT ?? bridgePort}`);
+  process.exit(2);
+}
 
 if (!existsSync(nativeHost)) {
   console.error(`[bridge] native host not found: ${nativeHost}`);
@@ -73,7 +77,7 @@ native.on('exit', (code, signal) => {
   pending.clear();
   if (!shuttingDown) {
     console.error(`[bridge] ${message}`);
-    process.exitCode = 3;
+    process.exit(3);
   }
 });
 
@@ -216,6 +220,11 @@ const server = createServer(async (request, response) => {
       error: { code: 'bridge_error', message: error instanceof Error ? error.message : String(error) },
     });
   }
+});
+
+server.on('error', (error) => {
+  console.error(`[bridge] server error: ${error.message}`);
+  process.exit(4);
 });
 
 server.listen(bridgePort, '127.0.0.1', () => {
