@@ -1,5 +1,6 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
+import { ReactFlowProvider } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import './styles.css';
 import './director/autopilot.css';
@@ -12,6 +13,8 @@ if (!root) {
 
 createRoot(root).render(
   <StrictMode>
-    <App />
+    <ReactFlowProvider>
+      <App />
+    </ReactFlowProvider>
   </StrictMode>,
 );
