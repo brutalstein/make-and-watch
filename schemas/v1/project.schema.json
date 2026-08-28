@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://makewatch.local/schemas/v1/project.schema.json",
+  "title": "MakeWatchProjectSummary",
+  "type": "object",
+  "required": ["schemaVersion", "projectId", "title", "episodes"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "projectId": { "type": "string", "minLength": 1 },
+    "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "episodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["episodeId", "title", "state", "sceneCount"],
+        "additionalProperties": false,
+        "properties": {
+          "episodeId": { "type": "string" },
+          "title": { "type": "string" },
+          "state": { "enum": ["draft", "review", "approved", "locked", "generating", "ready", "failed"] },
+          "sceneCount": { "type": "integer", "minimum": 0 },
+          "estimatedDurationSeconds": { "type": "number", "minimum": 0 }
+        }
+      }
+    }
+  }
+}

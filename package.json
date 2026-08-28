@@ -1,0 +1,15 @@
+{
+  "name": "make-and-watch",
+  "private": true,
+  "version": "0.0.0",
+  "packageManager": "pnpm@10.15.0",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @makewatch/studio dev",
+    "build:web": "pnpm --filter @makewatch/studio build",
+    "typecheck": "pnpm -r typecheck",
+    "test:web": "pnpm -r --if-present test"
+  }
+}

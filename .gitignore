@@ -1,0 +1,40 @@
+# Build output
+build/
+out/
+dist/
+coverage/
+
+# JS / TS
+node_modules/
+.pnpm-store/
+*.tsbuildinfo
+
+# Native
+CMakeUserPresets.json
+compile_commands.json
+
+# Runtime / generated media
+.makewatch/
+projects/
+cache/
+renders/
+proxies/
+models/
+*.mp4
+*.mov
+*.mkv
+*.wav
+*.flac
+
+# Secrets / local auth
+.env
+.env.*
+!.env.example
+*.token
+*.pem
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
