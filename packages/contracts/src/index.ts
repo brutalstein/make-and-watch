@@ -112,3 +112,39 @@ export interface ProjectEvent {
   affected: string[];
   detail?: string;
 }
+
+export interface EngineHealth {
+  service: 'makewatch-engine';
+  protocolVersion: 1;
+  projectRevision: number;
+  nodeCount: number;
+}
+
+export interface ImpactReport {
+  affected: string[];
+  locked: string[];
+  alreadyStale: string[];
+}
+
+export interface ApplyProjectResult {
+  projectRevision: number;
+  events: ProjectEvent[];
+  snapshot: ProjectGraphSnapshot;
+}
+
+export interface SystemTelemetry {
+  platform: string;
+  cpu: {
+    logicalCores: number;
+    totalMemoryMb: number;
+    freeMemoryMb: number;
+  };
+  gpu: null | {
+    name: string;
+    memoryTotalMb: number;
+    memoryUsedMb: number;
+    memoryFreeMb: number;
+    utilizationPercent: number;
+    temperatureC: number;
+  };
+}

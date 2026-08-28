@@ -3,14 +3,11 @@
   "private": true,
   "version": "0.0.0",
   "packageManager": "pnpm@10.15.0",
-  "engines": {
-    "node": ">=22.0.0"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": ["esbuild"]
-  },
+  "engines": { "node": ">=22.0.0" },
+  "pnpm": { "onlyBuiltDependencies": ["esbuild"] },
   "scripts": {
-    "dev": "pnpm --filter @makewatch/studio dev",
+    "dev": "node tools/dev-runner.mjs",
+    "bridge:check": "node --check tools/dev-bridge/server.mjs && node --check tools/dev-bridge/dev-seed.mjs && node --check tools/dev-runner.mjs",
     "build:web": "pnpm --filter @makewatch/studio build",
     "typecheck": "pnpm -r typecheck",
     "test:web": "pnpm -r --if-present test"

@@ -12,26 +12,29 @@ Write-Host "  Full local foundation verification" -ForegroundColor DarkGray
 
 Set-Location $Root
 
-Step 1 6 "System doctor"
+Step 1 7 "System doctor"
 & "$PSScriptRoot/doctor.ps1"
 
-Step 2 6 "Studio dependencies"
+Step 2 7 "Studio dependencies"
 pnpm install --no-frozen-lockfile
 
-Step 3 6 "Strict TypeScript contracts"
+Step 3 7 "Local bridge syntax"
+pnpm bridge:check
+
+Step 4 7 "Strict TypeScript contracts"
 pnpm typecheck
 
-Step 4 6 "Studio production build"
+Step 5 7 "Studio production build"
 pnpm build:web
 
-Step 5 6 "Native configure + build"
+Step 6 7 "Native configure + build"
 cmake --preset dev
 cmake --build --preset dev
 
-Step 6 6 "Native test suite"
+Step 7 7 "Native test suite"
 ctest --preset dev --output-on-failure
 
 Write-Host ""
 Write-Host "  QUALITY GATE PASSED" -ForegroundColor Green
-Write-Host "  Studio + contracts + native engine + persistence/runtime tests are green." -ForegroundColor DarkGray
+Write-Host "  Studio + bridge + contracts + native engine + persistence/runtime tests are green." -ForegroundColor DarkGray
 Write-Host ""
