@@ -8,4 +8,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(MAKEWATCH_BUILD_TESTS "Build Make & Watch native tests" ON)
 
+if(MAKEWATCH_BUILD_TESTS)
+  enable_testing()
+endif()
+
 add_subdirectory(engine)

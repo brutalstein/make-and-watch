@@ -1,7 +1,9 @@
 #include <cstdlib>
 #include <iostream>
+#include <variant>
 
 #include "makewatch/director/operation_validator.hpp"
+#include "makewatch/director/provider.hpp"
 
 namespace {
 
@@ -16,7 +18,9 @@ void require(bool condition, const char* message) {
 
 int main() {
   using makewatch::core::EntityId;
+  using makewatch::director::DirectorError;
   using makewatch::director::DirectorOperation;
+  using makewatch::director::DirectorResponse;
   using makewatch::director::EntityType;
   using makewatch::director::OperationTarget;
   using makewatch::director::OperationType;
@@ -36,6 +40,9 @@ int main() {
   DirectorOperation missing_id = valid;
   missing_id.operation_id.clear();
   require(!OperationValidator::validate(missing_id).ok(), "missing operation id should fail");
+
+  DirectorResponse response = DirectorError{"unavailable", "Provider is unavailable.", true};
+  require(std::holds_alternative<DirectorError>(response), "director response error contract should compile");
 
   std::cout << "makewatch_engine_tests: OK\n";
   return EXIT_SUCCESS;

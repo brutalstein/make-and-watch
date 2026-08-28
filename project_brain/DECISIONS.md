@@ -41,3 +41,9 @@ Python/model workers will be isolated from the C++ engine. IPC details are not f
 **Status:** active constraint.
 
 This public tree may contain product architecture and ordinary engineering, but unpublished invention disclosures and claim-oriented implementation detail remain private until an IP decision is made.
+
+## ADR-008 — Subscription AI uses official client bridges
+
+**Status:** accepted direction.
+
+Make & Watch does not own or repurpose Claude/Codex subscription OAuth tokens. For subscription-backed personal use, integrations bridge supported official local clients and let those clients own authentication. API/enterprise integrations may be added later behind the same `DirectorProvider` contract.

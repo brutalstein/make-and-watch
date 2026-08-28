@@ -2,26 +2,42 @@
 
 ## Current state
 
-Repository was initialized from empty on 2026-08-28. Foundation work is being developed on `foundation/series-engine-v0`.
+Repository was initialized from empty on 2026-08-28. Foundation work is on `foundation/series-engine-v0`.
 
-The public `main` branch currently contains the project introduction. The foundation branch is intended to introduce the canonical architecture/context, versioned contracts, native core scaffolding, Studio shell, and CI before a review/merge.
+Implemented foundation pieces:
+
+- canonical `project_brain/` session handoff system;
+- versioned initial JSON contracts;
+- C++20 engine library and strict warning policy;
+- typed director operations and validator tests;
+- provider-agnostic `DirectorProvider` boundary;
+- policy-correct official-client bridge direction for Claude/Codex subscription use;
+- React/TypeScript Studio shell with Director, live workflow, scene strip, inspector, and resource-plan mock surfaces;
+- cross-platform doctor/bootstrap/dev entry points;
+- CI definition for native and Studio builds.
+
+## Validation status
+
+The connector-based branch updates did not automatically produce a GitHub Actions run, so CI has not yet provided external build confirmation. Source-level review caught and fixed explicit `<utility>` portability includes and moved `enable_testing()` to the root CMake scope. Before merging to `main`, run the local bootstrap/build/tests or trigger CI through the normal Git workflow.
 
 ## Immediate next steps
 
-1. Complete the C++ domain/operation validation foundation.
-2. Complete the first premium Studio shell using mock project data only.
-3. Add CI/build ergonomics and verify both sides compile.
-4. Review public-repository IP exposure before implementing novel resource/synthesis algorithms.
-5. After foundation review, implement persistent project graph and migrations before heavyweight model integrations.
+1. Run `./doctor.sh` or `.\doctor.ps1` on a development machine.
+2. Run bootstrap, native build/tests, and Studio typecheck/build.
+3. Fix any environment-specific issues discovered by real execution.
+4. Review the Studio foundation visually and tune interaction/design before persistence work.
+5. Implement Foundation v1 persistent project graph (SQLite + migrations + command/event boundary).
+6. Keep patent-sensitive scheduler/synthesis novelty private until IP strategy is cleared.
 
 ## What not to do next
 
 - Do not wire a heavyweight video model directly into the UI.
 - Do not make ComfyUI the project state owner.
+- Do not implement a fake/custom Claude subscription OAuth flow.
 - Do not put OAuth tokens in `.env` as a shipping design.
 - Do not create a second TypeScript-only domain model that diverges from schemas.
-- Do not prematurely optimize patent-sensitive runtime algorithms in public.
+- Do not prematurely disclose patent-sensitive runtime algorithms in public.
 
 ## Quality bar
 
-Every milestone must remain buildable, testable, explainable, and reversible. “100/100” is treated as a quality target backed by gates and tests, not as a claim that defects cannot exist.
+Every milestone must remain buildable, testable, explainable, and reversible. “100/100” is treated as a quality target backed by `QUALITY_GATES.md`, not as permission to conceal defects or unverified assumptions.

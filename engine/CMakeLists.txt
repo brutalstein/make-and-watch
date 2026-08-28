@@ -18,13 +18,17 @@ else()
 endif()
 
 if(MAKEWATCH_BUILD_TESTS)
-  enable_testing()
-
   add_executable(makewatch_engine_tests
     tests/operation_validator_test.cpp
   )
 
   target_link_libraries(makewatch_engine_tests PRIVATE makewatch::engine)
+
+  if(MSVC)
+    target_compile_options(makewatch_engine_tests PRIVATE /W4 /permissive-)
+  else()
+    target_compile_options(makewatch_engine_tests PRIVATE -Wall -Wextra -Wpedantic)
+  endif()
 
   add_test(NAME makewatch_engine_tests COMMAND makewatch_engine_tests)
 endif()
