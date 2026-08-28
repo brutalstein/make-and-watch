@@ -1,6 +1,9 @@
-import { DEV_SEED_COMMANDS } from './dev-seed.mjs';
+import { DEV_SEED_COMMANDS, DEV_SEED_VERSION } from './dev-seed.mjs';
 
 const nodes = new Map();
+const freshened = new Set();
+let lastTopologyIndex = -1;
+let firstLockIndex = Number.POSITIVE_INFINITY;
 
 function fail(index, message) {
   throw new Error(`development seed command ${index + 1}: ${message}`);
@@ -21,11 +24,18 @@ for (const [index, command] of DEV_SEED_COMMANDS.entries()) {
     case 'node.lock': {
       const node = nodes.get(command.id);
       if (!node) fail(index, `node.lock references missing node ${command.id}`);
+      firstLockIndex = Math.min(firstLockIndex, index);
       node.locked = command.locked;
+      break;
+    }
+    case 'node.markFresh': {
+      if (!nodes.has(command.id)) fail(index, `node.markFresh references missing node ${command.id}`);
+      freshened.add(command.id);
       break;
     }
     case 'dependency.add':
     case 'dependency.remove': {
+      lastTopologyIndex = index;
       const dependent = nodes.get(command.dependent);
       const dependency = nodes.get(command.dependency);
       if (!dependent || !dependency) {
@@ -41,10 +51,19 @@ for (const [index, command] of DEV_SEED_COMMANDS.entries()) {
   }
 }
 
+if (!DEV_SEED_VERSION) throw new Error('development seed version must be explicit');
+if (firstLockIndex <= lastTopologyIndex) {
+  throw new Error('development seed must complete dependency topology before applying locks');
+}
+for (const id of nodes.keys()) {
+  if (!freshened.has(id)) {
+    throw new Error(`development seed must mark ${id} fresh after topology construction`);
+  }
+}
 for (const expectedLocked of ['character.mira', 'scene.01']) {
   if (!nodes.get(expectedLocked)?.locked) {
     throw new Error(`development seed must finish with ${expectedLocked} locked`);
   }
 }
 
-console.log('[seed-check] development seed respects native lock/topology invariants');
+console.log(`[seed-check] development seed v${DEV_SEED_VERSION} respects topology, freshness, and lock invariants`);
