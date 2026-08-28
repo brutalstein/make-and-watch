@@ -89,9 +89,11 @@ Future provider-generated plans must pass the same validation. A Claude/Codex re
 
 A visually impressive automation that can remain stuck forever is not acceptable product behavior.
 
-The executor therefore applies a bounded execution deadline to normal UI/native action steps. Focus, drag, impact, arrange, fit, and semantic apply steps must either complete within their execution budget or fail safely. Explicit user approval checkpoints are the exception because waiting for the user is intentional.
+The executor therefore applies a bounded execution deadline to **presentation and read-only workflow actions**. Focus, drag, impact preview, arrange, and fit steps must either complete within their execution budget or fail safely. Explicit user approval checkpoints are intentionally unbounded because waiting for the user is the requested behavior.
 
-A timed-out step cancels the execution control and becomes a visible failed Autopilot state rather than leaving the Studio interaction lock active indefinitely.
+Authoritative semantic `applyCommands` is deliberately different. It is not wrapped in a second UI-only race timeout that could report failure while a native transaction is still completing. Transport correlation, localhost RPC timeout policy, `ProjectSession`, and transactional persistence own that boundary. This prevents the UI from inventing a split-brain success/failure state around a real commit.
+
+A timed-out presentation step cancels the execution control and becomes a visible failed Autopilot state rather than leaving the Studio interaction lock active indefinitely.
 
 The deterministic workspace demo also limits repetitive visible cursor work. It physically demonstrates a bounded number of meaningful node moves; if a large graph contains more displaced nodes, the remaining presentation-only layout is settled as one deterministic dependency-layout operation. This keeps the interaction understandable on both 8-node and future 800-node projects.
 
@@ -242,7 +244,8 @@ This is not pretending Claude/Codex is connected. It is a real execution harness
 - Never give a model unrestricted OS mouse/keyboard access as the normal product design.
 - Never allow Assist mode to change semantic state.
 - Never disable emergency takeover.
-- Never leave an ordinary Autopilot UI step unbounded indefinitely.
+- Never leave an ordinary Autopilot presentation/read-only step unbounded indefinitely.
+- Never add a UI-only race timeout around an authoritative semantic commit.
 - Never bypass native locks/revisions because an Autopilot plan requested it.
 - Never let animation or camera state become project truth.
 - Never hide a semantic commit behind a cosmetic drag operation.
