@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   Background,
   Controls,
@@ -23,7 +23,9 @@ import type {
 import {
   Activity,
   Bot,
+  BrainCircuit,
   ChevronRight,
+  CircleStop,
   Clapperboard,
   Cpu,
   Film,
@@ -34,9 +36,12 @@ import {
   Lock,
   MapPin,
   MessageSquareText,
+  MousePointer2,
+  Pause,
   Play,
   RefreshCw,
   Scan,
+  ShieldCheck,
   Sparkles,
   Unlock,
   UserRound,
@@ -44,6 +49,17 @@ import {
 } from 'lucide-react';
 
 import { engineClient } from './engineClient';
+import { AutopilotCancelledError, AutopilotExecutionControl, controlledDelay } from './director/autopilotControl';
+import { executeAutopilotPlan, type AutopilotRuntime } from './director/autopilotExecutor';
+import { buildWorkspaceAutopilotPlan } from './director/autopilotPlan';
+import {
+  IDLE_AUTOPILOT_STATE,
+  type AutopilotUiState,
+  type CursorVisualState,
+} from './director/autopilotTypes';
+import { validateAutopilotPlan } from './director/autopilotValidation';
+import { animateCursor, easeInOutCubic } from './director/cinematicMotion';
+import { VirtualCursor } from './director/VirtualCursor';
 import {
   defaultWorkflowPositions,
   resolveWorkflowPositions,
@@ -155,6 +171,13 @@ function positionsFromNodes(nodes: FlowNode[]): WorkflowPositions {
   return Object.fromEntries(nodes.map((node) => [node.id, { x: node.position.x, y: node.position.y }]));
 }
 
+function isAutopilotBlocking(state: AutopilotUiState) {
+  return state.status === 'planning'
+    || state.status === 'executing'
+    || state.status === 'paused'
+    || state.status === 'waiting_approval';
+}
+
 export function App() {
   const [snapshot, setSnapshot] = useState<ProjectGraphSnapshot | null>(null);
   const [health, setHealth] = useState<EngineHealth | null>(null);
@@ -166,8 +189,27 @@ export function App() {
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance | null>(null);
   const [flowNodes, setFlowNodes, onFlowNodesChange] = useNodesState<FlowNode>([]);
   const [layoutStatus, setLayoutStatus] = useState('Drag nodes · layout auto-saves');
+  const [autopilot, setAutopilot] = useState<AutopilotUiState>(IDLE_AUTOPILOT_STATE);
+  const [cursor, setCursor] = useState<CursorVisualState>({
+    visible: false,
+    x: 0,
+    y: 0,
+    pressed: false,
+    pulse: 0,
+    label: '',
+  });
+
+  const cursorRef = useRef(cursor);
+  const autopilotControlRef = useRef<AutopilotExecutionControl | null>(null);
+  const checkpointResolverRef = useRef<((approved: boolean) => void) | null>(null);
 
   const layoutKey = useMemo(() => snapshot ? workflowProjectKey(snapshot) : null, [snapshot]);
+  const autopilotBlocking = isAutopilotBlocking(autopilot);
+
+  const updateCursor = useCallback((next: CursorVisualState) => {
+    cursorRef.current = next;
+    setCursor(next);
+  }, []);
 
   const refreshAll = useCallback(async () => {
     try {
@@ -253,11 +295,12 @@ export function App() {
     setLayoutStatus('Layout saved locally');
   }, [layoutKey, setFlowNodes]);
 
-  const fitWorkflow = useCallback(() => {
-    void flowInstance?.fitView({ padding: 0.14, duration: 320, maxZoom: 1.15 });
+  const fitWorkflow = useCallback(async () => {
+    if (!flowInstance) return;
+    await flowInstance.fitView({ padding: 0.14, duration: 320, maxZoom: 1.15 });
   }, [flowInstance]);
 
-  const arrangeWorkflow = useCallback(() => {
+  const arrangeWorkflow = useCallback(async () => {
     if (!snapshot || !layoutKey) return;
     const positions = defaultWorkflowPositions(snapshot);
     setFlowNodes((nodes) => nodes.map((node) => ({
@@ -266,10 +309,11 @@ export function App() {
     })));
     saveWorkflowLayout(layoutKey, positions);
     setLayoutStatus('Dependency layout restored · saved');
-    window.setTimeout(() => fitWorkflow(), 0);
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+    await fitWorkflow();
   }, [fitWorkflow, layoutKey, setFlowNodes, snapshot]);
 
-  const focusNode = useCallback((id: string, center = false) => {
+  const focusNode = useCallback(async (id: string, center = false, zoom = 1.05) => {
     setSelectedId(id);
     setImpact(null);
     setFlowNodes((nodes) => nodes.map((node) => ({ ...node, selected: node.id === id })));
@@ -277,35 +321,41 @@ export function App() {
     if (!center || !flowInstance) return;
     const target = flowNodes.find((node) => node.id === id);
     if (!target) return;
-    void flowInstance.setCenter(target.position.x + 118, target.position.y + 42, {
-      zoom: 1.05,
+    await flowInstance.setCenter(target.position.x + 118, target.position.y + 42, {
+      zoom,
       duration: 320,
     });
   }, [flowInstance, flowNodes, setFlowNodes]);
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      const target = event.target;
-      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return;
-      if (event.key.toLowerCase() === 'f') {
-        event.preventDefault();
-        fitWorkflow();
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [fitWorkflow]);
-
-  const applyCommands = useCallback(async (commands: ProjectCommand[]) => {
+  const applyCommands = useCallback(async (
+    commands: ProjectCommand[],
+    context?: { actor?: 'user' | 'ai_director' | 'system'; planId?: string; reason?: string },
+  ) => {
     setBusy(true);
     try {
-      const result = await engineClient.apply(commands);
+      const result = await engineClient.apply(commands, context);
       setSnapshot(result.snapshot);
       setHealth((current) => current ? { ...current, projectRevision: result.projectRevision, nodeCount: result.snapshot.nodes.length } : current);
       setImpact(null);
       setError(null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
+      throw reason;
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  const previewImpactFor = useCallback(async (nodeId: string) => {
+    setBusy(true);
+    try {
+      const result = await engineClient.impact(nodeId);
+      setImpact(result);
+      setError(null);
+      return result;
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      throw reason;
     } finally {
       setBusy(false);
     }
@@ -313,16 +363,8 @@ export function App() {
 
   const previewImpact = useCallback(async () => {
     if (!selected) return;
-    setBusy(true);
-    try {
-      setImpact(await engineClient.impact(selected.id));
-      setError(null);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setBusy(false);
-    }
-  }, [selected]);
+    await previewImpactFor(selected.id);
+  }, [previewImpactFor, selected]);
 
   const approveSelected = useCallback(() => {
     if (!selected || selected.locked || selected.stale || selected.approval === 'approved') return;
@@ -331,7 +373,7 @@ export function App() {
       id: selected.id,
       expectedRevision: selected.revision,
       approval: 'approved',
-    }]);
+    }], { actor: 'user', reason: 'manual Studio approval' });
   }, [applyCommands, selected]);
 
   const toggleSelectedLock = useCallback(() => {
@@ -341,17 +383,234 @@ export function App() {
       id: selected.id,
       expectedRevision: selected.revision,
       locked: !selected.locked,
-    }]);
+    }], { actor: 'user', reason: selected.locked ? 'manual Studio unlock' : 'manual Studio lock' });
   }, [applyCommands, selected]);
+
+  const locateNodeCenter = useCallback((nodeId: string) => {
+    const escaped = CSS.escape(nodeId);
+    const element = document.querySelector<HTMLElement>(`.react-flow__node[data-id="${escaped}"]`);
+    if (!element) return null;
+    const rect = element.getBoundingClientRect();
+    return { x: rect.left + rect.width * 0.52, y: rect.top + Math.min(34, rect.height * 0.42) };
+  }, []);
+
+  const moveCursorToNode = useCallback(async (nodeId: string, label: string, duration = 420) => {
+    const control = autopilotControlRef.current;
+    if (!control) throw new AutopilotCancelledError();
+    const center = locateNodeCenter(nodeId);
+    if (!center) throw new Error(`workflow node ${nodeId} is not visible`);
+    const start = cursorRef.current.visible
+      ? cursorRef.current
+      : { ...cursorRef.current, visible: true, x: window.innerWidth * 0.56, y: 82, label };
+    await animateCursor(start, center, duration, label, control, updateCursor);
+  }, [locateNodeCenter, updateCursor]);
+
+  const autopilotDragNode = useCallback(async (
+    nodeId: string,
+    to: { x: number; y: number },
+    durationMs: number,
+    label: string,
+  ) => {
+    const control = autopilotControlRef.current;
+    if (!control) throw new AutopilotCancelledError();
+    await focusNode(nodeId, false);
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await moveCursorToNode(nodeId, label, 360);
+
+    const source = flowNodes.find((node) => node.id === nodeId);
+    if (!source) throw new Error(`workflow node ${nodeId} does not exist`);
+    const viewport = flowInstance?.getViewport() ?? { x: 0, y: 0, zoom: 1 };
+    const cursorStart = cursorRef.current;
+    const started = performance.now();
+    const duration = Math.max(160, durationMs);
+    updateCursor({ ...cursorStart, pressed: true, pulse: cursorStart.pulse + 1, label });
+
+    while (true) {
+      await control.checkpoint();
+      const progress = Math.min(1, (performance.now() - started) / duration);
+      const eased = easeInOutCubic(progress);
+      const nextPosition = {
+        x: source.position.x + (to.x - source.position.x) * eased,
+        y: source.position.y + (to.y - source.position.y) * eased,
+      };
+      setFlowNodes((nodes) => nodes.map((node) => node.id === nodeId ? { ...node, position: nextPosition } : node));
+      updateCursor({
+        ...cursorStart,
+        visible: true,
+        pressed: true,
+        x: cursorStart.x + (to.x - source.position.x) * viewport.zoom * eased,
+        y: cursorStart.y + (to.y - source.position.y) * viewport.zoom * eased,
+        label,
+      });
+      if (progress >= 1) break;
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+
+    if (layoutKey) {
+      setFlowNodes((nodes) => {
+        const next = nodes.map((node) => node.id === nodeId ? { ...node, position: to } : node);
+        saveWorkflowLayout(layoutKey, positionsFromNodes(next));
+        return next;
+      });
+    }
+    updateCursor({ ...cursorRef.current, pressed: false, pulse: cursorRef.current.pulse + 1, label });
+    await controlledDelay(control, 160);
+  }, [flowInstance, flowNodes, focusNode, layoutKey, moveCursorToNode, setFlowNodes, updateCursor]);
+
+  const stopAutopilot = useCallback(() => {
+    checkpointResolverRef.current?.(false);
+    checkpointResolverRef.current = null;
+    autopilotControlRef.current?.cancel();
+    autopilotControlRef.current = null;
+    updateCursor({ ...cursorRef.current, visible: false, pressed: false, label: '' });
+    setAutopilot((current) => ({
+      ...current,
+      status: 'cancelled',
+      activity: 'Control returned to you',
+      error: null,
+    }));
+  }, [updateCursor]);
+
+  const pauseAutopilot = useCallback(() => {
+    const control = autopilotControlRef.current;
+    if (!control || control.isPaused) return;
+    control.pause();
+    setAutopilot((current) => ({ ...current, status: 'paused', activity: 'AI Director paused safely' }));
+    updateCursor({ ...cursorRef.current, pressed: false, label: 'Paused' });
+  }, [updateCursor]);
+
+  const resumeAutopilot = useCallback(() => {
+    const control = autopilotControlRef.current;
+    if (!control) return;
+    control.resume();
+    setAutopilot((current) => ({ ...current, status: 'executing', activity: 'AI Director resumed' }));
+  }, []);
+
+  const approveAutopilotCheckpoint = useCallback(() => {
+    checkpointResolverRef.current?.(true);
+    checkpointResolverRef.current = null;
+    setAutopilot((current) => ({ ...current, status: 'executing', activity: 'Approved · continuing' }));
+  }, []);
+
+  const startWorkspaceAutopilot = useCallback(() => {
+    if (!snapshot || autopilotBlocking || !flowInstance) return;
+    const plan = buildWorkspaceAutopilotPlan(snapshot, positionsFromNodes(flowNodes));
+    const validation = validateAutopilotPlan(plan, snapshot);
+    if (!validation.ok) {
+      setError(`AI plan rejected: ${validation.errors.join(' · ')}`);
+      return;
+    }
+
+    const control = new AutopilotExecutionControl();
+    autopilotControlRef.current = control;
+    setAutopilot({
+      status: 'planning',
+      planId: plan.planId,
+      title: plan.title,
+      stepIndex: 0,
+      stepCount: plan.steps.length,
+      activity: 'Validating the workflow and preparing a safe execution path',
+      error: null,
+    });
+    updateCursor({
+      visible: true,
+      x: window.innerWidth * 0.56,
+      y: 82,
+      pressed: false,
+      pulse: cursorRef.current.pulse,
+      label: 'AI Director',
+    });
+
+    const runtime: AutopilotRuntime = {
+      announce: (message) => updateCursor({ ...cursorRef.current, label: message }),
+      focusNode: async (nodeId, zoom) => {
+        await focusNode(nodeId, true, zoom ?? 1.08);
+        await controlledDelay(control, 90);
+        await moveCursorToNode(nodeId, `Inspecting ${snapshot.nodes.find((node) => node.id === nodeId)?.title ?? nodeId}`);
+        updateCursor({ ...cursorRef.current, pulse: cursorRef.current.pulse + 1, pressed: false });
+      },
+      dragNode: autopilotDragNode,
+      previewImpact: async (nodeId) => {
+        await moveCursorToNode(nodeId, 'Checking dependency impact', 260);
+        updateCursor({ ...cursorRef.current, pressed: true, pulse: cursorRef.current.pulse + 1 });
+        const report = await previewImpactFor(nodeId);
+        updateCursor({ ...cursorRef.current, pressed: false, pulse: cursorRef.current.pulse + 1, label: `${report.affected.length} downstream entities checked` });
+        await controlledDelay(control, 520);
+        return report;
+      },
+      arrangeWorkflow: async () => {
+        updateCursor({ ...cursorRef.current, label: 'Applying dependency-aware layout' });
+        await arrangeWorkflow();
+        await controlledDelay(control, 380);
+      },
+      fitWorkflow: async () => {
+        updateCursor({ ...cursorRef.current, label: 'Framing the full workflow' });
+        await fitWorkflow();
+        await controlledDelay(control, 360);
+      },
+      applyCommands: async (commands, context) => {
+        await applyCommands(commands, {
+          actor: 'ai_director',
+          planId: context.planId,
+          reason: context.reason,
+        });
+      },
+      checkpoint: (message) => new Promise<boolean>((resolve) => {
+        updateCursor({ ...cursorRef.current, pressed: false, label: message });
+        checkpointResolverRef.current = resolve;
+      }),
+      setUiState: setAutopilot,
+    };
+
+    window.setTimeout(() => {
+      void executeAutopilotPlan(plan, runtime, control)
+        .then(() => {
+          if (autopilotControlRef.current === control) autopilotControlRef.current = null;
+          window.setTimeout(() => updateCursor({ ...cursorRef.current, visible: false, pressed: false, label: '' }), 900);
+        })
+        .catch((reason) => {
+          if (!(reason instanceof AutopilotCancelledError)) setError(reason instanceof Error ? reason.message : String(reason));
+          if (autopilotControlRef.current === control) autopilotControlRef.current = null;
+          updateCursor({ ...cursorRef.current, visible: false, pressed: false, label: '' });
+        });
+    }, 180);
+  }, [applyCommands, arrangeWorkflow, autopilotBlocking, autopilotDragNode, fitWorkflow, flowInstance, flowNodes, focusNode, moveCursorToNode, previewImpactFor, snapshot, updateCursor]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return;
+
+      if (autopilotBlocking) {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          stopAutopilot();
+        } else if (event.code === 'Space' && autopilot.status !== 'waiting_approval') {
+          event.preventDefault();
+          if (autopilot.status === 'paused') resumeAutopilot();
+          else pauseAutopilot();
+        }
+        return;
+      }
+
+      if (event.key.toLowerCase() === 'f') {
+        event.preventDefault();
+        void fitWorkflow();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [autopilot.status, autopilotBlocking, fitWorkflow, pauseAutopilot, resumeAutopilot, stopAutopilot]);
 
   const gpu = telemetry?.gpu;
   const vramPercent = gpu && gpu.memoryTotalMb > 0
     ? Math.min(100, Math.round((gpu.memoryUsedMb / gpu.memoryTotalMb) * 100))
     : 0;
   const metadata = selected ? Object.entries(selected.metadata).slice(0, 7) : [];
+  const autopilotProgress = autopilot.stepCount > 0 ? Math.round((autopilot.stepIndex / autopilot.stepCount) * 100) : 0;
 
   return (
-    <main className="studio-shell">
+    <main className={`studio-shell ${autopilotBlocking ? 'studio-shell--autopilot' : ''}`}>
       <header className="topbar">
         <div className="brand-lockup">
           <span className="brand-mark"><WandSparkles size={17} /></span>
@@ -368,7 +627,7 @@ export function App() {
         <div className="system-strip">
           <span><Cpu size={14} /> {health ? 'Native online' : 'Native offline'}</span>
           <span><Gauge size={14} /> {gpu ? `${(gpu.memoryUsedMb / 1024).toFixed(1)} / ${(gpu.memoryTotalMb / 1024).toFixed(1)} GB` : 'GPU telemetry —'}</span>
-          <button className="primary-action" onClick={() => void refreshAll()} disabled={busy}><RefreshCw size={14} /> Sync</button>
+          <button className="primary-action" onClick={() => void refreshAll()} disabled={busy || autopilotBlocking}><RefreshCw size={14} /> Sync</button>
         </div>
       </header>
 
@@ -379,6 +638,36 @@ export function App() {
           <button onClick={() => void refreshAll()}>Retry</button>
         </div>
       ) : null}
+
+      {autopilot.status !== 'idle' ? (
+        <div className={`autopilot-banner autopilot-banner--${autopilot.status}`}>
+          <div className="autopilot-banner__identity">
+            <span className="autopilot-orb"><BrainCircuit size={15} /></span>
+            <div>
+              <strong>{autopilot.title || 'AI Director'}</strong>
+              <span>{autopilot.activity || 'Preparing workflow control'}</span>
+            </div>
+          </div>
+          <div className="autopilot-banner__progress">
+            <span><MousePointer2 size={12} /> AI has workflow control</span>
+            <div><i style={{ width: `${autopilotProgress}%` }} /></div>
+            <small>{autopilot.stepCount ? `${autopilot.stepIndex}/${autopilot.stepCount}` : '—'} · Esc always returns control</small>
+          </div>
+          <div className="autopilot-banner__actions">
+            {autopilot.status === 'waiting_approval' ? (
+              <button className="autopilot-continue" onClick={approveAutopilotCheckpoint}><ShieldCheck size={13} /> Continue</button>
+            ) : autopilot.status === 'paused' ? (
+              <button onClick={resumeAutopilot}><Play size={13} /> Resume</button>
+            ) : autopilotBlocking ? (
+              <button onClick={pauseAutopilot}><Pause size={13} /> Pause</button>
+            ) : null}
+            {autopilotBlocking ? <button className="autopilot-stop" onClick={stopAutopilot}><CircleStop size={13} /> Take back control</button> : null}
+          </div>
+        </div>
+      ) : null}
+
+      {autopilotBlocking ? <div className="autopilot-interaction-lock" aria-hidden="true" /> : null}
+      <VirtualCursor state={cursor} />
 
       <section className="workspace">
         <aside className="director-panel">
@@ -394,6 +683,26 @@ export function App() {
             <div className="message message--user">
               Select a scene, character, or shot. The workflow reads authoritative state from the native C++ engine while canvas layout remains a separate local workspace preference.
             </div>
+
+            <div className="autopilot-card">
+              <div className="autopilot-card__head">
+                <span className="autopilot-card__icon"><BrainCircuit size={16} /></span>
+                <div>
+                  <strong>Don’t know workflows?</strong>
+                  <span>Let the AI Director take the controls.</span>
+                </div>
+              </div>
+              <p>It can focus, inspect and physically organize nodes with a visible virtual cursor. Your semantic project stays protected unless a validated native operation is explicitly part of the plan.</p>
+              <div className="autopilot-card__trust">
+                <span><ShieldCheck size={11} /> typed plan</span>
+                <span><MousePointer2 size={11} /> visible actions</span>
+                <span><CircleStop size={11} /> instant takeover</span>
+              </div>
+              <button className="autopilot-start" onClick={startWorkspaceAutopilot} disabled={!snapshot || !health || autopilotBlocking}>
+                <Sparkles size={14} /> Let AI drive this workflow
+              </button>
+            </div>
+
             <div className="message message--system">
               <span className="message__title"><Sparkles size={14} /> Native impact preview</span>
               {selected
@@ -405,16 +714,16 @@ export function App() {
                 <span>{impact ? `${impact.alreadyStale.length} already stale` : 'incremental only'}</span>
               </div>
               <div className="message-actions">
-                <button onClick={() => void previewImpact()} disabled={!selected || busy}>Preview impact</button>
+                <button onClick={() => void previewImpact()} disabled={!selected || busy || autopilotBlocking}>Preview impact</button>
                 <button
                   className="message-actions__approve"
                   onClick={approveSelected}
-                  disabled={!selected || selected.locked || selected.stale || selected.approval === 'approved' || busy}
+                  disabled={!selected || selected.locked || selected.stale || selected.approval === 'approved' || busy || autopilotBlocking}
                 >Approve node</button>
               </div>
             </div>
             <div className="director-note">
-              Claude/Codex natural-language provider wiring is intentionally not faked yet. It will submit validated operations through this same native boundary.
+              Claude/Codex authentication is still intentionally not faked. Their future output plugs into the same validated Autopilot plan and native command boundary already used here.
             </div>
           </div>
 
@@ -434,8 +743,8 @@ export function App() {
             <div className="canvas-toolbar__right">
               <span className="layout-status"><GripVertical size={12} /> {layoutStatus}</span>
               <div className="canvas-tools">
-                <button onClick={arrangeWorkflow} disabled={!snapshot} title="Restore dependency-aware layout"><LayoutGrid size={12} /> Arrange</button>
-                <button onClick={fitWorkflow} disabled={!snapshot} title="Fit workflow to viewport"><Scan size={12} /> Fit <kbd>F</kbd></button>
+                <button onClick={() => void arrangeWorkflow()} disabled={!snapshot || autopilotBlocking} title="Restore dependency-aware layout"><LayoutGrid size={12} /> Arrange</button>
+                <button onClick={() => void fitWorkflow()} disabled={!snapshot || autopilotBlocking} title="Fit workflow to viewport"><Scan size={12} /> Fit <kbd>F</kbd></button>
               </div>
               <div className="view-tabs">
                 <button className="view-tab view-tab--active">Workflow</button>
@@ -457,19 +766,23 @@ export function App() {
                 maxZoom={1.8}
                 snapToGrid
                 snapGrid={[8, 8]}
-                nodesDraggable
+                nodesDraggable={!autopilotBlocking}
                 nodesConnectable={false}
-                onNodeClick={(_, node) => focusNode(node.id)}
-                onNodeDoubleClick={(_, node) => focusNode(node.id, true)}
-                onNodeDragStart={(_, node) => { focusNode(node.id); setLayoutStatus('Repositioning node…'); }}
-                onNodeDragStop={(_, node) => persistLayout(node.id, node.position)}
-                elementsSelectable
+                onNodeClick={(_, node) => { if (!autopilotBlocking) void focusNode(node.id); }}
+                onNodeDoubleClick={(_, node) => { if (!autopilotBlocking) void focusNode(node.id, true); }}
+                onNodeDragStart={(_, node) => {
+                  if (autopilotBlocking) return;
+                  void focusNode(node.id);
+                  setLayoutStatus('Repositioning node…');
+                }}
+                onNodeDragStop={(_, node) => { if (!autopilotBlocking) persistLayout(node.id, node.position); }}
+                elementsSelectable={!autopilotBlocking}
                 proOptions={{ hideAttribution: true }}
               >
                 <Background gap={28} size={1} />
                 <MiniMap
-                  pannable
-                  zoomable
+                  pannable={!autopilotBlocking}
+                  zoomable={!autopilotBlocking}
                   nodeColor={(node) => node.id === selectedId ? '#8f7cf3' : '#272d3a'}
                   maskColor="rgba(5, 7, 12, .78)"
                 />
@@ -492,7 +805,8 @@ export function App() {
                   <button
                     key={scene.id}
                     className={`scene-chip scene-chip--${state} ${selectedId === scene.id ? 'scene-chip--selected' : ''}`}
-                    onClick={() => focusNode(scene.id, true)}
+                    onClick={() => { if (!autopilotBlocking) void focusNode(scene.id, true); }}
+                    disabled={autopilotBlocking}
                   >
                     <span>{scene.locked ? <Lock size={11} /> : null} S{String(metadataNumber(scene, 'index') || index + 1).padStart(2, '0')}</span>
                     <small>{state} · {formatDuration(metadataNumber(scene, 'durationSeconds'))}</small>
@@ -549,10 +863,10 @@ export function App() {
           </div>
 
           <div className="inspector-actions">
-            <button className="secondary-action" onClick={() => selected && focusNode(selected.id, true)} disabled={!selected}>
+            <button className="secondary-action" onClick={() => selected && void focusNode(selected.id, true)} disabled={!selected || autopilotBlocking}>
               <Scan size={14} /> Focus selected node
             </button>
-            <button className="secondary-action" onClick={toggleSelectedLock} disabled={!selected || busy}>
+            <button className="secondary-action" onClick={toggleSelectedLock} disabled={!selected || busy || autopilotBlocking}>
               {selected?.locked ? <Unlock size={14} /> : <Lock size={14} />}
               {selected?.locked ? 'Unlock selected node' : 'Lock selected node'}
             </button>
