@@ -3,6 +3,16 @@ import type { ImpactReport, ProjectCommand } from '@makewatch/contracts';
 import { AutopilotCancelledError, AutopilotExecutionControl, controlledDelay } from './autopilotControl';
 import type { AutopilotPlan, AutopilotStep, AutopilotUiState } from './autopilotTypes';
 
+const DEFAULT_STEP_DEADLINE_MS = 10_000;
+const APPLY_STEP_DEADLINE_MS = 15_000;
+
+class AutopilotStepTimeoutError extends Error {
+  constructor(stepId: string, timeoutMs: number) {
+    super(`autopilot step ${stepId} exceeded ${timeoutMs} ms execution budget`);
+    this.name = 'AutopilotStepTimeoutError';
+  }
+}
+
 export interface AutopilotRuntime {
   announce(message: string): void;
   focusNode(nodeId: string, zoom?: number): Promise<void>;
@@ -27,6 +37,35 @@ function stepActivity(step: AutopilotStep) {
     case 'applyCommands': return step.reason;
     case 'checkpoint': return step.message;
     case 'wait': return 'Reviewing the current state';
+  }
+}
+
+function stepDeadline(step: AutopilotStep) {
+  if (step.type === 'applyCommands') return APPLY_STEP_DEADLINE_MS;
+  return DEFAULT_STEP_DEADLINE_MS;
+}
+
+async function runBoundedStep(
+  step: AutopilotStep,
+  control: AutopilotExecutionControl,
+  action: () => Promise<void>,
+) {
+  const timeoutMs = stepDeadline(step);
+  let timeoutId = 0;
+
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = window.setTimeout(() => reject(new AutopilotStepTimeoutError(step.id, timeoutMs)), timeoutMs);
+  });
+
+  try {
+    await Promise.race([action(), timeout]);
+  } catch (error) {
+    if (error instanceof AutopilotStepTimeoutError) {
+      control.cancel();
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
   }
 }
 
@@ -69,22 +108,27 @@ export async function executeAutopilotPlan(
           await controlledDelay(control, step.holdMs ?? 650);
           break;
         case 'focusNode':
-          await runtime.focusNode(step.nodeId, step.zoom);
+          await runBoundedStep(step, control, () => runtime.focusNode(step.nodeId, step.zoom));
           break;
         case 'dragNode':
-          await runtime.dragNode(step.nodeId, step.to, step.durationMs ?? 680, activity);
+          await runBoundedStep(step, control, () => runtime.dragNode(step.nodeId, step.to, step.durationMs ?? 680, activity));
           break;
         case 'previewImpact':
-          await runtime.previewImpact(step.nodeId);
+          await runBoundedStep(step, control, async () => {
+            await runtime.previewImpact(step.nodeId);
+          });
           break;
         case 'arrangeWorkflow':
-          await runtime.arrangeWorkflow();
+          await runBoundedStep(step, control, runtime.arrangeWorkflow);
           break;
         case 'fitWorkflow':
-          await runtime.fitWorkflow();
+          await runBoundedStep(step, control, runtime.fitWorkflow);
           break;
         case 'applyCommands':
-          await runtime.applyCommands(step.commands, { planId: plan.planId, reason: step.reason });
+          await runBoundedStep(step, control, () => runtime.applyCommands(step.commands, {
+            planId: plan.planId,
+            reason: step.reason,
+          }));
           break;
         case 'checkpoint': {
           runtime.setUiState({
@@ -103,13 +147,25 @@ export async function executeAutopilotPlan(
       }
     }
 
+    await control.checkpoint();
     runtime.setUiState({
       ...base,
       status: 'completed',
       stepIndex: plan.steps.length,
-      activity: 'AI Director finished the workflow pass',
+      activity: 'Workflow pass complete · returning control',
     });
   } catch (error) {
+    if (error instanceof AutopilotStepTimeoutError) {
+      runtime.setUiState({
+        ...base,
+        status: 'failed',
+        stepIndex: 0,
+        activity: 'AI Director stopped a stalled workflow step safely',
+        error: error.message,
+      });
+      throw error;
+    }
+
     if (error instanceof AutopilotCancelledError || control.signal.aborted) {
       runtime.setUiState({
         ...base,
