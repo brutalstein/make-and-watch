@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <string>
 #include <vector>
 
 #include "makewatch/core/status.hpp"
@@ -8,6 +9,24 @@
 #include "makewatch/project/snapshot.hpp"
 
 namespace makewatch::persistence {
+
+enum class CommitActor {
+  kUser,
+  kAiDirector,
+  kSystem,
+};
+
+struct CommitContext final {
+  CommitActor actor{CommitActor::kSystem};
+  std::string source;
+  std::string plan_id;
+  std::string reason;
+};
+
+struct JournalRecord final {
+  project::Event event;
+  CommitContext context;
+};
 
 struct LoadSnapshotResult final {
   core::Status status;
@@ -18,7 +37,7 @@ struct LoadSnapshotResult final {
 
 struct LoadJournalResult final {
   core::Status status;
-  std::vector<project::Event> events;
+  std::vector<JournalRecord> records;
 
   [[nodiscard]] bool ok() const noexcept { return status.ok(); }
 };
@@ -31,13 +50,13 @@ class SnapshotStore {
   [[nodiscard]] virtual LoadSnapshotResult load() = 0;
 
   // A persistence implementation may override this to atomically commit the
-  // authoritative snapshot and its append-only event journal. The default
-  // preserves compatibility for in-memory/test stores while keeping semantic
-  // correctness owned by ProjectSession.
+  // authoritative snapshot, its append-only event journal, and commit provenance.
   [[nodiscard]] virtual core::Status save_commit(
       const project::ProjectSnapshot& snapshot,
-      const std::vector<project::Event>& events) {
+      const std::vector<project::Event>& events,
+      const CommitContext& context = {}) {
     static_cast<void>(events);
+    static_cast<void>(context);
     return save(snapshot);
   }
 
