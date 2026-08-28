@@ -8,8 +8,9 @@ This folder is the canonical context handoff for **Make & Watch**. A new enginee
 2. `ARCHITECTURE.md` — system boundaries and dependency direction.
 3. `INVARIANTS.md` — rules that must remain true as the repository grows.
 4. `DECISIONS.md` — architecture decisions already made.
-5. `ROADMAP.md` — milestone sequence and quality gates.
-6. `HANDOFF.md` — current repository state and immediate continuation point.
+5. `QUALITY_GATES.md` — objective standards behind the project's quality target.
+6. `ROADMAP.md` — milestone sequence and quality gates.
+7. `HANDOFF.md` — current repository state and immediate continuation point.
 
 ## One-sentence product definition
 
