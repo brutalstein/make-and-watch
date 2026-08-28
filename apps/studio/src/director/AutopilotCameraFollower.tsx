@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useReactFlow, type Node, type XYPosition } from '@xyflow/react';
 
+import { AUTOPILOT_PRESENTATION_FPS } from './cinematicMotion';
 import type { CursorVisualState } from './autopilotTypes';
 
 export interface CameraFrame {
@@ -12,10 +13,11 @@ export interface CameraFrame {
 
 const FALLBACK_NODE_WIDTH = 235;
 const FALLBACK_NODE_HEIGHT = 82;
-const FOLLOW_EPSILON = 1.25;
-const MOTION_GRACE_MS = 220;
-const MIN_AUTOPILOT_ZOOM = 0.46;
-const MAX_AUTOPILOT_ZOOM = 1.16;
+const FOLLOW_EPSILON = 2;
+const MOTION_GRACE_MS = 260;
+const MIN_AUTOPILOT_ZOOM = 0.48;
+const MAX_AUTOPILOT_ZOOM = 1.14;
+const VIEWPORT_FRAME_MS = 1000 / AUTOPILOT_PRESENTATION_FPS;
 
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.min(maximum, Math.max(minimum, value));
@@ -84,11 +86,11 @@ interface AutopilotCameraFollowerProps {
 /**
  * Presentation-only camera controller for AI takeover.
  *
- * Search motion widens the shot so distant workflow areas become legible;
- * active drag motion gently tightens it again. The selected semantic node is
- * the anchor, so viewport motion never changes project truth or workspace
- * coordinates. Camera ownership is released as soon as cursor motion settles,
- * allowing explicit focus/fit commands to run without fighting this loop.
+ * The loop may observe browser frames at the display refresh rate, but viewport
+ * writes are budgeted to the same 24 FPS cadence as cursor/node presentation.
+ * Only one React Flow viewport write may be outstanding at once. This prevents
+ * camera promises from piling up when React is busy and removes a major source
+ * of visible freezes on larger workflows.
  */
 export function AutopilotCameraFollower({ state }: AutopilotCameraFollowerProps) {
   const reactFlow = useReactFlow();
@@ -100,6 +102,8 @@ export function AutopilotCameraFollower({ state }: AutopilotCameraFollowerProps)
   const surfaceRef = useRef<HTMLElement | null>(null);
   const activeClassRef = useRef(false);
   const engagedClassRef = useRef(false);
+  const lastViewportWriteRef = useRef(0);
+  const viewportWritePendingRef = useRef(false);
 
   useEffect(() => {
     stateRef.current = state;
@@ -108,11 +112,13 @@ export function AutopilotCameraFollower({ state }: AutopilotCameraFollowerProps)
       previousCursorRef.current = null;
       motionUntilRef.current = 0;
       homeZoomRef.current = null;
+      lastViewportWriteRef.current = 0;
     }
   }, [state]);
 
   useEffect(() => {
     let animationFrame = 0;
+    let disposed = false;
 
     const setSurfaceClass = (className: string, active: boolean, stateHolder: { current: boolean }) => {
       if (stateHolder.current === active) return;
@@ -150,7 +156,7 @@ export function AutopilotCameraFollower({ state }: AutopilotCameraFollowerProps)
       const rawCursor = { x: current.x, y: current.y };
       const previousCursor = previousCursorRef.current;
       const cursorTravel = previousCursor ? distance(previousCursor, rawCursor) : 0;
-      const cursorMoved = cursorTravel > 0.35;
+      const cursorMoved = cursorTravel > 0.45;
       previousCursorRef.current = rawCursor;
       if (cursorMoved) motionUntilRef.current = now + MOTION_GRACE_MS;
 
@@ -168,6 +174,14 @@ export function AutopilotCameraFollower({ state }: AutopilotCameraFollowerProps)
       const cursorDrivingCamera = current.pressed || cursorMoved || now < motionUntilRef.current;
       if (!cursorDrivingCamera) {
         setFollowingClass(false);
+        animationFrame = requestAnimationFrame(tick);
+        return;
+      }
+
+      // Observe every display frame for responsiveness, but mutate the React
+      // Flow viewport only on the bounded presentation cadence and never while
+      // a previous write is still resolving.
+      if (viewportWritePendingRef.current || now - lastViewportWriteRef.current < VIEWPORT_FRAME_MS) {
         animationFrame = requestAnimationFrame(tick);
         return;
       }
@@ -191,23 +205,20 @@ export function AutopilotCameraFollower({ state }: AutopilotCameraFollowerProps)
 
       const viewport = reactFlow.getViewport();
       const homeZoom = homeZoomRef.current ?? viewport.zoom;
-      // Travelling to find a node uses a wider composition. Once the AI presses
-      // and starts manipulating the node, tighten the shot slightly so the
-      // action feels intentional rather than like a static map pan.
       const targetZoom = clamp(
-        current.pressed ? homeZoom * 0.92 : homeZoom * 0.76,
+        current.pressed ? homeZoom * 0.94 : homeZoom * 0.82,
         MIN_AUTOPILOT_ZOOM,
-        current.pressed ? 1.04 : 0.92,
+        current.pressed ? 1.04 : 0.94,
       );
-      const zoomDelta = boundedStep(targetZoom - viewport.zoom, 0.16, 0.026);
+      const zoomDelta = boundedStep(targetZoom - viewport.zoom, 0.11, 0.014);
       const nextZoom = clamp(viewport.zoom + zoomDelta, MIN_AUTOPILOT_ZOOM, MAX_AUTOPILOT_ZOOM);
-      const needsZoom = Math.abs(nextZoom - viewport.zoom) > 0.001;
+      const needsZoom = Math.abs(nextZoom - viewport.zoom) > 0.0015;
       const needsPan = Math.abs(errorX) > FOLLOW_EPSILON || Math.abs(errorY) > FOLLOW_EPSILON;
 
       setFollowingClass(needsPan || needsZoom);
       if (needsPan || needsZoom) {
-        const panGain = current.pressed ? 0.30 : 0.22;
-        const maxPanStep = current.pressed ? 44 : 36;
+        const panGain = current.pressed ? 0.22 : 0.16;
+        const maxPanStep = current.pressed ? 30 : 24;
         const stepX = boundedStep(errorX, panGain, maxPanStep);
         const stepY = boundedStep(errorY, panGain, maxPanStep);
         const nextAnchorScreen = {
@@ -215,18 +226,19 @@ export function AutopilotCameraFollower({ state }: AutopilotCameraFollowerProps)
           y: selectedScreen.y + stepY,
         };
 
-        // flowToScreenPosition = flow * zoom + viewport translation + pane
-        // offset. Recover that offset from the current transform so zooming can
-        // preserve the selected node's screen anchor without visible jumping.
         const paneOffsetX = selectedScreen.x - (anchor.x * viewport.zoom + viewport.x);
         const paneOffsetY = selectedScreen.y - (anchor.y * viewport.zoom + viewport.y);
         const nextViewportX = nextAnchorScreen.x - paneOffsetX - anchor.x * nextZoom;
         const nextViewportY = nextAnchorScreen.y - paneOffsetY - anchor.y * nextZoom;
 
+        lastViewportWriteRef.current = now;
+        viewportWritePendingRef.current = true;
         void reactFlow.setViewport({
           x: nextViewportX,
           y: nextViewportY,
           zoom: nextZoom,
+        }).finally(() => {
+          if (!disposed) viewportWritePendingRef.current = false;
         });
       }
 
@@ -235,10 +247,12 @@ export function AutopilotCameraFollower({ state }: AutopilotCameraFollowerProps)
 
     animationFrame = requestAnimationFrame(tick);
     return () => {
+      disposed = true;
       cancelAnimationFrame(animationFrame);
       surfaceRef.current?.classList.remove('flow-surface--ai-following', 'flow-surface--ai-engaged');
       activeClassRef.current = false;
       engagedClassRef.current = false;
+      viewportWritePendingRef.current = false;
     };
   }, [reactFlow]);
 
