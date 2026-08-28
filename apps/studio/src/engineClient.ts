@@ -25,6 +25,12 @@ interface FailureEnvelope {
 
 type Envelope<T> = SuccessEnvelope<T> | FailureEnvelope;
 
+export interface ProjectCommitContext {
+  actor?: 'user' | 'ai_director' | 'system';
+  planId?: string;
+  reason?: string;
+}
+
 export class EngineBridgeError extends Error {
   constructor(public readonly code: string, message: string) {
     super(message);
@@ -50,8 +56,8 @@ export const engineClient = {
     method: 'POST',
     body: JSON.stringify({ source }),
   }),
-  apply: (commands: ProjectCommand[]) => request<ApplyProjectResult>('/project/apply', {
+  apply: (commands: ProjectCommand[], context?: ProjectCommitContext) => request<ApplyProjectResult>('/project/apply', {
     method: 'POST',
-    body: JSON.stringify({ commands }),
+    body: JSON.stringify({ commands, context }),
   }),
 };
