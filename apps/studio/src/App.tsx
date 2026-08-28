@@ -16,6 +16,7 @@ import type {
   ImpactReport,
   ProjectCommand,
   ProjectGraphSnapshot,
+  ProjectHistoryTransaction,
   ProjectNode,
   ProjectNodeKind,
   SystemTelemetry,
@@ -31,6 +32,7 @@ import {
   Film,
   Gauge,
   GripVertical,
+  History,
   Layers3,
   LayoutGrid,
   Lock,
@@ -58,8 +60,16 @@ import {
   type CursorVisualState,
 } from './director/autopilotTypes';
 import { validateAutopilotPlan } from './director/autopilotValidation';
-import { animateCursor, easeInOutCubic } from './director/cinematicMotion';
-import { VirtualCursor } from './director/VirtualCursor';
+import {
+  animateCursor,
+  durationForDistance,
+  runDeterministicAnimation,
+} from './director/cinematicMotion';
+import {
+  INITIAL_VIRTUAL_CURSOR_STATE,
+  setVirtualCursorState,
+  VirtualCursor,
+} from './director/VirtualCursor';
 import {
   defaultWorkflowPositions,
   resolveWorkflowPositions,
@@ -178,10 +188,32 @@ function isAutopilotBlocking(state: AutopilotUiState) {
     || state.status === 'waiting_approval';
 }
 
+function historyActorLabel(transaction: ProjectHistoryTransaction) {
+  if (transaction.actor === 'ai_director') return 'AI Director';
+  if (transaction.actor === 'user') return 'You';
+  return 'System';
+}
+
+function historyActorIcon(transaction: ProjectHistoryTransaction) {
+  if (transaction.actor === 'ai_director') return <BrainCircuit size={11} />;
+  if (transaction.actor === 'user') return <UserRound size={11} />;
+  return <Cpu size={11} />;
+}
+
+function historyChangeCount(transaction: ProjectHistoryTransaction) {
+  return transaction.events.filter((event) => event.type !== 'transaction.committed').length;
+}
+
+function historyPrimaryEntity(transaction: ProjectHistoryTransaction) {
+  return transaction.events.find((event) => event.entityId)?.entityId ?? null;
+}
+
 export function App() {
   const [snapshot, setSnapshot] = useState<ProjectGraphSnapshot | null>(null);
   const [health, setHealth] = useState<EngineHealth | null>(null);
   const [telemetry, setTelemetry] = useState<SystemTelemetry | null>(null);
+  const [history, setHistory] = useState<ProjectHistoryTransaction[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [impact, setImpact] = useState<ImpactReport | null>(null);
   const [busy, setBusy] = useState(false);
@@ -190,16 +222,8 @@ export function App() {
   const [flowNodes, setFlowNodes, onFlowNodesChange] = useNodesState<FlowNode>([]);
   const [layoutStatus, setLayoutStatus] = useState('Drag nodes · layout auto-saves');
   const [autopilot, setAutopilot] = useState<AutopilotUiState>(IDLE_AUTOPILOT_STATE);
-  const [cursor, setCursor] = useState<CursorVisualState>({
-    visible: false,
-    x: 0,
-    y: 0,
-    pressed: false,
-    pulse: 0,
-    label: '',
-  });
 
-  const cursorRef = useRef(cursor);
+  const cursorRef = useRef<CursorVisualState>(INITIAL_VIRTUAL_CURSOR_STATE);
   const autopilotControlRef = useRef<AutopilotExecutionControl | null>(null);
   const checkpointResolverRef = useRef<((approved: boolean) => void) | null>(null);
 
@@ -208,19 +232,33 @@ export function App() {
 
   const updateCursor = useCallback((next: CursorVisualState) => {
     cursorRef.current = next;
-    setCursor(next);
+    setVirtualCursorState(next);
+  }, []);
+
+  const refreshHistory = useCallback(async () => {
+    setHistoryLoading(true);
+    try {
+      const result = await engineClient.history(10);
+      setHistory(result.transactions);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setHistoryLoading(false);
+    }
   }, []);
 
   const refreshAll = useCallback(async () => {
     try {
-      const [nextHealth, nextSnapshot, nextTelemetry] = await Promise.all([
+      const [nextHealth, nextSnapshot, nextTelemetry, nextHistory] = await Promise.all([
         engineClient.health(),
         engineClient.snapshot(),
         engineClient.system(),
+        engineClient.history(10),
       ]);
       setHealth(nextHealth);
       setSnapshot(nextSnapshot);
       setTelemetry(nextTelemetry);
+      setHistory(nextHistory.transactions);
       setError(null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -277,13 +315,13 @@ export function App() {
         source: edge.dependency,
         target: edge.dependent,
         type: 'smoothstep',
-        animated: stale,
+        animated: stale && !autopilotBlocking,
         className: stale ? 'workflow-edge workflow-edge--stale' : 'workflow-edge',
         markerEnd: { type: MarkerType.ArrowClosed, color, width: 13, height: 13 },
         style: { stroke: color },
       };
     });
-  }, [snapshot]);
+  }, [autopilotBlocking, snapshot]);
 
   const persistLayout = useCallback((nodeId: string, position: XYPosition) => {
     if (!layoutKey) return;
@@ -297,7 +335,7 @@ export function App() {
 
   const fitWorkflow = useCallback(async () => {
     if (!flowInstance) return;
-    await flowInstance.fitView({ padding: 0.14, duration: 320, maxZoom: 1.15 });
+    await flowInstance.fitView({ padding: 0.14, duration: 520, maxZoom: 1.12 });
   }, [flowInstance]);
 
   const arrangeWorkflow = useCallback(async () => {
@@ -323,13 +361,13 @@ export function App() {
     if (!target) return;
     await flowInstance.setCenter(target.position.x + 118, target.position.y + 42, {
       zoom,
-      duration: 320,
+      duration: 520,
     });
   }, [flowInstance, flowNodes, setFlowNodes]);
 
   const applyCommands = useCallback(async (
     commands: ProjectCommand[],
-    context?: { actor?: 'user' | 'ai_director' | 'system'; planId?: string; reason?: string },
+    context?: { actor?: 'user' | 'ai_director' | 'system'; source?: string; planId?: string; reason?: string },
   ) => {
     setBusy(true);
     try {
@@ -338,6 +376,7 @@ export function App() {
       setHealth((current) => current ? { ...current, projectRevision: result.projectRevision, nodeCount: result.snapshot.nodes.length } : current);
       setImpact(null);
       setError(null);
+      void engineClient.history(10).then((next) => setHistory(next.transactions)).catch(() => undefined);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
       throw reason;
@@ -373,7 +412,7 @@ export function App() {
       id: selected.id,
       expectedRevision: selected.revision,
       approval: 'approved',
-    }], { actor: 'user', reason: 'manual Studio approval' });
+    }], { actor: 'user', source: 'studio-inspector', reason: 'manual Studio approval' });
   }, [applyCommands, selected]);
 
   const toggleSelectedLock = useCallback(() => {
@@ -383,7 +422,11 @@ export function App() {
       id: selected.id,
       expectedRevision: selected.revision,
       locked: !selected.locked,
-    }], { actor: 'user', reason: selected.locked ? 'manual Studio unlock' : 'manual Studio lock' });
+    }], {
+      actor: 'user',
+      source: 'studio-inspector',
+      reason: selected.locked ? 'manual Studio unlock' : 'manual Studio lock',
+    });
   }, [applyCommands, selected]);
 
   const locateNodeCenter = useCallback((nodeId: string) => {
@@ -394,7 +437,7 @@ export function App() {
     return { x: rect.left + rect.width * 0.52, y: rect.top + Math.min(34, rect.height * 0.42) };
   }, []);
 
-  const moveCursorToNode = useCallback(async (nodeId: string, label: string, duration = 420) => {
+  const moveCursorToNode = useCallback(async (nodeId: string, label: string, duration?: number) => {
     const control = autopilotControlRef.current;
     if (!control) throw new AutopilotCancelledError();
     const center = locateNodeCenter(nodeId);
@@ -402,7 +445,13 @@ export function App() {
     const start = cursorRef.current.visible
       ? cursorRef.current
       : { ...cursorRef.current, visible: true, x: window.innerWidth * 0.56, y: 82, label };
-    await animateCursor(start, center, duration, label, control, updateCursor);
+    const travel = Math.hypot(center.x - start.x, center.y - start.y);
+    const travelDuration = duration ?? durationForDistance(travel, {
+      speedPxPerSecond: 470,
+      minimumMs: 520,
+      maximumMs: 1450,
+    });
+    await animateCursor(start, center, travelDuration, label, control, updateCursor);
   }, [locateNodeCenter, updateCursor]);
 
   const autopilotDragNode = useCallback(async (
@@ -414,37 +463,43 @@ export function App() {
     const control = autopilotControlRef.current;
     if (!control) throw new AutopilotCancelledError();
     await focusNode(nodeId, false);
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    await moveCursorToNode(nodeId, label, 360);
+    await controlledDelay(control, 100);
+    await moveCursorToNode(nodeId, label);
 
     const source = flowNodes.find((node) => node.id === nodeId);
     if (!source) throw new Error(`workflow node ${nodeId} does not exist`);
-    const viewport = flowInstance?.getViewport() ?? { x: 0, y: 0, zoom: 1 };
-    const cursorStart = cursorRef.current;
-    const started = performance.now();
-    const duration = Math.max(160, durationMs);
-    updateCursor({ ...cursorStart, pressed: true, pulse: cursorStart.pulse + 1, label });
 
-    while (true) {
-      await control.checkpoint();
-      const progress = Math.min(1, (performance.now() - started) / duration);
-      const eased = easeInOutCubic(progress);
+    let previousPosition = source.position;
+    updateCursor({
+      ...cursorRef.current,
+      visible: true,
+      pressed: true,
+      pulse: cursorRef.current.pulse + 1,
+      label,
+    });
+
+    await runDeterministicAnimation(durationMs, control, (eased) => {
       const nextPosition = {
         x: source.position.x + (to.x - source.position.x) * eased,
         y: source.position.y + (to.y - source.position.y) * eased,
       };
+      const zoom = flowInstance?.getViewport().zoom ?? 1;
+      const delta = {
+        x: nextPosition.x - previousPosition.x,
+        y: nextPosition.y - previousPosition.y,
+      };
+      previousPosition = nextPosition;
+
       setFlowNodes((nodes) => nodes.map((node) => node.id === nodeId ? { ...node, position: nextPosition } : node));
       updateCursor({
-        ...cursorStart,
+        ...cursorRef.current,
         visible: true,
         pressed: true,
-        x: cursorStart.x + (to.x - source.position.x) * viewport.zoom * eased,
-        y: cursorStart.y + (to.y - source.position.y) * viewport.zoom * eased,
+        x: cursorRef.current.x + delta.x * zoom,
+        y: cursorRef.current.y + delta.y * zoom,
         label,
       });
-      if (progress >= 1) break;
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    }
+    });
 
     if (layoutKey) {
       setFlowNodes((nodes) => {
@@ -454,7 +509,7 @@ export function App() {
       });
     }
     updateCursor({ ...cursorRef.current, pressed: false, pulse: cursorRef.current.pulse + 1, label });
-    await controlledDelay(control, 160);
+    await controlledDelay(control, 240);
   }, [flowInstance, flowNodes, focusNode, layoutKey, moveCursorToNode, setFlowNodes, updateCursor]);
 
   const stopAutopilot = useCallback(() => {
@@ -524,33 +579,36 @@ export function App() {
     const runtime: AutopilotRuntime = {
       announce: (message) => updateCursor({ ...cursorRef.current, label: message }),
       focusNode: async (nodeId, zoom) => {
-        await focusNode(nodeId, true, zoom ?? 1.08);
-        await controlledDelay(control, 90);
+        await focusNode(nodeId, true, zoom ?? 1.04);
+        await controlledDelay(control, 180);
         await moveCursorToNode(nodeId, `Inspecting ${snapshot.nodes.find((node) => node.id === nodeId)?.title ?? nodeId}`);
         updateCursor({ ...cursorRef.current, pulse: cursorRef.current.pulse + 1, pressed: false });
       },
       dragNode: autopilotDragNode,
       previewImpact: async (nodeId) => {
-        await moveCursorToNode(nodeId, 'Checking dependency impact', 260);
+        await moveCursorToNode(nodeId, 'Checking dependency impact');
         updateCursor({ ...cursorRef.current, pressed: true, pulse: cursorRef.current.pulse + 1 });
         const report = await previewImpactFor(nodeId);
         updateCursor({ ...cursorRef.current, pressed: false, pulse: cursorRef.current.pulse + 1, label: `${report.affected.length} downstream entities checked` });
-        await controlledDelay(control, 520);
+        await controlledDelay(control, 640);
         return report;
       },
       arrangeWorkflow: async () => {
         updateCursor({ ...cursorRef.current, label: 'Applying dependency-aware layout' });
+        await controlledDelay(control, 180);
         await arrangeWorkflow();
-        await controlledDelay(control, 380);
+        await controlledDelay(control, 520);
       },
       fitWorkflow: async () => {
         updateCursor({ ...cursorRef.current, label: 'Framing the full workflow' });
+        await controlledDelay(control, 150);
         await fitWorkflow();
-        await controlledDelay(control, 360);
+        await controlledDelay(control, 300);
       },
       applyCommands: async (commands, context) => {
         await applyCommands(commands, {
           actor: 'ai_director',
+          source: 'studio-autopilot',
           planId: context.planId,
           reason: context.reason,
         });
@@ -566,14 +624,14 @@ export function App() {
       void executeAutopilotPlan(plan, runtime, control)
         .then(() => {
           if (autopilotControlRef.current === control) autopilotControlRef.current = null;
-          window.setTimeout(() => updateCursor({ ...cursorRef.current, visible: false, pressed: false, label: '' }), 900);
+          window.setTimeout(() => updateCursor({ ...cursorRef.current, visible: false, pressed: false, label: '' }), 650);
         })
         .catch((reason) => {
           if (!(reason instanceof AutopilotCancelledError)) setError(reason instanceof Error ? reason.message : String(reason));
           if (autopilotControlRef.current === control) autopilotControlRef.current = null;
           updateCursor({ ...cursorRef.current, visible: false, pressed: false, label: '' });
         });
-    }, 180);
+    }, 260);
   }, [applyCommands, arrangeWorkflow, autopilotBlocking, autopilotDragNode, fitWorkflow, flowInstance, flowNodes, focusNode, moveCursorToNode, previewImpactFor, snapshot, updateCursor]);
 
   useEffect(() => {
@@ -667,7 +725,7 @@ export function App() {
       ) : null}
 
       {autopilotBlocking ? <div className="autopilot-interaction-lock" aria-hidden="true" /> : null}
-      <VirtualCursor state={cursor} />
+      <VirtualCursor />
 
       <section className="workspace">
         <aside className="director-panel">
@@ -852,6 +910,44 @@ export function App() {
               ))}
             </div>
           ) : null}
+
+          <div className="inspector-section inspector-section--activity">
+            <div className="activity-heading">
+              <div>
+                <span className="kicker">DURABLE ACTIVITY</span>
+                <small>Native journal · newest first</small>
+              </div>
+              <button onClick={() => void refreshHistory()} disabled={historyLoading || autopilotBlocking} title="Refresh native history">
+                <RefreshCw size={11} className={historyLoading ? 'spin' : ''} />
+              </button>
+            </div>
+            <div className="activity-feed">
+              {history.length === 0 ? (
+                <div className="activity-empty"><History size={14} /> No committed history yet</div>
+              ) : history.slice(0, 6).map((transaction) => {
+                const primaryEntity = historyPrimaryEntity(transaction);
+                const canFocus = Boolean(primaryEntity && snapshot?.nodes.some((node) => node.id === primaryEntity));
+                const title = transaction.reason || transaction.source || 'Native project transaction';
+                return (
+                  <button
+                    key={`${transaction.projectRevision}-${transaction.actor}-${transaction.planId}`}
+                    className={`activity-entry activity-entry--${transaction.actor}`}
+                    onClick={() => {
+                      if (!autopilotBlocking && primaryEntity && canFocus) void focusNode(primaryEntity, true);
+                    }}
+                    disabled={autopilotBlocking || !canFocus}
+                  >
+                    <span className="activity-entry__actor">{historyActorIcon(transaction)}</span>
+                    <span className="activity-entry__body">
+                      <strong>{title}</strong>
+                      <small>{historyActorLabel(transaction)} · rev {transaction.projectRevision} · {historyChangeCount(transaction)} changes</small>
+                    </span>
+                    <span className="activity-entry__rev">R{transaction.projectRevision}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
 
           <div className="inspector-section">
             <span className="kicker">LOCAL SYSTEM</span>
