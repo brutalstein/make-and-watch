@@ -4,6 +4,7 @@ import { ReactFlowProvider } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import './styles.css';
 import './director/autopilot.css';
+import './activity.css';
 import { App } from './App';
 
 const root = document.getElementById('root');
