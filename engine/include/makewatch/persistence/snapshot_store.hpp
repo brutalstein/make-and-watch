@@ -23,11 +23,6 @@ struct CommitContext final {
   std::string reason;
 };
 
-struct JournalRecord final {
-  project::Event event;
-  CommitContext context;
-};
-
 struct LoadSnapshotResult final {
   core::Status status;
   project::ProjectSnapshot snapshot;
@@ -37,7 +32,7 @@ struct LoadSnapshotResult final {
 
 struct LoadJournalResult final {
   core::Status status;
-  std::vector<JournalRecord> records;
+  std::vector<project::Event> events;
 
   [[nodiscard]] bool ok() const noexcept { return status.ok(); }
 };
@@ -50,7 +45,9 @@ class SnapshotStore {
   [[nodiscard]] virtual LoadSnapshotResult load() = 0;
 
   // A persistence implementation may override this to atomically commit the
-  // authoritative snapshot, its append-only event journal, and commit provenance.
+  // authoritative snapshot and its append-only event journal. Commit context
+  // is already encoded into the transaction event by ProjectSession so legacy
+  // stores can keep their storage layout stable.
   [[nodiscard]] virtual core::Status save_commit(
       const project::ProjectSnapshot& snapshot,
       const std::vector<project::Event>& events,
