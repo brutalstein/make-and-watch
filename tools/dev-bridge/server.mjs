@@ -7,7 +7,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-import { DEV_SEED_COMMANDS } from './dev-seed.mjs';
+import { DEV_SEED_COMMANDS, DEV_SEED_VERSION } from './dev-seed.mjs';
 
 const execFileAsync = promisify(execFile);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -161,15 +161,50 @@ async function systemTelemetry() {
   return telemetry;
 }
 
+async function ensureDevelopmentFixture(initialHealth) {
+  if (initialHealth.result.nodeCount === 0) {
+    const seeded = await rpc('project.apply', { commands: DEV_SEED_COMMANDS });
+    if (!seeded.ok) throw new Error(`development seed failed: ${seeded.error?.message ?? 'unknown error'}`);
+    console.log(`[bridge] created persistent development project seed v${DEV_SEED_VERSION}`);
+    return;
+  }
+
+  const snapshotResponse = await rpc('project.snapshot');
+  if (!snapshotResponse.ok) {
+    throw new Error(`development fixture inspection failed: ${snapshotResponse.error?.message ?? 'unknown error'}`);
+  }
+
+  const snapshot = snapshotResponse.result;
+  const series = snapshot.nodes.find((node) => node.id === 'series.afterlight');
+  if (!series || series.metadata?.devSeedVersion === DEV_SEED_VERSION) return;
+
+  // This migration applies only to the known bundled development fixture. It
+  // never runs for arbitrary user projects. Older fixture versions were left
+  // stale after topology construction; version 2 records the canonical fresh
+  // starting point without deleting the local SQLite database.
+  const commands = [];
+  const relockSeries = series.locked === true;
+  if (relockSeries) commands.push({ type: 'node.lock', id: series.id, locked: false });
+  commands.push({
+    type: 'node.patch',
+    id: series.id,
+    metadataUpdates: { devSeedVersion: DEV_SEED_VERSION },
+  });
+  for (const node of snapshot.nodes) commands.push({ type: 'node.markFresh', id: node.id });
+  if (relockSeries) commands.push({ type: 'node.lock', id: series.id, locked: true });
+
+  const migrated = await rpc('project.apply', { commands });
+  if (!migrated.ok) {
+    throw new Error(`development fixture migration failed: ${migrated.error?.message ?? 'unknown error'}`);
+  }
+  console.log(`[bridge] migrated persistent development fixture to v${DEV_SEED_VERSION}`);
+}
+
 const initialHealth = await rpc('health');
 if (!initialHealth.ok) {
   throw new Error(`native health failed: ${initialHealth.error?.message ?? 'unknown error'}`);
 }
-if (initialHealth.result.nodeCount === 0) {
-  const seeded = await rpc('project.apply', { commands: DEV_SEED_COMMANDS });
-  if (!seeded.ok) throw new Error(`development seed failed: ${seeded.error?.message ?? 'unknown error'}`);
-  console.log('[bridge] created persistent development project seed');
-}
+await ensureDevelopmentFixture(initialHealth);
 
 const server = createServer(async (request, response) => {
   if (request.method === 'OPTIONS') {
