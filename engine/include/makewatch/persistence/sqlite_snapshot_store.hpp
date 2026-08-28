@@ -1,9 +1,12 @@
 #pragma once
 
+#include <cstddef>
 #include <filesystem>
+#include <vector>
 
 #include "makewatch/core/status.hpp"
 #include "makewatch/persistence/snapshot_store.hpp"
+#include "makewatch/project/event.hpp"
 #include "makewatch/project/graph.hpp"
 
 struct sqlite3;
@@ -25,7 +28,11 @@ class SqliteSnapshotStore final : public SnapshotStore {
   [[nodiscard]] bool is_open() const noexcept { return db_ != nullptr; }
 
   [[nodiscard]] core::Status save(const project::ProjectSnapshot& snapshot) override;
+  [[nodiscard]] core::Status save_commit(
+      const project::ProjectSnapshot& snapshot,
+      const std::vector<project::Event>& events) override;
   [[nodiscard]] LoadSnapshotResult load() override;
+  [[nodiscard]] LoadJournalResult load_journal(std::size_t limit) override;
 
  private:
   [[nodiscard]] core::Status migrate();
