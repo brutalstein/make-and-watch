@@ -76,7 +76,7 @@ if(MAKEWATCH_BUILD_TESTS)
   target_link_libraries(makewatch_resource_manager_tests PRIVATE makewatch::engine)
 
   add_executable(makewatch_sqlite_snapshot_store_tests tests/sqlite_snapshot_store_test.cpp)
-  target_link_libraries(makewatch_sqlite_snapshot_store_tests PRIVATE makewatch::engine)
+  target_link_libraries(makewatch_sqlite_snapshot_store_tests PRIVATE makewatch::engine makewatch_sqlite)
 
   add_executable(makewatch_project_session_tests tests/project_session_test.cpp)
   target_link_libraries(makewatch_project_session_tests PRIVATE makewatch::engine)
