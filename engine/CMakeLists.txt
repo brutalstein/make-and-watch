@@ -104,4 +104,11 @@ if(MAKEWATCH_BUILD_TESTS)
   add_test(NAME makewatch_sqlite_snapshot_store_tests COMMAND makewatch_sqlite_snapshot_store_tests)
   add_test(NAME makewatch_project_session_tests COMMAND makewatch_project_session_tests)
   add_test(NAME makewatch_ipc_dispatcher_tests COMMAND makewatch_ipc_dispatcher_tests)
+  add_test(
+    NAME makewatch_engine_host_smoke
+    COMMAND ${CMAKE_COMMAND}
+      "-DHOST=$<TARGET_FILE:makewatch_engine_host>"
+      "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/host-smoke"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/engine_host_smoke.cmake"
+  )
 endif()
