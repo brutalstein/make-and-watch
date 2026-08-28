@@ -13,6 +13,8 @@ enum class ErrorCode {
   kLocked,
   kRevisionConflict,
   kCycleDetected,
+  kResourceExhausted,
+  kBusy,
 };
 
 struct Status final {
