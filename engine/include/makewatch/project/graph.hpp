@@ -9,6 +9,7 @@
 #include "makewatch/core/id.hpp"
 #include "makewatch/core/status.hpp"
 #include "makewatch/project/node.hpp"
+#include "makewatch/project/snapshot.hpp"
 
 namespace makewatch::project {
 
@@ -33,6 +34,9 @@ class ProjectGraph final {
       const core::EntityId& id) const;
   [[nodiscard]] std::vector<core::EntityId> dependents_of(
       const core::EntityId& id) const;
+
+  [[nodiscard]] GraphSnapshot snapshot() const;
+  [[nodiscard]] core::Status replace_from_snapshot(const GraphSnapshot& snapshot);
 
   std::vector<core::EntityId> mark_stale(const std::vector<core::EntityId>& ids);
 

@@ -7,6 +7,8 @@
 #include "makewatch/project/command.hpp"
 #include "makewatch/project/event.hpp"
 #include "makewatch/project/graph.hpp"
+#include "makewatch/project/impact.hpp"
+#include "makewatch/project/snapshot.hpp"
 
 namespace makewatch::project {
 
@@ -26,6 +28,10 @@ class ProjectEngine final {
 
   [[nodiscard]] CommandResult apply(const Command& command);
   [[nodiscard]] CommandResult apply_batch(const std::vector<Command>& commands);
+  [[nodiscard]] ImpactReport preview_impact(const core::EntityId& source) const;
+
+  [[nodiscard]] ProjectSnapshot snapshot() const;
+  [[nodiscard]] core::Status hydrate(const ProjectSnapshot& snapshot);
 
  private:
   [[nodiscard]] static core::Status apply_one(ProjectGraph& graph, const Command& command,

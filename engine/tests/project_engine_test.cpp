@@ -5,6 +5,7 @@
 
 #include "makewatch/core/status.hpp"
 #include "makewatch/project/engine.hpp"
+#include "makewatch/project/graph.hpp"
 
 namespace {
 
@@ -14,11 +15,14 @@ using makewatch::domain::ApprovalState;
 using makewatch::project::AddDependency;
 using makewatch::project::Command;
 using makewatch::project::CreateNode;
+using makewatch::project::DependencyEdge;
+using makewatch::project::GraphSnapshot;
 using makewatch::project::MarkFresh;
 using makewatch::project::Node;
 using makewatch::project::NodeKind;
 using makewatch::project::PatchNode;
 using makewatch::project::ProjectEngine;
+using makewatch::project::ProjectGraph;
 using makewatch::project::RemoveNode;
 using makewatch::project::SetLock;
 
@@ -50,6 +54,12 @@ void test_transitive_invalidation_and_lock_semantics() {
       SetLock{EntityId{"shot.001"}, true, {}},
   };
   require(engine.apply_batch(setup).ok(), "setup transaction should commit");
+
+  const auto impact = engine.preview_impact(EntityId{"character.mira"});
+  require(impact.ok() && impact.affected.size() == 2,
+          "impact preview should include transitive dependents");
+  require(impact.locked.size() == 1 && impact.locked.front() == EntityId{"shot.001"},
+          "impact preview should surface locked dependents");
 
   PatchNode patch;
   patch.id = EntityId{"character.mira"};
@@ -158,6 +168,38 @@ void test_remove_invalidates_dependents_and_cleans_edges() {
   require(shot != nullptr && shot->stale, "dependent shot must become stale after removal");
 }
 
+void test_snapshot_hydration_and_validation_are_atomic() {
+  ProjectEngine original;
+  const std::vector<Command> setup{
+      CreateNode{make_node("character", NodeKind::kCharacter, "Character")},
+      CreateNode{make_node("shot", NodeKind::kShot, "Shot")},
+      AddDependency{EntityId{"shot"}, EntityId{"character"}},
+  };
+  require(original.apply_batch(setup).ok(), "snapshot setup should commit");
+
+  const auto snapshot = original.snapshot();
+  ProjectEngine hydrated;
+  require(hydrated.hydrate(snapshot).ok(), "valid snapshot should hydrate pristine engine");
+  require(hydrated.project_revision() == original.project_revision(),
+          "hydrated project revision must be preserved");
+  require(hydrated.graph().node_count() == 2 && hydrated.graph().dependency_count() == 1,
+          "hydrated graph must preserve topology");
+  require(!hydrated.hydrate(snapshot).ok(), "hydrating a live engine must be rejected");
+
+  ProjectGraph protected_graph;
+  auto sentinel = make_node("sentinel", NodeKind::kAsset, "Sentinel");
+  sentinel.revision = 1;
+  require(protected_graph.insert(sentinel).ok(), "sentinel should be inserted");
+
+  GraphSnapshot invalid = snapshot.graph;
+  invalid.dependencies.push_back(DependencyEdge{EntityId{"character"}, EntityId{"shot"}});
+  const auto replacement = protected_graph.replace_from_snapshot(invalid);
+  require(!replacement.ok() && replacement.code == ErrorCode::kCycleDetected,
+          "cyclic snapshot must be rejected");
+  require(protected_graph.contains(EntityId{"sentinel"}) && protected_graph.node_count() == 1,
+          "failed snapshot replacement must leave original graph untouched");
+}
+
 }  // namespace
 
 int main() {
@@ -165,6 +207,7 @@ int main() {
   test_cycle_rejection_and_atomic_batch_rollback();
   test_optimistic_revision_and_refresh_approval_gate();
   test_remove_invalidates_dependents_and_cleans_edges();
+  test_snapshot_hydration_and_validation_are_atomic();
   std::cout << "project_engine_test: all checks passed\n";
   return EXIT_SUCCESS;
 }

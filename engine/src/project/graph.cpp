@@ -115,8 +115,8 @@ core::Status ProjectGraph::add_dependency(const core::EntityId& dependent,
                                  "a node cannot depend on itself");
   }
 
-  auto& set = dependencies_[dependent.value()];
-  if (set.contains(dependency.value())) {
+  const auto existing = dependencies_.find(dependent.value());
+  if (existing != dependencies_.end() && existing->second.contains(dependency.value())) {
     return core::Status::success();
   }
   if (reachable_through_dependencies(dependency.value(), dependent.value())) {
@@ -124,7 +124,7 @@ core::Status ProjectGraph::add_dependency(const core::EntityId& dependent,
                                  "dependency would create a cycle");
   }
 
-  set.insert(dependency.value());
+  dependencies_[dependent.value()].insert(dependency.value());
   dependents_[dependency.value()].insert(dependent.value());
   return core::Status::success();
 }
@@ -201,6 +201,43 @@ std::vector<core::EntityId> ProjectGraph::dependents_of(const core::EntityId& id
     }
   }
   return result;
+}
+
+GraphSnapshot ProjectGraph::snapshot() const {
+  GraphSnapshot result;
+  result.nodes.reserve(nodes_.size());
+  for (const auto& [unused, node] : nodes_) {
+    static_cast<void>(unused);
+    result.nodes.push_back(node);
+  }
+  result.dependencies.reserve(dependency_count());
+  for (const auto& [dependent, dependencies] : dependencies_) {
+    for (const auto& dependency : dependencies) {
+      result.dependencies.push_back(
+          DependencyEdge{core::EntityId{dependent}, core::EntityId{dependency}});
+    }
+  }
+  return result;
+}
+
+core::Status ProjectGraph::replace_from_snapshot(const GraphSnapshot& snapshot_value) {
+  ProjectGraph staged;
+  for (const auto& node : snapshot_value.nodes) {
+    if (node.revision == 0) {
+      return core::Status::failure(core::ErrorCode::kInvalidArgument,
+                                   "persisted node revision must be greater than zero");
+    }
+    if (const auto status = staged.insert(node); !status.ok()) {
+      return status;
+    }
+  }
+  for (const auto& edge : snapshot_value.dependencies) {
+    if (const auto status = staged.add_dependency(edge.dependent, edge.dependency); !status.ok()) {
+      return status;
+    }
+  }
+  *this = std::move(staged);
+  return core::Status::success();
 }
 
 std::vector<core::EntityId> ProjectGraph::mark_stale(const std::vector<core::EntityId>& ids) {

@@ -72,6 +72,47 @@ CommandResult ProjectEngine::apply_batch(const std::vector<Command>& commands) {
   return CommandResult{core::Status::success(), project_revision_, std::move(staged_events)};
 }
 
+ImpactReport ProjectEngine::preview_impact(const core::EntityId& source) const {
+  if (graph_.find(source) == nullptr) {
+    return ImpactReport{core::Status::failure(core::ErrorCode::kNotFound,
+                                              "impact source node does not exist"),
+                        {}, {}, {}};
+  }
+
+  ImpactReport report;
+  report.status = core::Status::success();
+  report.affected = graph_.dependent_closure(source);
+  for (const auto& id : report.affected) {
+    if (const auto* node = graph_.find(id); node != nullptr) {
+      if (node->locked) {
+        report.locked.push_back(id);
+      }
+      if (node->stale) {
+        report.already_stale.push_back(id);
+      }
+    }
+  }
+  return report;
+}
+
+ProjectSnapshot ProjectEngine::snapshot() const {
+  return ProjectSnapshot{project_revision_, graph_.snapshot()};
+}
+
+core::Status ProjectEngine::hydrate(const ProjectSnapshot& snapshot_value) {
+  if (project_revision_ != 0 || graph_.node_count() != 0 || !event_log_.empty()) {
+    return core::Status::failure(core::ErrorCode::kInvalidArgument,
+                                 "hydrate is only allowed on a pristine engine");
+  }
+  ProjectGraph staged;
+  if (const auto status = staged.replace_from_snapshot(snapshot_value.graph); !status.ok()) {
+    return status;
+  }
+  graph_ = std::move(staged);
+  project_revision_ = snapshot_value.project_revision;
+  return core::Status::success();
+}
+
 core::Status ProjectEngine::apply_one(ProjectGraph& graph, const Command& command,
                                       std::vector<Event>& events) {
   return std::visit(
