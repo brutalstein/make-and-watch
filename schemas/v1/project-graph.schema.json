@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://make-and-watch.local/schemas/v1/project-graph.schema.json",
+  "title": "Make & Watch Project Graph",
+  "type": "object",
+  "required": ["schemaVersion", "projectRevision", "nodes", "dependencies"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "projectRevision": { "type": "integer", "minimum": 0 },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "title", "revision", "approval", "locked", "stale", "metadata"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "kind": {
+            "enum": ["series", "episode", "scene", "shot", "character", "location", "asset", "audio", "generation"]
+          },
+          "title": { "type": "string" },
+          "revision": { "type": "integer", "minimum": 0 },
+          "approval": { "enum": ["draft", "review", "approved", "locked", "invalidated", "failed"] },
+          "locked": { "type": "boolean" },
+          "stale": { "type": "boolean" },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["dependent", "dependency"],
+        "properties": {
+          "dependent": { "type": "string", "minLength": 1 },
+          "dependency": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

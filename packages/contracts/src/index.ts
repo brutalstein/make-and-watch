@@ -49,3 +49,66 @@ export interface DirectorOperation {
   reason?: string;
   requestedBy?: 'user' | 'director' | 'system';
 }
+
+export type ProjectNodeKind =
+  | 'series'
+  | 'episode'
+  | 'scene'
+  | 'shot'
+  | 'character'
+  | 'location'
+  | 'asset'
+  | 'audio'
+  | 'generation';
+
+export interface ProjectNode {
+  id: string;
+  kind: ProjectNodeKind;
+  title: string;
+  metadata: Record<string, string>;
+  revision: number;
+  approval: ApprovalState;
+  locked: boolean;
+  stale: boolean;
+}
+
+export interface DependencyEdge {
+  dependent: string;
+  dependency: string;
+}
+
+export interface ProjectGraphSnapshot {
+  schemaVersion: 1;
+  projectRevision: number;
+  nodes: ProjectNode[];
+  dependencies: DependencyEdge[];
+}
+
+export type ProjectCommand =
+  | { type: 'node.create'; node: Omit<ProjectNode, 'revision'> }
+  | { type: 'node.patch'; id: string; expectedRevision?: number; title?: string; approval?: ApprovalState; metadataUpdates?: Record<string, string>; metadataRemovals?: string[] }
+  | { type: 'node.lock'; id: string; locked: boolean; expectedRevision?: number }
+  | { type: 'node.markFresh'; id: string; expectedRevision?: number }
+  | { type: 'dependency.add'; dependent: string; dependency: string }
+  | { type: 'dependency.remove'; dependent: string; dependency: string }
+  | { type: 'node.remove'; id: string; expectedRevision?: number };
+
+export type ProjectEventType =
+  | 'node.created'
+  | 'node.updated'
+  | 'node.removed'
+  | 'dependency.added'
+  | 'dependency.removed'
+  | 'lock.changed'
+  | 'approval.changed'
+  | 'freshness.changed'
+  | 'dependents.invalidated'
+  | 'transaction.committed';
+
+export interface ProjectEvent {
+  type: ProjectEventType;
+  entityId?: string;
+  projectRevision: number;
+  affected: string[];
+  detail?: string;
+}
