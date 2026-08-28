@@ -7,6 +7,31 @@ export function easeInOutCubic(value: number) {
     : 1 - Math.pow(-2 * value + 2, 3) / 2;
 }
 
+async function runControlledAnimation(
+  durationMs: number,
+  control: AutopilotExecutionControl,
+  frame: (easedProgress: number) => void,
+) {
+  const duration = Math.max(120, durationMs);
+  let elapsed = 0;
+  let previous = performance.now();
+
+  frame(0);
+  while (elapsed < duration) {
+    await control.checkpoint();
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await control.checkpoint();
+
+    const now = performance.now();
+    // Pauses and background-tab suspension are not animation time. Limiting
+    // frame contribution prevents a resumed cursor from teleporting to the end.
+    elapsed += Math.min(34, Math.max(0, now - previous));
+    previous = now;
+    const progress = Math.min(1, elapsed / duration);
+    frame(easeInOutCubic(progress));
+  }
+}
+
 export async function animateCursor(
   from: CursorVisualState,
   to: Pick<CursorVisualState, 'x' | 'y'>,
@@ -15,14 +40,7 @@ export async function animateCursor(
   control: AutopilotExecutionControl,
   update: (state: CursorVisualState) => void,
 ) {
-  const started = performance.now();
-  const duration = Math.max(120, durationMs);
-
-  while (true) {
-    await control.checkpoint();
-    const elapsed = performance.now() - started;
-    const progress = Math.min(1, elapsed / duration);
-    const eased = easeInOutCubic(progress);
+  await runControlledAnimation(durationMs, control, (eased) => {
     update({
       ...from,
       visible: true,
@@ -30,7 +48,5 @@ export async function animateCursor(
       y: from.y + (to.y - from.y) * eased,
       label,
     });
-    if (progress >= 1) break;
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-  }
+  });
 }
