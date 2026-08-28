@@ -35,7 +35,7 @@
 .autopilot-start:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.04); box-shadow: 0 14px 34px rgba(115,94,231,.24); }
 
 .autopilot-interaction-lock {
-  position: fixed; inset: 0; z-index: 52; cursor: wait;
+  position: fixed; inset: 0; z-index: 52; cursor: none;
   background: radial-gradient(circle at center, transparent 58%, rgba(5, 7, 12, .09));
   backdrop-filter: saturate(.96);
 }
@@ -55,6 +55,8 @@
 .autopilot-banner--paused { border-color: rgba(204, 159, 90, .48); }
 .autopilot-banner--waiting_approval { border-color: rgba(86, 199, 160, .52); }
 .autopilot-banner--failed { border-color: rgba(225, 95, 119, .58); }
+.autopilot-banner--completed,
+.autopilot-banner--cancelled { animation: autopilotBannerExit 2.8s ease forwards; pointer-events: none; }
 .autopilot-banner__identity { display: flex; align-items: center; gap: 9px; min-width: 0; }
 .autopilot-banner__identity > div { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .autopilot-banner__identity strong { color: #f2efff; font-size: 10px; }
@@ -96,10 +98,10 @@
   box-shadow: 0 5px 15px rgba(0,0,0,.34), 0 0 14px rgba(119,93,255,.28);
 }
 .ai-cursor__label {
-  position: absolute; left: 27px; top: 37px; max-width: 245px;
+  position: absolute; left: 27px; top: 37px; width: max-content; max-width: 245px;
   padding: 6px 8px; border: 1px solid rgba(102,91,164,.7); border-radius: 8px;
   color: #dad5f7; background: rgba(20,18,34,.94); backdrop-filter: blur(12px);
-  box-shadow: 0 10px 28px rgba(0,0,0,.34); font-size: 8px; white-space: nowrap;
+  box-shadow: 0 10px 28px rgba(0,0,0,.34); font-size: 8px; line-height: 1.35; white-space: normal;
 }
 .ai-cursor__ripple {
   position: absolute; left: -11px; top: -11px; width: 24px; height: 24px;
@@ -124,7 +126,11 @@
   0%, 100% { box-shadow: 0 0 20px rgba(121,96,255,.19), inset 0 1px rgba(255,255,255,.08); }
   50% { box-shadow: 0 0 34px rgba(121,96,255,.38), inset 0 1px rgba(255,255,255,.1); }
 }
+@keyframes autopilotBannerExit {
+  0%, 58% { opacity: 1; transform: translateX(-50%) translateY(0); }
+  100% { opacity: 0; transform: translateX(-50%) translateY(-8px); visibility: hidden; }
+}
 
 @media (prefers-reduced-motion: reduce) {
-  .autopilot-orb, .ai-cursor__trail, .ai-cursor__ripple { animation: none; }
+  .autopilot-orb, .ai-cursor__trail, .ai-cursor__ripple, .autopilot-banner--completed, .autopilot-banner--cancelled { animation: none; }
 }
