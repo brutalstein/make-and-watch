@@ -1,8 +1,62 @@
 #include "makewatch/runtime/resource_manager.hpp"
 
+#include <algorithm>
 #include <utility>
 
 namespace makewatch::runtime {
+namespace {
+
+AdmissionDecision rejected_decision(
+    core::Status status,
+    std::uint64_t vram_used_mb,
+    std::uint64_t ram_used_mb,
+    std::uint32_t cpu_threads_used,
+    std::uint64_t vram_headroom_mb,
+    std::uint64_t ram_headroom_mb,
+    std::uint32_t cpu_headroom) {
+  return AdmissionDecision{
+      .status = std::move(status),
+      .projected_vram_mb = vram_used_mb,
+      .projected_ram_mb = ram_used_mb,
+      .projected_cpu_threads = cpu_threads_used,
+      .vram_headroom_after_mb = vram_headroom_mb,
+      .ram_headroom_after_mb = ram_headroom_mb,
+      .cpu_headroom_after = cpu_headroom,
+      .would_activate_exclusive_gpu = false,
+  };
+}
+
+}  // namespace
+
+ResourceLease::ResourceLease(ResourceManager* manager, core::EntityId workload_id) noexcept
+    : manager_(manager), workload_id_(std::move(workload_id)) {}
+
+ResourceLease::~ResourceLease() noexcept {
+  if (manager_ != nullptr) {
+    (void)release();
+  }
+}
+
+ResourceLease::ResourceLease(ResourceLease&& other) noexcept
+    : manager_(std::exchange(other.manager_, nullptr)),
+      workload_id_(std::move(other.workload_id_)) {}
+
+ResourceLease& ResourceLease::operator=(ResourceLease&& other) noexcept {
+  if (this == &other) return *this;
+  if (manager_ != nullptr) {
+    (void)release();
+  }
+  manager_ = std::exchange(other.manager_, nullptr);
+  workload_id_ = std::move(other.workload_id_);
+  return *this;
+}
+
+core::Status ResourceLease::release() {
+  if (manager_ == nullptr) return core::Status::success();
+  auto* manager = manager_;
+  manager_ = nullptr;
+  return manager->release(workload_id_);
+}
 
 core::Status ResourceManager::validate_budget(const ResourceBudget& budget) {
   if (budget.vram_total_mb == 0 || budget.ram_total_mb == 0 || budget.cpu_threads == 0) {
@@ -32,6 +86,10 @@ core::Status ResourceManager::validate_request(const WorkloadRequest& request) {
   return core::Status::success();
 }
 
+bool ResourceManager::uses_gpu(const WorkloadRequest& request) noexcept {
+  return request.exclusive_gpu || request.vram_mb > 0;
+}
+
 core::Status ResourceManager::configure(ResourceBudget budget) {
   if (const auto status = validate_budget(budget); !status.ok()) {
     return status;
@@ -47,8 +105,96 @@ core::Status ResourceManager::configure(ResourceBudget budget) {
   vram_used_mb_ = 0;
   ram_used_mb_ = 0;
   cpu_threads_used_ = 0;
+  active_gpu_workloads_ = 0;
   exclusive_gpu_active_ = false;
+  vram_peak_mb_ = 0;
+  ram_peak_mb_ = 0;
+  cpu_threads_peak_ = 0;
+  admissions_total_ = 0;
+  rejections_total_ = 0;
   return core::Status::success();
+}
+
+AdmissionDecision ResourceManager::evaluate_locked(const WorkloadRequest& request) const {
+  const auto usable_vram = configured_ ? budget_.vram_total_mb - budget_.vram_reserve_mb : 0;
+  const auto usable_ram = configured_ ? budget_.ram_total_mb - budget_.ram_reserve_mb : 0;
+  const auto vram_headroom = usable_vram >= vram_used_mb_ ? usable_vram - vram_used_mb_ : 0;
+  const auto ram_headroom = usable_ram >= ram_used_mb_ ? usable_ram - ram_used_mb_ : 0;
+  const auto cpu_headroom = configured_ && budget_.cpu_threads >= cpu_threads_used_
+                                ? budget_.cpu_threads - cpu_threads_used_
+                                : 0;
+
+  if (!configured_) {
+    return rejected_decision(
+        core::Status::failure(core::ErrorCode::kInvalidArgument,
+                              "resource manager is not configured"),
+        vram_used_mb_, ram_used_mb_, cpu_threads_used_,
+        vram_headroom, ram_headroom, cpu_headroom);
+  }
+  if (active_.contains(request.workload_id.value())) {
+    return rejected_decision(
+        core::Status::failure(core::ErrorCode::kAlreadyExists,
+                              "workload id is already active"),
+        vram_used_mb_, ram_used_mb_, cpu_threads_used_,
+        vram_headroom, ram_headroom, cpu_headroom);
+  }
+
+  const bool request_uses_gpu = uses_gpu(request);
+  if (exclusive_gpu_active_ && request_uses_gpu) {
+    return rejected_decision(
+        core::Status::failure(core::ErrorCode::kBusy,
+                              "GPU is reserved by an exclusive workload"),
+        vram_used_mb_, ram_used_mb_, cpu_threads_used_,
+        vram_headroom, ram_headroom, cpu_headroom);
+  }
+  if (request.exclusive_gpu && active_gpu_workloads_ > 0) {
+    return rejected_decision(
+        core::Status::failure(core::ErrorCode::kBusy,
+                              "exclusive GPU workload requires existing GPU work to drain"),
+        vram_used_mb_, ram_used_mb_, cpu_threads_used_,
+        vram_headroom, ram_headroom, cpu_headroom);
+  }
+
+  if (request.vram_mb > vram_headroom) {
+    return rejected_decision(
+        core::Status::failure(core::ErrorCode::kResourceExhausted,
+                              "VRAM admission budget exceeded"),
+        vram_used_mb_, ram_used_mb_, cpu_threads_used_,
+        vram_headroom, ram_headroom, cpu_headroom);
+  }
+  if (request.ram_mb > ram_headroom) {
+    return rejected_decision(
+        core::Status::failure(core::ErrorCode::kResourceExhausted,
+                              "RAM admission budget exceeded"),
+        vram_used_mb_, ram_used_mb_, cpu_threads_used_,
+        vram_headroom, ram_headroom, cpu_headroom);
+  }
+  if (request.cpu_threads > cpu_headroom) {
+    return rejected_decision(
+        core::Status::failure(core::ErrorCode::kResourceExhausted,
+                              "CPU thread admission budget exceeded"),
+        vram_used_mb_, ram_used_mb_, cpu_threads_used_,
+        vram_headroom, ram_headroom, cpu_headroom);
+  }
+
+  return AdmissionDecision{
+      .status = core::Status::success(),
+      .projected_vram_mb = vram_used_mb_ + request.vram_mb,
+      .projected_ram_mb = ram_used_mb_ + request.ram_mb,
+      .projected_cpu_threads = cpu_threads_used_ + request.cpu_threads,
+      .vram_headroom_after_mb = vram_headroom - request.vram_mb,
+      .ram_headroom_after_mb = ram_headroom - request.ram_mb,
+      .cpu_headroom_after = cpu_headroom - request.cpu_threads,
+      .would_activate_exclusive_gpu = request.exclusive_gpu,
+  };
+}
+
+AdmissionDecision ResourceManager::preview_admission(const WorkloadRequest& request) const {
+  if (const auto status = validate_request(request); !status.ok()) {
+    return AdmissionDecision{.status = status};
+  }
+  std::scoped_lock lock(mutex_);
+  return evaluate_locked(request);
 }
 
 core::Status ResourceManager::try_acquire(const WorkloadRequest& request) {
@@ -57,41 +203,32 @@ core::Status ResourceManager::try_acquire(const WorkloadRequest& request) {
   }
 
   std::scoped_lock lock(mutex_);
-  if (!configured_) {
-    return core::Status::failure(core::ErrorCode::kInvalidArgument,
-                                 "resource manager is not configured");
-  }
-  if (active_.contains(request.workload_id.value())) {
-    return core::Status::failure(core::ErrorCode::kAlreadyExists,
-                                 "workload id is already active");
-  }
-  if (exclusive_gpu_active_ || (request.exclusive_gpu && !active_.empty())) {
-    return core::Status::failure(core::ErrorCode::kBusy,
-                                 "GPU exclusivity conflicts with active workload set");
-  }
-
-  const auto usable_vram = budget_.vram_total_mb - budget_.vram_reserve_mb;
-  const auto usable_ram = budget_.ram_total_mb - budget_.ram_reserve_mb;
-  if (vram_used_mb_ > usable_vram || request.vram_mb > usable_vram - vram_used_mb_) {
-    return core::Status::failure(core::ErrorCode::kResourceExhausted,
-                                 "VRAM admission budget exceeded");
-  }
-  if (ram_used_mb_ > usable_ram || request.ram_mb > usable_ram - ram_used_mb_) {
-    return core::Status::failure(core::ErrorCode::kResourceExhausted,
-                                 "RAM admission budget exceeded");
-  }
-  if (cpu_threads_used_ > budget_.cpu_threads ||
-      request.cpu_threads > budget_.cpu_threads - cpu_threads_used_) {
-    return core::Status::failure(core::ErrorCode::kResourceExhausted,
-                                 "CPU thread admission budget exceeded");
+  const auto decision = evaluate_locked(request);
+  if (!decision.allowed()) {
+    ++rejections_total_;
+    return decision.status;
   }
 
   active_.emplace(request.workload_id.value(), request);
-  vram_used_mb_ += request.vram_mb;
-  ram_used_mb_ += request.ram_mb;
-  cpu_threads_used_ += request.cpu_threads;
-  exclusive_gpu_active_ = request.exclusive_gpu;
+  vram_used_mb_ = decision.projected_vram_mb;
+  ram_used_mb_ = decision.projected_ram_mb;
+  cpu_threads_used_ = decision.projected_cpu_threads;
+  if (uses_gpu(request)) ++active_gpu_workloads_;
+  exclusive_gpu_active_ = exclusive_gpu_active_ || request.exclusive_gpu;
+  vram_peak_mb_ = std::max(vram_peak_mb_, vram_used_mb_);
+  ram_peak_mb_ = std::max(ram_peak_mb_, ram_used_mb_);
+  cpu_threads_peak_ = std::max(cpu_threads_peak_, cpu_threads_used_);
+  ++admissions_total_;
   return core::Status::success();
+}
+
+LeaseAcquireResult ResourceManager::try_acquire_scoped(const WorkloadRequest& request) {
+  const auto status = try_acquire(request);
+  if (!status.ok()) return LeaseAcquireResult{status, {}};
+  return LeaseAcquireResult{
+      core::Status::success(),
+      ResourceLease{this, request.workload_id},
+  };
 }
 
 core::Status ResourceManager::release(const core::EntityId& workload_id) {
@@ -107,16 +244,35 @@ core::Status ResourceManager::release(const core::EntityId& workload_id) {
   vram_used_mb_ -= request.vram_mb;
   ram_used_mb_ -= request.ram_mb;
   cpu_threads_used_ -= request.cpu_threads;
+  if (uses_gpu(request) && active_gpu_workloads_ > 0) {
+    --active_gpu_workloads_;
+  }
   if (request.exclusive_gpu) {
     exclusive_gpu_active_ = false;
   }
   return core::Status::success();
 }
 
+ResourceSnapshot ResourceManager::snapshot_locked() const {
+  return ResourceSnapshot{
+      .budget = budget_,
+      .vram_used_mb = vram_used_mb_,
+      .ram_used_mb = ram_used_mb_,
+      .cpu_threads_used = cpu_threads_used_,
+      .active_workloads = active_.size(),
+      .active_gpu_workloads = active_gpu_workloads_,
+      .exclusive_gpu_active = exclusive_gpu_active_,
+      .vram_peak_mb = vram_peak_mb_,
+      .ram_peak_mb = ram_peak_mb_,
+      .cpu_threads_peak = cpu_threads_peak_,
+      .admissions_total = admissions_total_,
+      .rejections_total = rejections_total_,
+  };
+}
+
 ResourceSnapshot ResourceManager::snapshot() const {
   std::scoped_lock lock(mutex_);
-  return ResourceSnapshot{budget_, vram_used_mb_, ram_used_mb_, cpu_threads_used_,
-                          active_.size(), exclusive_gpu_active_};
+  return snapshot_locked();
 }
 
 }  // namespace makewatch::runtime
