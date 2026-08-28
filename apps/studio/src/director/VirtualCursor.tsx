@@ -1,13 +1,48 @@
+import { useSyncExternalStore } from 'react';
 import { Bot, MousePointer2 } from 'lucide-react';
 
 import { AutopilotCameraFollower, cameraFrameForSurface, resolveVisibleCursorPoint } from './AutopilotCameraFollower';
 import type { CursorVisualState } from './autopilotTypes';
 
-interface VirtualCursorProps {
-  state: CursorVisualState;
+export const INITIAL_VIRTUAL_CURSOR_STATE: CursorVisualState = {
+  visible: false,
+  x: 0,
+  y: 0,
+  pressed: false,
+  pulse: 0,
+  label: '',
+};
+
+let cursorSnapshot: CursorVisualState = INITIAL_VIRTUAL_CURSOR_STATE;
+const cursorListeners = new Set<() => void>();
+
+export function getVirtualCursorState() {
+  return cursorSnapshot;
 }
 
-export function VirtualCursor({ state }: VirtualCursorProps) {
+export function setVirtualCursorState(next: CursorVisualState) {
+  if (Object.is(next, cursorSnapshot)) return;
+  cursorSnapshot = next;
+  for (const listener of cursorListeners) listener();
+}
+
+function subscribeVirtualCursor(listener: () => void) {
+  cursorListeners.add(listener);
+  return () => cursorListeners.delete(listener);
+}
+
+/**
+ * Cursor rendering is intentionally isolated from the Studio application tree.
+ * High-frequency cursor updates must not cause the Director panel, Inspector,
+ * telemetry, or the entire controlled React Flow host to re-render.
+ */
+export function VirtualCursor() {
+  const state = useSyncExternalStore(
+    subscribeVirtualCursor,
+    getVirtualCursorState,
+    getVirtualCursorState,
+  );
+
   if (!state.visible) return null;
 
   const surface = document.querySelector<HTMLElement>('.flow-surface');
