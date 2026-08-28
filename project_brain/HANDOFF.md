@@ -4,64 +4,75 @@
 
 Foundation work is on `foundation/series-engine-v0` and tracked by draft PR #1.
 
-Implemented foundation pieces:
+Implemented and committed:
 
 - canonical `project_brain/` session handoff system;
-- versioned JSON contracts and shared TypeScript contracts;
-- C++20 engine library with strict warning policy;
-- typed Director operations and validator tests;
-- provider-agnostic `DirectorProvider` boundary;
-- policy-correct official-client bridge direction for Claude/Codex subscription use;
-- React/TypeScript Studio shell with Director, workflow, scene strip, inspector, and resource-plan surfaces;
-- cross-platform doctor/bootstrap/dev entry points;
-- one-command Windows quality gate: `./verify.ps1`;
-- CI for native and Studio builds;
-- transactional native project graph with typed commands/events, optimistic revisions, locks, staleness, cycle prevention, dependency invalidation, atomic rollback, impact preview, deterministic snapshots, and guarded hydration;
-- generic thread-safe runtime resource admission with explicit VRAM/RAM reserves, CPU budgets, exclusivity, and duplicate-job protection;
-- embedded SQLite 3.53.4 snapshot persistence behind `SnapshotStore`, including schema v1 migration, WAL, foreign keys, full synchronization, atomic save, validation on load, and round-trip tests.
+- C++20 transactional semantic project graph with typed commands/events, optimistic revisions, locks, staleness, DAG validation, dependency invalidation, impact preview, snapshots, and guarded hydration;
+- generic thread-safe local resource admission with explicit VRAM/RAM reserves, CPU budgets, exclusivity, and duplicate-work protection;
+- embedded SQLite 3.53.4 persistence behind `SnapshotStore`, with schema versioning, WAL, foreign keys, full synchronization, transactional replacement, and load validation;
+- `ProjectSession` application layer that persists staged state before replacing the live engine;
+- versioned JSONL IPC protocol v1 and `makewatch_engine_host` executable;
+- typed native methods for health, snapshot, impact, apply, and project replacement;
+- process-boundary smoke test that launches the real native host and writes/reads an SQLite-backed project;
+- localhost-only development bridge with request correlation, RPC timeout, bounded request bodies, native failure propagation, and NVIDIA/system telemetry;
+- React/TypeScript Studio driven by the real native snapshot, with real node selection, scene strip, revision display, approval, lock/unlock, impact preview, and GPU telemetry;
+- development fixture seeded through native typed commands instead of hardcoded React state;
+- one-command Windows quality gate `./verify.ps1` plus `./dev.ps1` native+bridge+Studio runtime;
+- provider-agnostic AI Director boundary; Claude/Codex natural-language authentication remains intentionally unimplemented rather than faked.
 
-Read these files before changing the corresponding subsystem:
+Subsystem context:
 
-- `FOUNDATION_V1.md` — project graph and transactional semantics.
+- `FOUNDATION_V1.md` — project graph semantics.
+- `PERSISTENCE.md` — SQLite boundary.
+- `IPC_AND_SESSION.md` — application transaction + native IPC + Studio bridge.
 - `RUNTIME_FOUNDATION.md` — public resource-safety layer.
-- `PERSISTENCE.md` — SQLite persistence boundary.
 - `AUTH_AND_AI_DIRECTOR.md` — Claude/Codex integration constraints.
 
 ## Validation status
 
-GitHub Actions is green for the latest persistence/resource/project-graph foundation after fixing one explicit include defect found by CI. The passing suite covers:
+GitHub Actions is green for the native-host/process-boundary milestone and Studio bridge milestone. The suite covers bridge JavaScript syntax, strict TypeScript, production Studio build, strict C/C++ build, semantic graph tests, resource tests, SQLite tests, ProjectSession persistence-failure tests, IPC parser/dispatcher tests, and a real native-host process smoke test.
 
-- Studio pnpm install;
-- strict TypeScript typecheck;
-- Vite production build;
-- native C/C++ configure and build;
-- Director operation validation tests;
-- transactional project graph tests;
-- runtime resource admission tests;
-- SQLite persistence round-trip tests.
+The previous foundation was also validated on the primary Windows/NVIDIA machine with Node 24.11.0, pnpm 10.15.0, CMake 4.1.2, Ninja 1.13.1, GNU C/C++ 15.2.0, and an RTX 5070 Laptop GPU; the then-current 4-test native suite passed 4/4. The newly added native host / bridge / live Studio path still needs one hands-on Windows validation after pulling current HEAD.
 
-The next quality gate is the user's primary Windows/NVIDIA machine. Pull the branch and run `./verify.ps1`. Do not begin heavyweight media-provider integration until that passes locally.
+## Immediate next gate
 
-## Immediate next steps
+On the primary Windows machine:
 
-1. On Windows: `git pull`, then run `./verify.ps1` and capture the full output.
-2. If the quality gate passes, open Studio with `./dev.ps1` and perform visual/product review.
-3. Add a narrow native IPC/service boundary so Studio can query snapshots, impact previews, commands, and resource telemetry without duplicating C++ domain rules.
-4. Add append-only history/checkpoint recovery and content-addressed asset provenance.
-5. Only then add the first lightweight local image/voice provider path.
-6. Keep patent-sensitive adaptive synthesis-selection logic private until IP strategy is cleared.
+```powershell
+git pull
+.\verify.ps1
+.\dev.ps1
+```
+
+In Studio:
+
+1. confirm the header says Native online and real GPU telemetry appears;
+2. click scene / character / shot nodes and verify Inspector follows native state;
+3. select `character.mira` or a scene and run **Preview impact**;
+4. approve an eligible review/draft node and verify project revision increments;
+5. lock/unlock an editable node and verify the native revision changes;
+6. stop the runtime, restart `./dev.ps1`, and verify the changed state survives via SQLite.
+
+Any Windows process-launch, CORS, SQLite lock, path, live-state, or UI defect found in this test must be fixed before media-provider work.
+
+## Next engineering milestone after that gate
+
+1. append-only command/event journal and recoverable checkpoints;
+2. content-addressed asset/provenance index separated from semantic state;
+3. provider worker supervisor + capability discovery contract;
+4. first lightweight local voice and storyboard/image provider path;
+5. Director provider adapter only after supported authentication behavior is verified.
 
 ## What not to do next
 
-- Do not wire a heavyweight video model directly into the UI.
-- Do not make ComfyUI the project state owner.
+- Do not wire a heavyweight video model directly into React.
+- Do not let Node/React duplicate graph or persistence invariants.
+- Do not make ComfyUI the project owner.
 - Do not implement a fake/custom Claude subscription OAuth flow.
 - Do not put OAuth tokens in `.env` as a shipping design.
-- Do not create a second TypeScript-only domain engine that diverges from C++.
-- Do not let persistence code own domain invariants.
 - Do not weaken strict compilation/typechecking to make CI pass.
-- Do not prematurely disclose patent-sensitive runtime algorithms in public.
+- Do not expose patent-sensitive adaptive synthesis-selection logic while the repository is public.
 
 ## Quality bar
 
-Every milestone must remain buildable, testable, explainable, reversible, and explicit about what is actually validated. “100/100” is a quality target backed by evidence, not a claim that defects are impossible.
+Every milestone must remain buildable, testable, explainable, reversible, and explicit about what is actually validated. “100/100” is the quality target backed by evidence; it is not a claim that software can never contain defects.

@@ -1,18 +1,22 @@
 # Project Brain — Start Here
 
-This folder is the canonical context handoff for **Make & Watch**. A new engineer or AI coding session should be able to read this folder and understand the product, architecture, non-negotiable constraints, current stage, and next safe actions without relying on chat history.
+This folder is the canonical context handoff for **Make & Watch**. A new engineer or AI coding session should be able to read it and understand the product, architecture, non-negotiable constraints, current validated state, and next safe actions without relying on chat history.
 
 ## Reading order
 
-1. `VISION.md` — what we are building and what we are deliberately not building.
+1. `VISION.md` — product goal and deliberate non-goals.
 2. `ARCHITECTURE.md` — system boundaries and dependency direction.
-3. `AUTH_AND_AI_DIRECTOR.md` — supported authentication boundary and AI-director policy.
-4. `INVARIANTS.md` — rules that must remain true as the repository grows.
-5. `DECISIONS.md` — architecture decisions already made.
-6. `QUALITY_GATES.md` — objective standards behind the project's quality target.
-7. `ROADMAP.md` — milestone sequence and quality gates.
-8. `VALIDATION.md` — commands that were actually executed and their results.
-9. `HANDOFF.md` — current repository state and immediate continuation point.
+3. `FOUNDATION_V1.md` — transactional semantic project graph.
+4. `PERSISTENCE.md` — embedded SQLite storage boundary.
+5. `IPC_AND_SESSION.md` — native application transaction boundary and Studio IPC.
+6. `RUNTIME_FOUNDATION.md` — public resource-safety layer.
+7. `AUTH_AND_AI_DIRECTOR.md` — supported Claude/Codex integration boundary.
+8. `INVARIANTS.md` — rules that must remain true as the repository grows.
+9. `DECISIONS.md` — architecture decisions already made.
+10. `QUALITY_GATES.md` — objective standards behind the quality target.
+11. `ROADMAP.md` — milestone sequence.
+12. `VALIDATION.md` — tests and environments that were actually executed.
+13. `HANDOFF.md` — current continuation point.
 
 ## One-sentence product definition
 
@@ -20,8 +24,10 @@ Make & Watch is a local-first desktop series-production studio where a user dire
 
 ## Current stage
 
-**Foundation v0.** The repository is establishing contracts, domain boundaries, development ergonomics, and the first Studio shell. No heavyweight media model is a hard dependency yet.
+**Foundation v1 / Native Studio Bridge.** The repository now has a transactional C++ project graph, SQLite persistence, guarded local resource admission, a versioned native IPC host, a persist-before-live-commit application session, and a Studio that projects real native state rather than hardcoded workflow data.
+
+No heavyweight image/video/voice model is a hard dependency yet. Claude/Codex natural-language provider authentication is intentionally not faked; the next media/provider milestones must build on the validated native boundary.
 
 ## Public-repository warning
 
-The repository is currently public. Keep patent-sensitive invention disclosures, unpublished claim language, and implementation details of potentially novel scheduling/synthesis mechanisms out of this tree until the IP strategy is settled.
+The repository is currently public. Keep patent-sensitive invention disclosures, unpublished claim language, and implementation details of potentially novel adaptive synthesis-selection/resource-planning mechanisms out of this tree until the IP strategy is settled.
