@@ -1,8 +1,58 @@
 #include "makewatch/application/project_session.hpp"
 
+#include <string>
+#include <string_view>
 #include <utility>
 
 namespace makewatch::application {
+namespace {
+
+const char* actor_name(persistence::CommitActor actor) noexcept {
+  switch (actor) {
+    case persistence::CommitActor::kUser: return "user";
+    case persistence::CommitActor::kAiDirector: return "ai_director";
+    case persistence::CommitActor::kSystem: return "system";
+  }
+  return "system";
+}
+
+std::string escape_field(std::string_view value) {
+  std::string result;
+  result.reserve(value.size());
+  for (const char character : value) {
+    if (character == '\\' || character == '|' || character == '=') result.push_back('\\');
+    result.push_back(character);
+  }
+  return result;
+}
+
+std::string provenance_detail(
+    const persistence::CommitContext& context,
+    std::string_view original_detail) {
+  std::string detail{"mwctx1|actor="};
+  detail += actor_name(context.actor);
+  detail += "|source=";
+  detail += escape_field(context.source);
+  detail += "|plan=";
+  detail += escape_field(context.plan_id);
+  detail += "|reason=";
+  detail += escape_field(context.reason);
+  detail += "|event=";
+  detail += escape_field(original_detail);
+  return detail;
+}
+
+void attach_commit_context(
+    std::vector<project::Event>& events,
+    const persistence::CommitContext& context) {
+  for (auto iterator = events.rbegin(); iterator != events.rend(); ++iterator) {
+    if (iterator->type != project::EventType::kTransactionCommitted) continue;
+    iterator->detail = provenance_detail(context, iterator->detail);
+    return;
+  }
+}
+
+}  // namespace
 
 core::Status ProjectSession::load() {
   auto loaded = store_.load();
@@ -33,6 +83,7 @@ project::CommandResult ProjectSession::apply_batch(
     return result;
   }
 
+  attach_commit_context(result.events, context);
   if (const auto status = store_.save_commit(staged.snapshot(), result.events, context); !status.ok()) {
     return project::CommandResult{status, engine_.project_revision(), {}};
   }
