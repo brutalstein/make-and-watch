@@ -32,7 +32,7 @@ Claude / Codex / deterministic demo planner
        /          |          \
       v           v           v
 virtual cursor  workspace   native semantic
-projection      actions     project.apply
++ camera        actions     project.apply
       |           |           |
       +-----------+-----------+
                   |
@@ -85,6 +85,16 @@ Unknown or unsafe plans are rejected before execution.
 
 Future provider-generated plans must pass the same validation. A Claude/Codex response is never trusted merely because it came from a model.
 
+## Execution liveness
+
+A visually impressive automation that can remain stuck forever is not acceptable product behavior.
+
+The executor therefore applies a bounded execution deadline to normal UI/native action steps. Focus, drag, impact, arrange, fit, and semantic apply steps must either complete within their execution budget or fail safely. Explicit user approval checkpoints are the exception because waiting for the user is intentional.
+
+A timed-out step cancels the execution control and becomes a visible failed Autopilot state rather than leaving the Studio interaction lock active indefinitely.
+
+The deterministic workspace demo also limits repetitive visible cursor work. It physically demonstrates a bounded number of meaningful node moves; if a large graph contains more displaced nodes, the remaining presentation-only layout is settled as one deterministic dependency-layout operation. This keeps the interaction understandable on both 8-node and future 800-node projects.
+
 ## Autonomy modes
 
 ### Assist
@@ -116,7 +126,25 @@ Reasons:
 - motion can be cinematic and consistent;
 - actions remain tied to typed Studio entities instead of screen coordinates alone.
 
-The cursor currently supports visible movement, press state, click ripple, glow/trail, AI identity badge, and contextual activity labels.
+The cursor supports visible movement, press state, click ripple, glow/trail, AI identity badge, and contextual activity labels.
+
+## Cinematic workflow camera
+
+`AutopilotCameraFollower.tsx` owns presentation-only camera follow while the AI cursor is actively searching or dragging.
+
+Rules:
+
+- the camera uses a dead/safe frame rather than permanently centering the cursor;
+- when the AI is travelling to find a distant node, the composition gradually widens;
+- when the AI presses and manipulates a node, the composition tightens slightly;
+- cursor and selected node remain inside the visible safe frame while the workflow pans beneath them;
+- pan and zoom are damped and bounded per animation frame;
+- camera ownership is transient and is released as soon as cursor motion settles;
+- explicit `fitView` / focus commands are therefore free to run without fighting a second camera controller;
+- initial takeover choreography does not move the graph until the cursor actually enters the workflow;
+- label placement flips near viewport edges so cursor explanations remain visible.
+
+Camera motion never changes semantic state or saved node coordinates. It is a pure projection of what the AI is currently doing.
 
 ## Interaction ownership
 
@@ -146,7 +174,8 @@ Examples:
 - drag node;
 - arrange graph;
 - fit viewport;
-- center/focus node.
+- center/focus node;
+- cinematic pan/zoom camera motion.
 
 These update Studio workspace state only. They must not:
 
@@ -194,14 +223,16 @@ The current Studio button **Let AI drive this workflow** builds a deterministic 
 It:
 
 1. validates the exact native project revision;
-2. frames the workflow;
+2. widens the camera and scans the production graph;
 3. identifies nodes displaced from deterministic dependency-aware layout;
-4. moves the virtual cursor to those nodes;
-5. visibly drags them into organized positions;
-6. persists only workspace positions;
-7. focuses a review-relevant scene/shot;
-8. requests native dependency impact;
-9. finishes without mutating semantic project state.
+4. visibly finds and drags a bounded set of representative nodes;
+5. periodically reframes the workflow rather than mechanically traversing cards forever;
+6. settles any repetitive remainder as one presentation-only dependency-layout pass;
+7. persists only workspace positions;
+8. focuses a review-relevant scene/shot;
+9. requests native dependency impact;
+10. explicitly reports completion and returns control without a final competing camera pass;
+11. finishes without mutating semantic project state.
 
 This is not pretending Claude/Codex is connected. It is a real execution harness that future providers can feed.
 
@@ -211,11 +242,12 @@ This is not pretending Claude/Codex is connected. It is a real execution harness
 - Never give a model unrestricted OS mouse/keyboard access as the normal product design.
 - Never allow Assist mode to change semantic state.
 - Never disable emergency takeover.
+- Never leave an ordinary Autopilot UI step unbounded indefinitely.
 - Never bypass native locks/revisions because an Autopilot plan requested it.
-- Never let animation state become project truth.
+- Never let animation or camera state become project truth.
 - Never hide a semantic commit behind a cosmetic drag operation.
 - Never execute a plan created against an obsolete project revision.
-- Never call a provider output trusted until it passes plan validation.
+- Never call provider output trusted until it passes plan validation.
 
 ## Next evolution
 
@@ -223,5 +255,5 @@ This is not pretending Claude/Codex is connected. It is a real execution harness
 2. premium Activity/Changes panel distinguishing human, AI, and system commits;
 3. Claude/Codex plan-producer adapters after supported authentication is verified;
 4. Guided checkpoints and semantic plan preview cards;
-5. provider worker actions expressed as typed job steps rather than raw shell control;
+5. provider worker actions expressed as typed jobs rather than raw shell control;
 6. replayable visual explanation driven from recorded plan/action metadata where useful.
