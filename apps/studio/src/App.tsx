@@ -2,10 +2,14 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react
 import {
   Background,
   Controls,
+  MarkerType,
   MiniMap,
   ReactFlow,
+  useNodesState,
   type Edge,
   type Node as FlowNode,
+  type ReactFlowInstance,
+  type XYPosition,
 } from '@xyflow/react';
 import type {
   EngineHealth,
@@ -19,18 +23,20 @@ import type {
 import {
   Activity,
   Bot,
-  Check,
   ChevronRight,
   Clapperboard,
   Cpu,
   Film,
   Gauge,
+  GripVertical,
   Layers3,
+  LayoutGrid,
   Lock,
   MapPin,
   MessageSquareText,
   Play,
   RefreshCw,
+  Scan,
   Sparkles,
   Unlock,
   UserRound,
@@ -38,6 +44,13 @@ import {
 } from 'lucide-react';
 
 import { engineClient } from './engineClient';
+import {
+  defaultWorkflowPositions,
+  resolveWorkflowPositions,
+  saveWorkflowLayout,
+  workflowProjectKey,
+  type WorkflowPositions,
+} from './workflowLayout';
 
 type FlowState = 'ready' | 'review' | 'generating' | 'locked' | 'stale' | 'draft';
 
@@ -56,6 +69,7 @@ function FlowCard({ eyebrow, title, meta, state, icon }: FlowCardProps) {
         <span className="flow-card__icon">{icon}</span>
         <span>{eyebrow}</span>
         <span className="flow-card__state">{state}</span>
+        <span className="flow-card__drag" title="Drag to reposition"><GripVertical size={11} /></span>
       </div>
       <strong>{title}</strong>
       <span className="flow-card__meta">{meta}</span>
@@ -117,6 +131,30 @@ function flowMeta(node: ProjectNode, snapshot: ProjectGraphSnapshot) {
   return `rev ${node.revision}`;
 }
 
+function createFlowNode(node: ProjectNode, snapshot: ProjectGraphSnapshot, position: XYPosition): FlowNode {
+  return {
+    id: node.id,
+    position,
+    data: {
+      label: (
+        <FlowCard
+          eyebrow={node.kind.toUpperCase()}
+          title={node.title}
+          meta={flowMeta(node, snapshot)}
+          state={nodeState(node)}
+          icon={nodeIcon(node.kind)}
+        />
+      ),
+    },
+    className: `workflow-node workflow-node--${nodeState(node)}`,
+    style: { padding: 0, border: 0, background: 'transparent', width: 235 },
+  };
+}
+
+function positionsFromNodes(nodes: FlowNode[]): WorkflowPositions {
+  return Object.fromEntries(nodes.map((node) => [node.id, { x: node.position.x, y: node.position.y }]));
+}
+
 export function App() {
   const [snapshot, setSnapshot] = useState<ProjectGraphSnapshot | null>(null);
   const [health, setHealth] = useState<EngineHealth | null>(null);
@@ -125,6 +163,11 @@ export function App() {
   const [impact, setImpact] = useState<ImpactReport | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [flowInstance, setFlowInstance] = useState<ReactFlowInstance | null>(null);
+  const [flowNodes, setFlowNodes, onFlowNodesChange] = useNodesState<FlowNode>([]);
+  const [layoutStatus, setLayoutStatus] = useState('Drag nodes · layout auto-saves');
+
+  const layoutKey = useMemo(() => snapshot ? workflowProjectKey(snapshot) : null, [snapshot]);
 
   const refreshAll = useCallback(async () => {
     try {
@@ -153,8 +196,15 @@ export function App() {
   useEffect(() => {
     if (!snapshot || snapshot.nodes.length === 0) {
       setSelectedId(null);
+      setFlowNodes([]);
       return;
     }
+
+    const key = workflowProjectKey(snapshot);
+    const positions = resolveWorkflowPositions(snapshot, key);
+    setFlowNodes(snapshot.nodes.map((node) => createFlowNode(node, snapshot, positions[node.id] ?? { x: 0, y: 0 })));
+    setLayoutStatus('Drag nodes · layout auto-saves');
+
     if (selectedId && snapshot.nodes.some((node) => node.id === selectedId)) return;
     setSelectedId(
       snapshot.nodes.find((node) => node.kind === 'shot')?.id
@@ -162,7 +212,11 @@ export function App() {
       ?? snapshot.nodes[0]?.id
       ?? null,
     );
-  }, [selectedId, snapshot]);
+  }, [selectedId, setFlowNodes, snapshot]);
+
+  useEffect(() => {
+    setFlowNodes((nodes) => nodes.map((node) => ({ ...node, selected: node.id === selectedId })));
+  }, [selectedId, setFlowNodes]);
 
   const selected = snapshot?.nodes.find((node) => node.id === selectedId);
   const episode = snapshot?.nodes.find((node) => node.kind === 'episode');
@@ -171,52 +225,76 @@ export function App() {
     .sort((left, right) => metadataNumber(left, 'index') - metadataNumber(right, 'index')),
   [snapshot]);
 
-  const flowNodes = useMemo<FlowNode[]>(() => {
+  const flowEdges = useMemo<Edge[]>(() => {
     if (!snapshot) return [];
-    const xByKind: Record<ProjectNodeKind, number> = {
-      series: 0,
-      episode: 0,
-      scene: 300,
-      character: 610,
-      location: 610,
-      shot: 910,
-      asset: 910,
-      audio: 910,
-      generation: 1210,
-    };
-    const rows = new Map<number, number>();
-    return snapshot.nodes.map((node) => {
-      const x = xByKind[node.kind];
-      const row = rows.get(x) ?? 0;
-      rows.set(x, row + 1);
+    return snapshot.dependencies.map((edge) => {
+      const stale = snapshot.nodes.find((node) => node.id === edge.dependent)?.stale ?? false;
+      const color = stale ? '#87505f' : '#4c5568';
       return {
-        id: node.id,
-        position: { x, y: row * 145 },
-        data: {
-          label: (
-            <FlowCard
-              eyebrow={node.kind.toUpperCase()}
-              title={node.title}
-              meta={flowMeta(node, snapshot)}
-              state={nodeState(node)}
-              icon={nodeIcon(node.kind)}
-            />
-          ),
-        },
-        style: { padding: 0, border: 0, background: 'transparent', width: 235 },
+        id: `${edge.dependency}->${edge.dependent}`,
+        source: edge.dependency,
+        target: edge.dependent,
+        type: 'smoothstep',
+        animated: stale,
+        className: stale ? 'workflow-edge workflow-edge--stale' : 'workflow-edge',
+        markerEnd: { type: MarkerType.ArrowClosed, color, width: 13, height: 13 },
+        style: { stroke: color },
       };
     });
   }, [snapshot]);
 
-  const flowEdges = useMemo<Edge[]>(() => {
-    if (!snapshot) return [];
-    return snapshot.dependencies.map((edge) => ({
-      id: `${edge.dependency}->${edge.dependent}`,
-      source: edge.dependency,
-      target: edge.dependent,
-      animated: snapshot.nodes.find((node) => node.id === edge.dependent)?.stale ?? false,
-    }));
-  }, [snapshot]);
+  const persistLayout = useCallback((nodeId: string, position: XYPosition) => {
+    if (!layoutKey) return;
+    setFlowNodes((nodes) => {
+      const next = nodes.map((node) => node.id === nodeId ? { ...node, position } : node);
+      saveWorkflowLayout(layoutKey, positionsFromNodes(next));
+      return next;
+    });
+    setLayoutStatus('Layout saved locally');
+  }, [layoutKey, setFlowNodes]);
+
+  const fitWorkflow = useCallback(() => {
+    void flowInstance?.fitView({ padding: 0.14, duration: 320, maxZoom: 1.15 });
+  }, [flowInstance]);
+
+  const arrangeWorkflow = useCallback(() => {
+    if (!snapshot || !layoutKey) return;
+    const positions = defaultWorkflowPositions(snapshot);
+    setFlowNodes((nodes) => nodes.map((node) => ({
+      ...node,
+      position: positions[node.id] ?? node.position,
+    })));
+    saveWorkflowLayout(layoutKey, positions);
+    setLayoutStatus('Dependency layout restored · saved');
+    window.setTimeout(() => fitWorkflow(), 0);
+  }, [fitWorkflow, layoutKey, setFlowNodes, snapshot]);
+
+  const focusNode = useCallback((id: string, center = false) => {
+    setSelectedId(id);
+    setImpact(null);
+    setFlowNodes((nodes) => nodes.map((node) => ({ ...node, selected: node.id === id })));
+
+    if (!center || !flowInstance) return;
+    const target = flowNodes.find((node) => node.id === id);
+    if (!target) return;
+    void flowInstance.setCenter(target.position.x + 118, target.position.y + 42, {
+      zoom: 1.05,
+      duration: 320,
+    });
+  }, [flowInstance, flowNodes, setFlowNodes]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return;
+      if (event.key.toLowerCase() === 'f') {
+        event.preventDefault();
+        fitWorkflow();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [fitWorkflow]);
 
   const applyCommands = useCallback(async (commands: ProjectCommand[]) => {
     setBusy(true);
@@ -314,7 +392,7 @@ export function App() {
 
           <div className="chat-history">
             <div className="message message--user">
-              Select a scene, character, or shot. The workflow now reads authoritative state from the native C++ engine.
+              Select a scene, character, or shot. The workflow reads authoritative state from the native C++ engine while canvas layout remains a separate local workspace preference.
             </div>
             <div className="message message--system">
               <span className="message__title"><Sparkles size={14} /> Native impact preview</span>
@@ -349,14 +427,21 @@ export function App() {
 
         <section className="canvas-panel">
           <div className="canvas-toolbar">
-            <div>
+            <div className="canvas-toolbar__title">
               <span className="kicker">LIVE WORKFLOW</span>
               <strong>{snapshot ? `${snapshot.nodes.length} native nodes · ${snapshot.dependencies.length} dependencies` : 'Connecting to native project graph'}</strong>
             </div>
-            <div className="view-tabs">
-              <button className="view-tab view-tab--active">Workflow</button>
-              <button className="view-tab">Episode</button>
-              <button className="view-tab">Timeline</button>
+            <div className="canvas-toolbar__right">
+              <span className="layout-status"><GripVertical size={12} /> {layoutStatus}</span>
+              <div className="canvas-tools">
+                <button onClick={arrangeWorkflow} disabled={!snapshot} title="Restore dependency-aware layout"><LayoutGrid size={12} /> Arrange</button>
+                <button onClick={fitWorkflow} disabled={!snapshot} title="Fit workflow to viewport"><Scan size={12} /> Fit <kbd>F</kbd></button>
+              </div>
+              <div className="view-tabs">
+                <button className="view-tab view-tab--active">Workflow</button>
+                <button className="view-tab">Episode</button>
+                <button className="view-tab">Timeline</button>
+              </div>
             </div>
           </div>
           <div className="flow-surface">
@@ -364,14 +449,30 @@ export function App() {
               <ReactFlow
                 nodes={flowNodes}
                 edges={flowEdges}
+                onNodesChange={onFlowNodesChange}
+                onInit={setFlowInstance}
                 fitView
-                fitViewOptions={{ padding: 0.2 }}
-                nodesDraggable={false}
-                onNodeClick={(_, node) => { setSelectedId(node.id); setImpact(null); }}
+                fitViewOptions={{ padding: 0.14, maxZoom: 1.15 }}
+                minZoom={0.22}
+                maxZoom={1.8}
+                snapToGrid
+                snapGrid={[8, 8]}
+                nodesDraggable
+                nodesConnectable={false}
+                onNodeClick={(_, node) => focusNode(node.id)}
+                onNodeDoubleClick={(_, node) => focusNode(node.id, true)}
+                onNodeDragStart={(_, node) => { focusNode(node.id); setLayoutStatus('Repositioning node…'); }}
+                onNodeDragStop={(_, node) => persistLayout(node.id, node.position)}
                 elementsSelectable
+                proOptions={{ hideAttribution: true }}
               >
                 <Background gap={28} size={1} />
-                <MiniMap pannable zoomable />
+                <MiniMap
+                  pannable
+                  zoomable
+                  nodeColor={(node) => node.id === selectedId ? '#8f7cf3' : '#272d3a'}
+                  maskColor="rgba(5, 7, 12, .78)"
+                />
                 <Controls showInteractive={false} />
               </ReactFlow>
             ) : (
@@ -391,7 +492,7 @@ export function App() {
                   <button
                     key={scene.id}
                     className={`scene-chip scene-chip--${state} ${selectedId === scene.id ? 'scene-chip--selected' : ''}`}
-                    onClick={() => { setSelectedId(scene.id); setImpact(null); }}
+                    onClick={() => focusNode(scene.id, true)}
                   >
                     <span>{scene.locked ? <Lock size={11} /> : null} S{String(metadataNumber(scene, 'index') || index + 1).padStart(2, '0')}</span>
                     <small>{state} · {formatDuration(metadataNumber(scene, 'durationSeconds'))}</small>
@@ -447,10 +548,15 @@ export function App() {
             </div>
           </div>
 
-          <button className="secondary-action" onClick={toggleSelectedLock} disabled={!selected || busy}>
-            {selected?.locked ? <Unlock size={14} /> : <Lock size={14} />}
-            {selected?.locked ? 'Unlock selected node' : 'Lock selected node'}
-          </button>
+          <div className="inspector-actions">
+            <button className="secondary-action" onClick={() => selected && focusNode(selected.id, true)} disabled={!selected}>
+              <Scan size={14} /> Focus selected node
+            </button>
+            <button className="secondary-action" onClick={toggleSelectedLock} disabled={!selected || busy}>
+              {selected?.locked ? <Unlock size={14} /> : <Lock size={14} />}
+              {selected?.locked ? 'Unlock selected node' : 'Lock selected node'}
+            </button>
+          </div>
         </aside>
       </section>
     </main>
