@@ -4,6 +4,7 @@
 
 #include "makewatch/core/status.hpp"
 #include "makewatch/persistence/snapshot_store.hpp"
+#include "makewatch/project/graph.hpp"
 
 struct sqlite3;
 
