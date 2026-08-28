@@ -1,3 +1,16 @@
+export const DEV_SEED_VERSION = '2';
+
+const sceneIds = ['scene.01', 'scene.02', 'scene.03', 'scene.04', 'scene.05'];
+const canonicalNodeIds = [
+  'series.afterlight',
+  'episode.001',
+  'character.mira',
+  'location.cafe',
+  ...sceneIds,
+  'shot.031',
+  'generation.031',
+];
+
 export const DEV_SEED_COMMANDS = [
   {
     type: 'node.create',
@@ -6,7 +19,11 @@ export const DEV_SEED_COMMANDS = [
       kind: 'series',
       title: 'Afterlight',
       approval: 'approved',
-      metadata: { genre: 'neo-noir thriller', visualLanguage: 'restrained cinematic realism' },
+      metadata: {
+        genre: 'neo-noir thriller',
+        visualLanguage: 'restrained cinematic realism',
+        devSeedVersion: DEV_SEED_VERSION,
+      },
     },
   },
   {
@@ -93,7 +110,7 @@ export const DEV_SEED_COMMANDS = [
   // deliberately a finalization phase because the native engine correctly
   // forbids topology changes on locked dependent nodes.
   { type: 'dependency.add', dependent: 'episode.001', dependency: 'series.afterlight' },
-  ...['scene.01', 'scene.02', 'scene.03', 'scene.04', 'scene.05'].map((scene) => ({
+  ...sceneIds.map((scene) => ({
     type: 'dependency.add', dependent: scene, dependency: 'episode.001',
   })),
   { type: 'dependency.add', dependent: 'scene.03', dependency: 'character.mira' },
@@ -103,7 +120,12 @@ export const DEV_SEED_COMMANDS = [
   { type: 'dependency.add', dependent: 'shot.031', dependency: 'location.cafe' },
   { type: 'dependency.add', dependent: 'generation.031', dependency: 'shot.031' },
 
-  // Finalize immutable creative anchors only after the graph is complete.
+  // Dependency insertion intentionally marks affected nodes stale. The fixture
+  // is a trusted canonical starting point, so freshness is finalized only once
+  // the complete topology exists.
+  ...canonicalNodeIds.map((id) => ({ type: 'node.markFresh', id })),
+
+  // Finalize immutable creative anchors only after topology and freshness are complete.
   { type: 'node.lock', id: 'character.mira', locked: true },
   { type: 'node.lock', id: 'scene.01', locked: true },
 ];
