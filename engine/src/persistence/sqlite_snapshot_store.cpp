@@ -1,5 +1,6 @@
 #include "makewatch/persistence/sqlite_snapshot_store.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <map>
@@ -11,7 +12,7 @@
 namespace makewatch::persistence {
 namespace {
 
-constexpr int kSchemaVersion = 1;
+constexpr int kSchemaVersion = 2;
 
 class Statement final {
  public:
@@ -98,6 +99,37 @@ bool valid_approval(int value) {
          value <= static_cast<int>(domain::ApprovalState::kFailed);
 }
 
+const char* event_type_name(project::EventType type) {
+  switch (type) {
+    case project::EventType::kNodeCreated: return "node.created";
+    case project::EventType::kNodeUpdated: return "node.updated";
+    case project::EventType::kNodeRemoved: return "node.removed";
+    case project::EventType::kDependencyAdded: return "dependency.added";
+    case project::EventType::kDependencyRemoved: return "dependency.removed";
+    case project::EventType::kLockChanged: return "lock.changed";
+    case project::EventType::kApprovalChanged: return "approval.changed";
+    case project::EventType::kFreshnessChanged: return "freshness.changed";
+    case project::EventType::kDependentsInvalidated: return "dependents.invalidated";
+    case project::EventType::kTransactionCommitted: return "transaction.committed";
+  }
+  return "unknown";
+}
+
+bool parse_event_type(const std::string& value, project::EventType& type) {
+  if (value == "node.created") type = project::EventType::kNodeCreated;
+  else if (value == "node.updated") type = project::EventType::kNodeUpdated;
+  else if (value == "node.removed") type = project::EventType::kNodeRemoved;
+  else if (value == "dependency.added") type = project::EventType::kDependencyAdded;
+  else if (value == "dependency.removed") type = project::EventType::kDependencyRemoved;
+  else if (value == "lock.changed") type = project::EventType::kLockChanged;
+  else if (value == "approval.changed") type = project::EventType::kApprovalChanged;
+  else if (value == "freshness.changed") type = project::EventType::kFreshnessChanged;
+  else if (value == "dependents.invalidated") type = project::EventType::kDependentsInvalidated;
+  else if (value == "transaction.committed") type = project::EventType::kTransactionCommitted;
+  else return false;
+  return true;
+}
+
 }  // namespace
 
 SqliteSnapshotStore::~SqliteSnapshotStore() { close(); }
@@ -158,12 +190,44 @@ core::Status SqliteSnapshotStore::migrate() {
   if (version == kSchemaVersion) {
     return core::Status::success();
   }
+
+  const char* journal_schema =
+      "CREATE TABLE IF NOT EXISTS project_journal("
+      "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+      "  project_revision INTEGER NOT NULL CHECK(project_revision >= 0),"
+      "  event_index INTEGER NOT NULL CHECK(event_index >= 0),"
+      "  event_type TEXT NOT NULL,"
+      "  entity_id TEXT NOT NULL,"
+      "  detail TEXT NOT NULL"
+      ");"
+      "CREATE UNIQUE INDEX IF NOT EXISTS project_journal_revision_event_idx "
+      "  ON project_journal(project_revision,event_index);"
+      "CREATE TABLE IF NOT EXISTS project_journal_affected("
+      "  journal_id INTEGER NOT NULL REFERENCES project_journal(id) ON DELETE CASCADE,"
+      "  position INTEGER NOT NULL CHECK(position >= 0),"
+      "  entity_id TEXT NOT NULL,"
+      "  PRIMARY KEY(journal_id,position)"
+      ");";
+
+  if (version == 1) {
+    if (const auto status = exec(db_, "BEGIN IMMEDIATE;"); !status.ok()) return status;
+    if (const auto status = exec(db_, journal_schema); !status.ok()) {
+      static_cast<void>(exec(db_, "ROLLBACK;"));
+      return status;
+    }
+    if (const auto status = exec(db_, "PRAGMA user_version=2;COMMIT;"); !status.ok()) {
+      static_cast<void>(exec(db_, "ROLLBACK;"));
+      return status;
+    }
+    return core::Status::success();
+  }
+
   if (version != 0) {
     return core::Status::failure(core::ErrorCode::kUnsupportedVersion,
                                  "unsupported project database migration path");
   }
 
-  const char* schema =
+  const char* base_schema =
       "BEGIN IMMEDIATE;"
       "CREATE TABLE IF NOT EXISTS project_meta("
       "  key TEXT PRIMARY KEY NOT NULL,"
@@ -189,13 +253,26 @@ core::Status SqliteSnapshotStore::migrate() {
       "  dependency TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,"
       "  PRIMARY KEY(dependent, dependency),"
       "  CHECK(dependent <> dependency)"
-      ");"
-      "PRAGMA user_version=1;"
-      "COMMIT;";
-  return exec(db_, schema);
+      ");";
+  if (const auto status = exec(db_, base_schema); !status.ok()) return status;
+  if (const auto status = exec(db_, journal_schema); !status.ok()) {
+    static_cast<void>(exec(db_, "ROLLBACK;"));
+    return status;
+  }
+  if (const auto status = exec(db_, "PRAGMA user_version=2;COMMIT;"); !status.ok()) {
+    static_cast<void>(exec(db_, "ROLLBACK;"));
+    return status;
+  }
+  return core::Status::success();
 }
 
 core::Status SqliteSnapshotStore::save(const project::ProjectSnapshot& snapshot_value) {
+  return save_commit(snapshot_value, {});
+}
+
+core::Status SqliteSnapshotStore::save_commit(
+    const project::ProjectSnapshot& snapshot_value,
+    const std::vector<project::Event>& events) {
   if (db_ == nullptr) {
     return core::Status::failure(core::ErrorCode::kInvalidArgument,
                                  "database is not open");
@@ -204,6 +281,12 @@ core::Status SqliteSnapshotStore::save(const project::ProjectSnapshot& snapshot_
       static_cast<std::uint64_t>(std::numeric_limits<sqlite3_int64>::max())) {
     return core::Status::failure(core::ErrorCode::kInvalidArgument,
                                  "project revision exceeds SQLite integer range");
+  }
+  for (const auto& event : events) {
+    if (event.project_revision != snapshot_value.project_revision) {
+      return core::Status::failure(core::ErrorCode::kInvalidArgument,
+                                   "journal event revision does not match snapshot revision");
+    }
   }
 
   if (const auto status = exec(db_, "BEGIN IMMEDIATE;"); !status.ok()) {
@@ -327,6 +410,83 @@ core::Status SqliteSnapshotStore::save(const project::ProjectSnapshot& snapshot_
       !status.ok()) {
     rollback();
     return status;
+  }
+
+  if (!events.empty()) {
+    Statement journal_statement;
+    if (const auto status = prepare(
+            db_,
+            "INSERT INTO project_journal(project_revision,event_index,event_type,entity_id,detail) "
+            "VALUES(?,?,?,?,?);",
+            journal_statement);
+        !status.ok()) {
+      rollback();
+      return status;
+    }
+    Statement affected_statement;
+    if (const auto status = prepare(
+            db_,
+            "INSERT INTO project_journal_affected(journal_id,position,entity_id) VALUES(?,?,?);",
+            affected_statement);
+        !status.ok()) {
+      rollback();
+      return status;
+    }
+
+    for (std::size_t event_index = 0; event_index < events.size(); ++event_index) {
+      if (event_index > static_cast<std::size_t>(std::numeric_limits<sqlite3_int64>::max())) {
+        rollback();
+        return core::Status::failure(core::ErrorCode::kInvalidArgument,
+                                     "journal event index exceeds SQLite integer range");
+      }
+      const auto& event = events[event_index];
+      sqlite3_bind_int64(journal_statement.get(), 1,
+                         static_cast<sqlite3_int64>(event.project_revision));
+      sqlite3_bind_int64(journal_statement.get(), 2, static_cast<sqlite3_int64>(event_index));
+      if (const auto status = bind_text(db_, journal_statement.get(), 3,
+                                        std::string{event_type_name(event.type)});
+          !status.ok()) {
+        rollback();
+        return status;
+      }
+      if (const auto status = bind_text(db_, journal_statement.get(), 4, event.entity_id.value());
+          !status.ok()) {
+        rollback();
+        return status;
+      }
+      if (const auto status = bind_text(db_, journal_statement.get(), 5, event.detail); !status.ok()) {
+        rollback();
+        return status;
+      }
+      if (const auto status = step_done(db_, journal_statement.get(), "failed to append journal event");
+          !status.ok()) {
+        rollback();
+        return status;
+      }
+
+      const sqlite3_int64 journal_id = sqlite3_last_insert_rowid(db_);
+      for (std::size_t position = 0; position < event.affected.size(); ++position) {
+        if (position > static_cast<std::size_t>(std::numeric_limits<sqlite3_int64>::max())) {
+          rollback();
+          return core::Status::failure(core::ErrorCode::kInvalidArgument,
+                                       "journal affected index exceeds SQLite integer range");
+        }
+        sqlite3_bind_int64(affected_statement.get(), 1, journal_id);
+        sqlite3_bind_int64(affected_statement.get(), 2, static_cast<sqlite3_int64>(position));
+        if (const auto status = bind_text(db_, affected_statement.get(), 3,
+                                          event.affected[position].value());
+            !status.ok()) {
+          rollback();
+          return status;
+        }
+        if (const auto status = step_done(db_, affected_statement.get(),
+                                          "failed to append journal affected entity");
+            !status.ok()) {
+          rollback();
+          return status;
+        }
+      }
+    }
   }
 
   if (const auto status = exec(db_, "COMMIT;"); !status.ok()) {
@@ -454,6 +614,78 @@ LoadSnapshotResult SqliteSnapshotStore::load() {
                                                         status.message), {}};
   }
   return LoadSnapshotResult{core::Status::success(), std::move(result)};
+}
+
+LoadJournalResult SqliteSnapshotStore::load_journal(std::size_t limit) {
+  if (db_ == nullptr) {
+    return LoadJournalResult{core::Status::failure(core::ErrorCode::kInvalidArgument,
+                                                   "database is not open"), {}};
+  }
+  if (limit == 0) return LoadJournalResult{core::Status::success(), {}};
+  if (limit > static_cast<std::size_t>(std::numeric_limits<sqlite3_int64>::max())) {
+    return LoadJournalResult{core::Status::failure(core::ErrorCode::kInvalidArgument,
+                                                   "journal limit exceeds SQLite integer range"), {}};
+  }
+
+  Statement journal_statement;
+  if (const auto status = prepare(
+          db_,
+          "SELECT id,project_revision,event_type,entity_id,detail FROM project_journal "
+          "ORDER BY project_revision DESC,event_index ASC,id ASC LIMIT ?;",
+          journal_statement);
+      !status.ok()) {
+    return LoadJournalResult{status, {}};
+  }
+  sqlite3_bind_int64(journal_statement.get(), 1, static_cast<sqlite3_int64>(limit));
+
+  Statement affected_statement;
+  if (const auto status = prepare(
+          db_,
+          "SELECT entity_id FROM project_journal_affected WHERE journal_id=? ORDER BY position;",
+          affected_statement);
+      !status.ok()) {
+    return LoadJournalResult{status, {}};
+  }
+
+  LoadJournalResult result{core::Status::success(), {}};
+  while (true) {
+    const int rc = sqlite3_step(journal_statement.get());
+    if (rc == SQLITE_DONE) break;
+    if (rc != SQLITE_ROW) {
+      return LoadJournalResult{sqlite_failure(db_, "failed to load project journal"), {}};
+    }
+
+    const sqlite3_int64 journal_id = sqlite3_column_int64(journal_statement.get(), 0);
+    const sqlite3_int64 revision = sqlite3_column_int64(journal_statement.get(), 1);
+    if (journal_id <= 0 || revision < 0) {
+      return LoadJournalResult{core::Status::failure(core::ErrorCode::kCorruptData,
+                                                     "invalid journal id or revision"), {}};
+    }
+
+    project::Event event;
+    event.project_revision = static_cast<std::uint64_t>(revision);
+    if (!parse_event_type(column_text(journal_statement.get(), 2), event.type)) {
+      return LoadJournalResult{core::Status::failure(core::ErrorCode::kCorruptData,
+                                                     "unknown event type in project journal"), {}};
+    }
+    event.entity_id = core::EntityId{column_text(journal_statement.get(), 3)};
+    event.detail = column_text(journal_statement.get(), 4);
+
+    sqlite3_bind_int64(affected_statement.get(), 1, journal_id);
+    while (true) {
+      const int affected_rc = sqlite3_step(affected_statement.get());
+      if (affected_rc == SQLITE_DONE) break;
+      if (affected_rc != SQLITE_ROW) {
+        return LoadJournalResult{sqlite_failure(db_, "failed to load journal affected entities"), {}};
+      }
+      event.affected.emplace_back(column_text(affected_statement.get(), 0));
+    }
+    sqlite3_reset(affected_statement.get());
+    sqlite3_clear_bindings(affected_statement.get());
+    result.events.push_back(std::move(event));
+  }
+
+  return result;
 }
 
 }  // namespace makewatch::persistence
