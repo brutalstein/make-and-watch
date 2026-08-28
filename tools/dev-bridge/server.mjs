@@ -124,6 +124,15 @@ async function readJsonBody(request) {
   return text ? JSON.parse(text) : {};
 }
 
+function boundedHistoryLimit(value) {
+  if (value === null) return 10;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 24) {
+    throw new Error('history limit must be an integer between 1 and 24');
+  }
+  return parsed;
+}
+
 async function systemTelemetry() {
   const telemetry = {
     platform: platform(),
@@ -181,10 +190,6 @@ async function ensureDevelopmentFixture(initialHealth) {
   const series = snapshot.nodes.find((node) => node.id === 'series.afterlight');
   if (!series || series.metadata?.devSeedVersion === DEV_SEED_VERSION) return;
 
-  // This migration applies only to the known bundled development fixture. It
-  // never runs for arbitrary user projects. Older fixture versions were left
-  // stale after topology construction; version 2 records the canonical fresh
-  // starting point without deleting the local SQLite database.
   const commands = [];
   const relockSeries = series.locked === true;
   if (relockSeries) commands.push({ type: 'node.lock', id: series.id, locked: false });
@@ -228,6 +233,11 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === 'GET' && url.pathname === '/api/project') {
       sendJson(request, response, 200, await rpc('project.snapshot'));
+      return;
+    }
+    if (request.method === 'GET' && url.pathname === '/api/project/history') {
+      const limit = boundedHistoryLimit(url.searchParams.get('limit'));
+      sendJson(request, response, 200, await rpc('project.history', { limit }));
       return;
     }
     if (request.method === 'GET' && url.pathname === '/api/system') {
