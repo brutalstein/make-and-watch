@@ -3,8 +3,19 @@ import type { ProjectGraphSnapshot } from '@makewatch/contracts';
 import { defaultWorkflowPositions, type WorkflowPositions } from '../workflowLayout';
 import type { AutopilotPlan, AutopilotStep } from './autopilotTypes';
 
+const MAX_VISIBLE_DRAGS = 6;
+
 function distance(left: { x: number; y: number }, right: { x: number; y: number }) {
   return Math.hypot(left.x - right.x, left.y - right.y);
+}
+
+function kindWeight(kind: string) {
+  if (kind === 'series') return 0;
+  if (kind === 'episode') return 1;
+  if (kind === 'character' || kind === 'location') return 2;
+  if (kind === 'scene') return 3;
+  if (kind === 'shot') return 4;
+  return 5;
 }
 
 export function buildWorkspaceAutopilotPlan(
@@ -16,37 +27,66 @@ export function buildWorkspaceAutopilotPlan(
     {
       id: 'announce.start',
       type: 'announce',
-      message: 'I’ll organize the workflow for you. You can watch every move and take control back at any time.',
-      holdMs: 900,
+      message: 'I’ll read the workflow, organize the important areas, and hand control back when the pass is complete.',
+      holdMs: 620,
     },
-    { id: 'fit.before', type: 'fitWorkflow', label: 'Reading the full production graph' },
+    { id: 'fit.before', type: 'fitWorkflow', label: 'Scanning the full production graph' },
+    { id: 'wait.scan', type: 'wait', durationMs: 180, label: 'Reading workflow structure' },
   ];
 
   const candidates = snapshot.nodes
-    .map((node) => ({ node, from: currentPositions[node.id], to: defaults[node.id] }))
+    .map((node) => ({
+      node,
+      from: currentPositions[node.id],
+      to: defaults[node.id],
+    }))
     .filter((entry) => entry.from && entry.to && distance(entry.from, entry.to) > 18)
     .sort((left, right) => {
-      const kindWeight = (kind: string) => {
-        if (kind === 'series') return 0;
-        if (kind === 'episode') return 1;
-        if (kind === 'character' || kind === 'location') return 2;
-        if (kind === 'scene') return 3;
-        if (kind === 'shot') return 4;
-        return 5;
-      };
-      return kindWeight(left.node.kind) - kindWeight(right.node.kind) || left.node.title.localeCompare(right.node.title);
+      const semanticOrder = kindWeight(left.node.kind) - kindWeight(right.node.kind);
+      if (semanticOrder !== 0) return semanticOrder;
+      const leftDistance = left.from && left.to ? distance(left.from, left.to) : 0;
+      const rightDistance = right.from && right.to ? distance(right.from, right.to) : 0;
+      return rightDistance - leftDistance || left.node.title.localeCompare(right.node.title);
     });
 
-  for (const [index, entry] of candidates.entries()) {
+  const visibleCandidates = candidates.slice(0, MAX_VISIBLE_DRAGS);
+  for (const [index, entry] of visibleCandidates.entries()) {
     if (!entry.from || !entry.to) continue;
     steps.push({
       id: `drag.${index}.${entry.node.id}`,
       type: 'dragNode',
       nodeId: entry.node.id,
       to: entry.to,
-      durationMs: 560,
-      label: `Placing ${entry.node.title}`,
+      durationMs: 520,
+      label: `Finding and placing ${entry.node.title}`,
     });
+
+    // Periodically widen the shot so the workflow feels explored rather than
+    // mechanically traversed one card at a time.
+    if ((index + 1) % 3 === 0 && index + 1 < visibleCandidates.length) {
+      steps.push({
+        id: `fit.rescan.${index}`,
+        type: 'fitWorkflow',
+        label: 'Reframing the workflow before continuing',
+      });
+    }
+  }
+
+  if (candidates.length > visibleCandidates.length) {
+    const remaining = candidates.length - visibleCandidates.length;
+    steps.push(
+      {
+        id: 'announce.bulk-settle',
+        type: 'announce',
+        message: `${remaining} additional workspace items follow the same dependency layout. I’ll settle those together instead of wasting your time with repetitive cursor motion.`,
+        holdMs: 420,
+      },
+      {
+        id: 'arrange.remaining',
+        type: 'arrangeWorkflow',
+        label: 'Settling the remaining dependency layout',
+      },
+    );
   }
 
   const reviewTarget = snapshot.nodes.find((node) => node.kind === 'scene' && node.approval === 'review')
@@ -59,7 +99,7 @@ export function buildWorkspaceAutopilotPlan(
         id: `focus.${reviewTarget.id}`,
         type: 'focusNode',
         nodeId: reviewTarget.id,
-        zoom: 1.08,
+        zoom: 1.04,
         label: `Reviewing ${reviewTarget.title}`,
       },
       {
@@ -71,17 +111,14 @@ export function buildWorkspaceAutopilotPlan(
     );
   }
 
-  steps.push(
-    {
-      id: 'announce.finish',
-      type: 'announce',
-      message: candidates.length > 0
-        ? 'The workspace is organized. Semantic project state was not changed.'
-        : 'The workspace was already organized. I inspected the graph without changing semantic state.',
-      holdMs: 850,
-    },
-    { id: 'fit.after', type: 'fitWorkflow', label: 'Finishing the workspace pass' },
-  );
+  steps.push({
+    id: 'announce.finish',
+    type: 'announce',
+    message: candidates.length > 0
+      ? 'Workspace pass complete. The layout is organized and semantic project state was not changed.'
+      : 'Workspace pass complete. The graph was already organized, so I only inspected its structure.',
+    holdMs: 520,
+  });
 
   return {
     schemaVersion: 1,
