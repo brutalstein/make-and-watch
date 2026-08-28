@@ -34,10 +34,10 @@ Observed results:
 - pnpm workspace installation: passed;
 - strict shared-contract TypeScript: passed;
 - Studio TypeScript project build: passed;
-- Vite production build: passed (1740 transformed modules);
+- Vite production build: passed;
 - native C/C++ configure: passed;
 - native build: passed;
-- CTest: 4/4 passed, 0 failed.
+- CTest: passed with zero failures.
 
 This proved the project graph, resource manager, SQLite persistence, and Studio static build foundation on the real Windows toolchain before native IPC was introduced.
 
@@ -56,12 +56,7 @@ CI passed tests proving:
 
 ## 2026-08-29 — Live Studio bridge
 
-Studio hardcoded workflow state was replaced by a native snapshot client. CI passes:
-
-- localhost bridge JavaScript syntax validation;
-- shared strict TypeScript contracts;
-- Studio strict typecheck;
-- Vite production build.
+Studio hardcoded workflow state was replaced by a native snapshot client. CI passed localhost bridge syntax validation, strict shared/Studio TypeScript, and the Vite production build.
 
 The bridge is transport-only: native project state remains authoritative. Real NVIDIA telemetry is observational and does not replace native resource admission.
 
@@ -83,11 +78,7 @@ The user subsequently opened the live Studio successfully on Windows, proving th
 
 Studio was converted to a controlled React Flow canvas with presentation-only drag state.
 
-CI passed:
-
-- strict TypeScript for controlled React Flow node state;
-- production Vite build;
-- bridge/seed JavaScript checks.
+CI passed strict TypeScript for controlled React Flow state, the production Vite build, and bridge/fixture checks.
 
 Implemented behavior includes draggable nodes, 8 px snap grid, locally persisted layout, dependency-aware deterministic Arrange, Fit action / `F` shortcut, double-click focus, Scene Strip focus, smooth semantic edges, and selected/dragging visual states.
 
@@ -95,15 +86,15 @@ The important invariant is validated architecturally: drag/layout state does not
 
 ## 2026-08-29 — Development fixture v2 migration
 
-The bundled development fixture now carries `devSeedVersion=2` and marks its complete topology fresh before applying final locks. The localhost development bridge detects the known old `series.afterlight` fixture and performs a narrowly scoped native migration without deleting the user's local development SQLite database.
+The bundled development fixture carries `devSeedVersion=2` and marks its complete topology fresh before applying final locks. The localhost development bridge detects the known old `series.afterlight` fixture and performs a narrowly scoped native migration without deleting the user's local development SQLite database.
 
 This migration path is intentionally limited to the bundled development fixture and is not a generic user-project auto-mutation mechanism.
 
 ## 2026-08-29 — SQLite schema v2 append-only journal
 
-SQLite schema was advanced from v1 to v2. `ProjectSession` now forwards the successful native event batch together with the staged snapshot to `SnapshotStore::save_commit`.
+SQLite schema advanced from v1 to v2. `ProjectSession` forwards the successful native event batch together with the staged snapshot to `SnapshotStore::save_commit`.
 
-GitHub Actions passed the native build and test suite covering:
+GitHub Actions passed tests covering:
 
 - atomic snapshot + event-journal commit;
 - no journal append when persistence fails;
@@ -120,36 +111,65 @@ GitHub Actions passed the native build and test suite covering:
 
 Studio gained a typed AI takeover subsystem intended for users who do not want to understand or manually operate node workflows.
 
-Implemented code-level capabilities:
+Implemented code-level capabilities include versioned `AutopilotPlan`, Assist/Guided/Director modes, exact-revision validation, bounded plan inputs, cancellable execution control, pause/resume/checkpoints, virtual AI cursor, takeover interaction lock, emergency `Esc`/Take-back control, native impact inspection, animated node dragging, and a deterministic Assist-mode Workspace Drive.
 
-- versioned `AutopilotPlan` schema;
-- Assist / Guided / Director mode model;
-- bounded plan validation against exact native project revision;
-- known-target and dependency-endpoint validation;
-- bounded coordinate, duration, wait, step, and command limits;
-- Assist-mode prohibition on semantic `applyCommands`;
-- cancellable execution control with pause/resume/checkpoints;
-- cinematic Studio-owned virtual cursor;
-- visible cursor travel, press/ripple, AI badge, glow/trail, and contextual action label;
-- takeover banner and progress state;
-- interaction lock while AI owns the workflow;
-- `Esc` / **Take back control** emergency cancellation;
-- `Space` pause/resume;
-- visible focus, native impact inspection, and animated node dragging;
-- AI layout writes only presentation-state coordinates;
-- deterministic Assist-mode **AI Workspace Drive** that uses the real native snapshot without pretending a Claude/Codex provider is connected.
+GitHub Actions passed strict Studio TypeScript and production Vite build with this integration.
 
-GitHub Actions passed strict Studio TypeScript and Vite production build with the Autopilot integration and final visual polish.
+Native commit-context support was extended so future semantic Autopilot transactions can carry durable provenance. CI caught an ambiguous `SqliteSnapshotStore::save_commit` overload and a stale `FakeStore` override; both were fixed without relaxing warnings or storage semantics. ProjectSession tests verify AI commit context reaches persistence and is encoded in the transaction event using versioned `mwctx1` detail.
 
-Native commit-context support was also extended so future semantic Autopilot transactions can carry durable provenance. CI caught two legitimate integration problems during that change: an ambiguous `SqliteSnapshotStore::save_commit` overload and a stale two-parameter `FakeStore` override in ProjectSession tests. Both were fixed without relaxing compiler warnings or storage semantics.
+## 2026-08-29 — Cinematic Autopilot camera and bounded liveness
 
-The final native CI passed configure, strict build, and complete CTest suite. The updated ProjectSession test verifies that an `ai_director` commit context reaches persistence and is encoded in the committed transaction event using versioned `mwctx1` provenance detail.
+Hands-on use exposed two UX defects in the first Autopilot iteration: the virtual cursor could leave the visible workflow area when the canvas was looking elsewhere, and a large presentation-layout pass could feel as though it never finished because it physically traversed every displaced node and then performed additional camera work.
 
-The current deterministic Autopilot demo is Assist-only and therefore performs no native semantic mutation. Studio/bridge context forwarding exists, while optional IPC context parsing is intentionally grouped with the upcoming bounded `project.history` protocol work before provider-driven semantic Autopilot is enabled.
+The Studio implementation was refactored with a dedicated `AutopilotCameraFollower` and bounded workspace choreography.
+
+Current code-level behavior:
+
+- a workflow safe/dead frame keeps the AI action visible without permanently centering it;
+- canvas pan follows the selected semantic node only when cursor motion requires it;
+- distant-node search gradually widens the camera;
+- active manipulation gently tightens the camera;
+- pan/zoom deltas are damped and bounded per animation frame;
+- camera ownership is transient and yields to explicit focus/fit operations after cursor motion settles;
+- the initial takeover banner does not move the graph until the cursor enters the workflow;
+- cursor labels flip near frame edges;
+- pause/background suspension does not count as active cursor animation time;
+- the deterministic demo physically drags at most six meaningful displaced nodes;
+- repetitive remainder is settled in one dependency-aware presentation-only pass;
+- periodic reframing makes the workflow feel explored instead of mechanically traversed;
+- the previous unnecessary final fit pass was removed after the completion message;
+- focus/drag/impact/arrange/fit presentation steps have a 10-second liveness watchdog and fail safely instead of retaining interaction ownership forever;
+- user approval checkpoints remain intentionally unbounded;
+- authoritative semantic `applyCommands` is deliberately not wrapped in a second UI race timeout; native transport/transaction correlation owns that boundary.
+
+GitHub Actions passed strict Studio TypeScript and the Vite production build after these changes.
+
+## 2026-08-29 — Hardened native ResourceManager
+
+The generic C++ resource-safety layer was reviewed before introducing workers. The review found an overly broad exclusivity rule: an exclusive GPU request previously conflicted with all active work rather than only GPU-using work. This could unnecessarily serialize CPU-only audio/metadata workloads.
+
+The implementation now provides:
+
+- GPU-use classification based on VRAM/exclusive-GPU requirements;
+- exclusive GPU serialization only against other GPU-using work;
+- continued CPU-only admission during an exclusive GPU reservation when RAM/CPU budgets fit;
+- non-mutating `preview_admission()` using the same policy as real acquisition;
+- projected VRAM/RAM/CPU usage and post-admission headroom;
+- active GPU workload count;
+- VRAM/RAM/CPU high-water marks;
+- admission/rejection counters;
+- move-only RAII `ResourceLease` ownership through `try_acquire_scoped()` so normal early-return/exception paths can release reservations automatically;
+- explicit ResourceManager-outlives-lease lifetime rule.
+
+Expanded native tests cover non-mutating preview, protected VRAM headroom, outcome counters, high-water metrics, GPU-only exclusivity behavior, CPU-only coexistence, move ownership, automatic scoped release, duplicate protection, and configuration guards.
+
+GitHub Actions completed native configure, strict build, and the full CTest suite successfully on the current code-level milestone.
+
+A bounded native pending-job queue was considered next, but no partial implementation was committed when the repository connector refused that new-file write. The runtime therefore remains intentionally at the resource-admission boundary; the job queue must not be claimed as implemented.
 
 ## Current required product-machine gate
 
-The latest draggable-layout + fixture-v2 + SQLite-journal + AI Autopilot code has passed CI but has not yet been exercised end-to-end on the primary Windows machine.
+The latest bounded Autopilot + dynamic camera + ResourceManager changes are green in CI but still require one fresh end-to-end run on the primary Windows/NVIDIA development machine.
 
 From the repository root:
 
@@ -161,20 +181,19 @@ git pull
 
 Verify:
 
-1. the existing development database migrates without manual deletion;
-2. the fixture does not start globally stale;
-3. manually dragged positions survive restart;
-4. deliberately move multiple nodes away from deterministic positions;
-5. launch **Let AI drive this workflow**;
-6. the AI takeover banner and virtual cursor appear;
-7. normal canvas/Scene Strip/Inspector mutations are blocked while AI controls the workflow;
-8. the AI cursor visibly travels to displaced nodes and drags them back into organized positions;
-9. native impact inspection is shown during the pass;
-10. `Space` pauses/resumes execution;
-11. `Esc` and **Take back control** cancel immediately and return manual control;
-12. Assist-mode Autopilot does not advance native project revision;
-13. AI-arranged presentation positions survive restart;
-14. manual approval/lock still advances project revision and survives SQLite restart;
-15. real NVIDIA telemetry and native connection remain healthy throughout.
+1. manually move many workflow nodes far away from their organized positions;
+2. launch **Let AI drive this workflow**;
+3. the AI should scan/reframe the workflow naturally rather than mechanically traversing every node;
+4. the camera should widen while locating distant nodes and gently tighten during manipulation;
+5. the virtual cursor should remain inside the cinematic safe frame while the canvas moves underneath it;
+6. only a bounded set of representative nodes should be physically dragged, with repetitive remainder settled together;
+7. the workflow pass must reach a clear completion state and release manual interaction ownership;
+8. `Space` pause/resume should not produce cursor teleporting even after a long pause;
+9. `Esc` and **Take back control** should cancel immediately;
+10. Assist-mode layout work must not advance native project revision;
+11. AI-arranged positions must survive restart;
+12. manual approve/lock must still advance native project revision and survive SQLite restart;
+13. `./verify.ps1` must pass the expanded ResourceManager tests on the Windows GNU 15.2 toolchain;
+14. native connection and real GPU telemetry must remain healthy throughout.
 
-Only after this hands-on gate should bounded history/provenance UI and provider/media work proceed.
+After this product-machine gate, the next engineering sequence is bounded native history/provenance UI, checkpoint/recovery policy, content-addressed asset storage, native pending-job queue, worker supervision with scoped resource leases, hardware-profile probing, and the first lightweight local media provider paths.
