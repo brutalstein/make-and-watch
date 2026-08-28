@@ -29,7 +29,7 @@ project::CommandResult ProjectSession::apply_batch(const std::vector<project::Co
     return result;
   }
 
-  if (const auto status = store_.save(staged.snapshot()); !status.ok()) {
+  if (const auto status = store_.save_commit(staged.snapshot(), result.events); !status.ok()) {
     return project::CommandResult{status, engine_.project_revision(), {}};
   }
 
@@ -39,6 +39,10 @@ project::CommandResult ProjectSession::apply_batch(const std::vector<project::Co
 
 project::ImpactReport ProjectSession::preview_impact(const core::EntityId& source) const {
   return engine_.preview_impact(source);
+}
+
+persistence::LoadJournalResult ProjectSession::history(std::size_t limit) {
+  return store_.load_journal(limit);
 }
 
 core::Status ProjectSession::replace(const project::ProjectSnapshot& snapshot_value) {
