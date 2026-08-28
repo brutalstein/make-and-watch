@@ -46,11 +46,20 @@ export class AutopilotExecutionControl {
 }
 
 export async function controlledDelay(control: AutopilotExecutionControl, milliseconds: number) {
-  const end = performance.now() + Math.max(0, milliseconds);
-  while (performance.now() < end) {
+  const duration = Math.max(0, milliseconds);
+  let elapsed = 0;
+  let previous = performance.now();
+
+  while (elapsed < duration) {
     await control.checkpoint();
-    const remaining = end - performance.now();
-    await new Promise<void>((resolve) => window.setTimeout(resolve, Math.min(80, Math.max(0, remaining))));
+    const now = performance.now();
+    // A pause or background-tab suspension can create a very large wall-clock
+    // gap. Cap the contribution so inactive time never consumes the delay.
+    elapsed += Math.min(80, Math.max(0, now - previous));
+    previous = now;
+    if (elapsed >= duration) break;
+    await new Promise<void>((resolve) => window.setTimeout(resolve, Math.min(48, duration - elapsed)));
   }
+
   await control.checkpoint();
 }
