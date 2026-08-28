@@ -5,18 +5,20 @@ This folder is the canonical context handoff for **Make & Watch**. A new enginee
 ## Reading order
 
 1. `VISION.md` — product goal and deliberate non-goals.
-2. `ARCHITECTURE.md` — system boundaries and dependency direction.
+2. `ARCHITECTURE.md` — system boundaries, state ownership, and dependency direction.
 3. `FOUNDATION_V1.md` — transactional semantic project graph.
-4. `PERSISTENCE.md` — embedded SQLite storage boundary.
-5. `IPC_AND_SESSION.md` — native application transaction boundary and Studio IPC.
-6. `RUNTIME_FOUNDATION.md` — public resource-safety layer.
-7. `AUTH_AND_AI_DIRECTOR.md` — supported Claude/Codex integration boundary.
-8. `INVARIANTS.md` — rules that must remain true as the repository grows.
-9. `DECISIONS.md` — architecture decisions already made.
-10. `QUALITY_GATES.md` — objective standards behind the quality target.
-11. `ROADMAP.md` — milestone sequence.
-12. `VALIDATION.md` — tests and environments that were actually executed.
-13. `HANDOFF.md` — current continuation point.
+4. `PERSISTENCE.md` — embedded SQLite snapshot+journal storage boundary.
+5. `JOURNAL_AND_RECOVERY.md` — append-only native history and future recovery constraints.
+6. `IPC_AND_SESSION.md` — native application transaction boundary and Studio IPC.
+7. `WORKSPACE_LAYOUT.md` — draggable workflow presentation-state boundary.
+8. `RUNTIME_FOUNDATION.md` — public resource-safety layer.
+9. `AUTH_AND_AI_DIRECTOR.md` — supported Claude/Codex integration boundary.
+10. `INVARIANTS.md` — rules that must remain true as the repository grows.
+11. `DECISIONS.md` — architecture decisions already made.
+12. `QUALITY_GATES.md` — objective standards behind the quality target.
+13. `ROADMAP.md` — milestone sequence.
+14. `VALIDATION.md` — tests and environments that were actually executed.
+15. `HANDOFF.md` — current continuation point.
 
 ## One-sentence product definition
 
@@ -24,9 +26,9 @@ Make & Watch is a local-first desktop series-production studio where a user dire
 
 ## Current stage
 
-**Foundation v1 / Native Studio Bridge.** The repository now has a transactional C++ project graph, SQLite persistence, guarded local resource admission, a versioned native IPC host, a persist-before-live-commit application session, and a Studio that projects real native state rather than hardcoded workflow data.
+**Foundation v1 / Interactive Native Studio.** The repository now has a transactional C++ project graph, SQLite schema-v2 snapshot+journal persistence, guarded local resource admission, a versioned native IPC host, a persist-before-live-commit application session, and an interactive Studio that projects real native state while keeping draggable workspace layout separate from semantic project truth.
 
-No heavyweight image/video/voice model is a hard dependency yet. Claude/Codex natural-language provider authentication is intentionally not faked; the next media/provider milestones must build on the validated native boundary.
+No heavyweight image/video/voice model is a hard dependency yet. Claude/Codex natural-language provider authentication is intentionally not faked; the next provider/media milestones must build on the validated native boundary.
 
 ## Public-repository warning
 
