@@ -20,6 +20,7 @@ using makewatch::persistence::LoadSnapshotResult;
 using makewatch::persistence::SnapshotStore;
 using makewatch::project::Command;
 using makewatch::project::CreateNode;
+using makewatch::project::Event;
 using makewatch::project::Node;
 using makewatch::project::NodeKind;
 using makewatch::project::PatchNode;
@@ -41,12 +42,19 @@ class FakeStore final : public SnapshotStore {
     return Status::success();
   }
 
+  Status save_commit(const ProjectSnapshot& snapshot, const std::vector<Event>& events) override {
+    const auto status = save(snapshot);
+    if (status.ok()) journaled_events += events.size();
+    return status;
+  }
+
   LoadSnapshotResult load() override { return {load_status, persisted}; }
 
   ProjectSnapshot persisted;
   Status load_status{Status::success()};
   bool fail_save{false};
   int save_attempts{0};
+  std::size_t journaled_events{0};
 };
 
 Node make_node(const char* id, NodeKind kind, const char* title) {
@@ -66,7 +74,9 @@ void test_persist_before_live_commit() {
           "create should persist and commit");
   require(session.snapshot().project_revision == 1 && store.persisted.project_revision == 1,
           "live and persisted revisions should agree");
+  require(store.journaled_events > 0, "successful commit should forward native events to persistence");
 
+  const auto journaled_before_failure = store.journaled_events;
   const auto before = session.snapshot();
   store.fail_save = true;
   PatchNode patch;
@@ -83,6 +93,8 @@ void test_persist_before_live_commit() {
           "persistence failure must not mutate live graph");
   require(store.persisted.graph.nodes.front().title == "Opening",
           "failed save must not replace persisted fixture state");
+  require(store.journaled_events == journaled_before_failure,
+          "failed persistence must not append journal events");
 }
 
 void test_replace_validates_before_persisting() {
