@@ -15,6 +15,9 @@ enum class ErrorCode {
   kCycleDetected,
   kResourceExhausted,
   kBusy,
+  kIoError,
+  kCorruptData,
+  kUnsupportedVersion,
 };
 
 struct Status final {
