@@ -113,6 +113,21 @@ export interface ProjectEvent {
   detail?: string;
 }
 
+export type ProjectCommitActor = 'user' | 'ai_director' | 'system';
+
+export interface ProjectHistoryTransaction {
+  projectRevision: number;
+  actor: ProjectCommitActor;
+  source: string;
+  planId: string;
+  reason: string;
+  events: ProjectEvent[];
+}
+
+export interface ProjectHistoryResult {
+  transactions: ProjectHistoryTransaction[];
+}
+
 export interface EngineHealth {
   service: 'makewatch-engine';
   protocolVersion: 1;
