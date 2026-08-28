@@ -1,5 +1,6 @@
 #include "makewatch/ipc/dispatcher.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -11,6 +12,7 @@
 
 #include "makewatch/core/status.hpp"
 #include "makewatch/domain/approval.hpp"
+#include "makewatch/persistence/snapshot_store.hpp"
 #include "makewatch/project/command.hpp"
 #include "makewatch/project/event.hpp"
 #include "makewatch/project/node.hpp"
@@ -25,6 +27,14 @@ using core::Status;
 using domain::ApprovalState;
 using project::NodeKind;
 
+constexpr std::size_t kMaxApplyCommands = 128;
+constexpr std::size_t kDefaultHistoryTransactions = 10;
+constexpr std::size_t kMaxHistoryTransactions = 24;
+constexpr std::size_t kHistoryEventBudgetPerTransaction = 384;
+constexpr std::size_t kMaxContextSourceLength = 160;
+constexpr std::size_t kMaxContextPlanLength = 192;
+constexpr std::size_t kMaxContextReasonLength = 1024;
+
 struct CommandParseResult final {
   Status status;
   std::optional<project::Command> command;
@@ -33,6 +43,20 @@ struct CommandParseResult final {
 struct SnapshotParseResult final {
   Status status;
   project::ProjectSnapshot snapshot;
+};
+
+struct CommitContextParseResult final {
+  Status status;
+  persistence::CommitContext context;
+};
+
+struct ParsedProvenance final {
+  std::string actor{"system"};
+  std::string source;
+  std::string plan_id;
+  std::string reason;
+  std::string event_detail;
+  bool encoded{false};
 };
 
 const char* error_code_name(ErrorCode code) noexcept {
@@ -138,6 +162,113 @@ bool read_uint64(const Json& value, std::uint64_t& output) {
   return false;
 }
 
+Status read_optional_bounded_string(
+    const Json& source,
+    const char* key,
+    std::size_t maximum,
+    std::string& output) {
+  if (!source.contains(key)) return Status::success();
+  if (!source[key].is_string()) return invalid(std::string{"context."} + key + " must be a string");
+  const auto value = source[key].get<std::string>();
+  if (value.size() > maximum) {
+    return invalid(std::string{"context."} + key + " exceeds maximum length");
+  }
+  output = value;
+  return Status::success();
+}
+
+CommitContextParseResult parse_commit_context(const Json& params) {
+  persistence::CommitContext context;
+  if (!params.contains("context") || params["context"].is_null()) {
+    return {Status::success(), std::move(context)};
+  }
+  const auto& source = params["context"];
+  if (!source.is_object()) return {invalid("project.apply context must be an object"), {}};
+
+  if (source.contains("actor")) {
+    if (!source["actor"].is_string()) return {invalid("context.actor must be a string"), {}};
+    const auto actor = source["actor"].get<std::string>();
+    if (actor == "user") context.actor = persistence::CommitActor::kUser;
+    else if (actor == "ai_director") context.actor = persistence::CommitActor::kAiDirector;
+    else if (actor == "system") context.actor = persistence::CommitActor::kSystem;
+    else return {invalid("context.actor is unknown"), {}};
+  }
+
+  if (const auto status = read_optional_bounded_string(
+          source, "source", kMaxContextSourceLength, context.source);
+      !status.ok()) {
+    return {status, {}};
+  }
+  if (const auto status = read_optional_bounded_string(
+          source, "planId", kMaxContextPlanLength, context.plan_id);
+      !status.ok()) {
+    return {status, {}};
+  }
+  if (const auto status = read_optional_bounded_string(
+          source, "reason", kMaxContextReasonLength, context.reason);
+      !status.ok()) {
+    return {status, {}};
+  }
+  return {Status::success(), std::move(context)};
+}
+
+std::vector<std::string> split_escaped_fields(std::string_view value) {
+  std::vector<std::string> fields;
+  std::string current;
+  bool escaped = false;
+  for (const char character : value) {
+    if (escaped) {
+      current.push_back(character);
+      escaped = false;
+      continue;
+    }
+    if (character == '\\') {
+      escaped = true;
+      continue;
+    }
+    if (character == '|') {
+      fields.push_back(std::move(current));
+      current.clear();
+      continue;
+    }
+    current.push_back(character);
+  }
+  if (escaped) current.push_back('\\');
+  fields.push_back(std::move(current));
+  return fields;
+}
+
+ParsedProvenance parse_provenance(std::string_view detail) {
+  ParsedProvenance result;
+  if (!detail.starts_with("mwctx1|")) {
+    result.event_detail = std::string{detail};
+    return result;
+  }
+
+  const auto fields = split_escaped_fields(detail);
+  if (fields.empty() || fields.front() != "mwctx1") {
+    result.event_detail = std::string{detail};
+    return result;
+  }
+
+  result.encoded = true;
+  for (std::size_t index = 1; index < fields.size(); ++index) {
+    const auto separator = fields[index].find('=');
+    if (separator == std::string::npos) continue;
+    const auto key = fields[index].substr(0, separator);
+    const auto value = fields[index].substr(separator + 1);
+    if (key == "actor") result.actor = value;
+    else if (key == "source") result.source = value;
+    else if (key == "plan") result.plan_id = value;
+    else if (key == "reason") result.reason = value;
+    else if (key == "event") result.event_detail = value;
+  }
+  if (result.actor != "user" && result.actor != "ai_director" && result.actor != "system") {
+    result.actor = "system";
+  }
+  return result;
+}
+
 Json snapshot_json(const project::ProjectSnapshot& snapshot) {
   Json nodes = Json::array();
   for (const auto& node : snapshot.graph.nodes) {
@@ -163,21 +294,65 @@ Json snapshot_json(const project::ProjectSnapshot& snapshot) {
               {"dependencies", std::move(dependencies)}};
 }
 
+Json event_json(const project::Event& event, const std::optional<std::string>& detail_override = std::nullopt) {
+  Json affected = Json::array();
+  for (const auto& id : event.affected) affected.push_back(id.value());
+  Json item{{"type", event_type_name(event.type)},
+            {"projectRevision", event.project_revision},
+            {"affected", std::move(affected)}};
+  if (!event.entity_id.empty()) item["entityId"] = event.entity_id.value();
+  const auto& detail = detail_override.has_value() ? *detail_override : event.detail;
+  if (!detail.empty()) item["detail"] = detail;
+  return item;
+}
+
 Json events_json(const std::vector<project::Event>& events) {
   Json result = Json::array();
-  for (const auto& event : events) {
-    Json affected = Json::array();
-    for (const auto& id : event.affected) {
-      affected.push_back(id.value());
-    }
-    Json item{{"type", event_type_name(event.type)},
-              {"projectRevision", event.project_revision},
-              {"affected", std::move(affected)}};
-    if (!event.entity_id.empty()) item["entityId"] = event.entity_id.value();
-    if (!event.detail.empty()) item["detail"] = event.detail;
-    result.push_back(std::move(item));
-  }
+  for (const auto& event : events) result.push_back(event_json(event));
   return result;
+}
+
+Json history_json(const std::vector<project::Event>& events, std::size_t transaction_limit) {
+  Json transactions = Json::array();
+  Json current;
+  std::uint64_t current_revision = 0;
+  bool has_current = false;
+  bool has_commit_marker = false;
+
+  const auto flush = [&]() mutable {
+    if (!has_current || !has_commit_marker || transactions.size() >= transaction_limit) return;
+    transactions.push_back(std::move(current));
+  };
+
+  for (const auto& event : events) {
+    if (!has_current || event.project_revision != current_revision) {
+      flush();
+      if (transactions.size() >= transaction_limit) break;
+      current_revision = event.project_revision;
+      current = Json{{"projectRevision", current_revision},
+                     {"actor", "system"},
+                     {"source", ""},
+                     {"planId", ""},
+                     {"reason", ""},
+                     {"events", Json::array()}};
+      has_current = true;
+      has_commit_marker = false;
+    }
+
+    if (event.type == project::EventType::kTransactionCommitted) {
+      has_commit_marker = true;
+      const auto provenance = parse_provenance(event.detail);
+      current["actor"] = provenance.actor;
+      current["source"] = provenance.source;
+      current["planId"] = provenance.plan_id;
+      current["reason"] = provenance.reason;
+      current["events"].push_back(event_json(event, provenance.event_detail));
+    } else {
+      current["events"].push_back(event_json(event));
+    }
+  }
+  flush();
+  return transactions;
 }
 
 Json ids_json(const std::vector<core::EntityId>& ids) {
@@ -428,10 +603,32 @@ std::string Dispatcher::handle(std::string_view request_line) {
         .dump();
   }
 
+  if (method == "project.history") {
+    std::size_t transaction_limit = kDefaultHistoryTransactions;
+    if (params.contains("limit")) {
+      std::uint64_t requested = 0;
+      if (!read_uint64(params["limit"], requested) || requested == 0 ||
+          requested > kMaxHistoryTransactions) {
+        return failure_response(id, invalid("project.history limit must be between 1 and 24")).dump();
+      }
+      transaction_limit = static_cast<std::size_t>(requested);
+    }
+    const std::size_t event_budget = transaction_limit * kHistoryEventBudgetPerTransaction;
+    auto history = session_.history(event_budget);
+    if (!history.ok()) return failure_response(id, history.status).dump();
+    return success_response(id, Json{{"transactions", history_json(history.events, transaction_limit)}}).dump();
+  }
+
   if (method == "project.apply") {
     if (!params.contains("commands") || !params["commands"].is_array()) {
       return failure_response(id, invalid("project.apply requires commands array")).dump();
     }
+    if (params["commands"].empty() || params["commands"].size() > kMaxApplyCommands) {
+      return failure_response(id, invalid("project.apply commands must contain between 1 and 128 items")).dump();
+    }
+    auto parsed_context = parse_commit_context(params);
+    if (!parsed_context.status.ok()) return failure_response(id, parsed_context.status).dump();
+
     std::vector<project::Command> commands;
     commands.reserve(params["commands"].size());
     for (const auto& input : params["commands"]) {
@@ -441,7 +638,7 @@ std::string Dispatcher::handle(std::string_view request_line) {
       }
       commands.push_back(std::move(*parsed.command));
     }
-    auto result = session_.apply_batch(commands);
+    auto result = session_.apply_batch(commands, parsed_context.context);
     if (!result.ok()) return failure_response(id, result.status).dump();
     return success_response(id, Json{{"projectRevision", result.project_revision},
                                      {"events", events_json(result.events)},
