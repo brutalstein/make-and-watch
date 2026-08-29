@@ -9,6 +9,10 @@ node_modules/
 .pnpm-store/
 *.tsbuildinfo
 
+# Python worker cache
+__pycache__/
+*.py[cod]
+
 # Native
 CMakeUserPresets.json
 compile_commands.json
