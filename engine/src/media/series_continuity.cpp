@@ -128,7 +128,7 @@ core::Status SeriesContinuityCompiler::compile(
       auto shots = direct_dependents(snapshot, scene->id, NodeKind::kShot);
       sort_nodes(shots);
       for (const auto* shot : shots) {
-        const auto [shot_owner, shot_inserted] = shot_owner_scene.emplace(shot->id.value(), scene->id.value());
+        const auto shot_inserted = shot_owner_scene.emplace(shot->id.value(), scene->id.value()).second;
         if (!shot_inserted) {
           output.issues.push_back(
               "shot " + shot->id.value() + " belongs to multiple scenes in the same series");
