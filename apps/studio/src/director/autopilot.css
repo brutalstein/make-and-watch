@@ -34,8 +34,13 @@
 }
 .autopilot-start:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.04); box-shadow: 0 14px 34px rgba(115,94,231,.24); }
 
+/* Presentation-only veil. ReactFlow and Studio actions already enforce their own
+   Autopilot ownership; this layer must never steal pointer input from Director Chat. */
 .autopilot-interaction-lock {
-  position: fixed; inset: 0; z-index: 52; cursor: none;
+  position: fixed;
+  inset: 0;
+  z-index: 52;
+  pointer-events: none;
   background: radial-gradient(circle at center, transparent 58%, rgba(5, 7, 12, .09));
   backdrop-filter: saturate(.96);
 }
