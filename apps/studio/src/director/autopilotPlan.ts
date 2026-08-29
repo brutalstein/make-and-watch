@@ -3,8 +3,6 @@ import type { ProjectGraphSnapshot } from '@makewatch/contracts';
 import { defaultWorkflowPositions, type WorkflowPositions } from '../workflowLayout';
 import type { AutopilotPlan, AutopilotStep } from './autopilotTypes';
 
-const MAX_VISIBLE_DRAGS = 5;
-
 function distance(left: { x: number; y: number }, right: { x: number; y: number }) {
   return Math.hypot(left.x - right.x, left.y - right.y);
 }
@@ -22,11 +20,13 @@ function kindWeight(kind: string) {
   return 5;
 }
 
+function deterministicTextCompare(left: string, right: string) {
+  if (left === right) return 0;
+  return left < right ? -1 : 1;
+}
+
 function dragDurationMs(distanceUnits: number) {
-  // Layout-space distance produces deterministic pacing regardless of monitor
-  // refresh rate. Very short drags still read as intentional; long drags do not
-  // race across the workflow faster than the user can visually follow.
-  return Math.round(clamp(760 + distanceUnits * 0.42, 820, 1500));
+  return Math.round(clamp(900 + distanceUnits * 0.46, 980, 1800));
 }
 
 export function buildWorkspaceAutopilotPlan(
@@ -38,11 +38,9 @@ export function buildWorkspaceAutopilotPlan(
     {
       id: 'announce.start',
       type: 'announce',
-      message: 'I’ll read the workflow, organize the important areas, and hand control back when the pass is complete.',
-      holdMs: 760,
+      message: 'I’ll find every displaced workflow node, pick it up visibly, place it in dependency order, and hand control back.',
+      holdMs: 720,
     },
-    { id: 'fit.before', type: 'fitWorkflow', label: 'Scanning the full production graph' },
-    { id: 'wait.scan', type: 'wait', durationMs: 320, label: 'Reading workflow structure' },
   ];
 
   const candidates = snapshot.nodes
@@ -57,11 +55,10 @@ export function buildWorkspaceAutopilotPlan(
       if (semanticOrder !== 0) return semanticOrder;
       const leftDistance = left.from && left.to ? distance(left.from, left.to) : 0;
       const rightDistance = right.from && right.to ? distance(right.from, right.to) : 0;
-      return rightDistance - leftDistance || left.node.title.localeCompare(right.node.title);
+      return rightDistance - leftDistance || deterministicTextCompare(left.node.id, right.node.id);
     });
 
-  const visibleCandidates = candidates.slice(0, MAX_VISIBLE_DRAGS);
-  for (const [index, entry] of visibleCandidates.entries()) {
+  for (const [index, entry] of candidates.entries()) {
     if (!entry.from || !entry.to) continue;
     const travel = distance(entry.from, entry.to);
     steps.push({
@@ -70,36 +67,16 @@ export function buildWorkspaceAutopilotPlan(
       nodeId: entry.node.id,
       to: entry.to,
       durationMs: dragDurationMs(travel),
-      label: `Finding and placing ${entry.node.title}`,
+      label: `Placing ${entry.node.title}`,
     });
-
-    if ((index + 1) % 2 === 0 && index + 1 < visibleCandidates.length) {
-      steps.push(
-        { id: `wait.breathe.${index}`, type: 'wait', durationMs: 180, label: 'Checking the composition' },
-        {
-          id: `fit.rescan.${index}`,
-          type: 'fitWorkflow',
-          label: 'Reframing the workflow before continuing',
-        },
-      );
+    if (index + 1 < candidates.length) {
+      steps.push({
+        id: `wait.after.${index}`,
+        type: 'wait',
+        durationMs: 150,
+        label: 'Checking the placement',
+      });
     }
-  }
-
-  if (candidates.length > visibleCandidates.length) {
-    const remaining = candidates.length - visibleCandidates.length;
-    steps.push(
-      {
-        id: 'announce.bulk-settle',
-        type: 'announce',
-        message: `${remaining} additional workspace items follow the same dependency layout. I’ll settle those together instead of wasting your time with repetitive cursor motion.`,
-        holdMs: 520,
-      },
-      {
-        id: 'arrange.remaining',
-        type: 'arrangeWorkflow',
-        label: 'Settling the remaining dependency layout',
-      },
-    );
   }
 
   const reviewTarget = snapshot.nodes.find((node) => node.kind === 'scene' && node.approval === 'review')
@@ -112,7 +89,6 @@ export function buildWorkspaceAutopilotPlan(
         id: `focus.${reviewTarget.id}`,
         type: 'focusNode',
         nodeId: reviewTarget.id,
-        zoom: 1.02,
         label: `Reviewing ${reviewTarget.title}`,
       },
       {
@@ -128,16 +104,16 @@ export function buildWorkspaceAutopilotPlan(
     id: 'announce.finish',
     type: 'announce',
     message: candidates.length > 0
-      ? 'Workspace pass complete. The layout is organized and semantic project state was not changed.'
+      ? `Workspace pass complete. ${candidates.length} displaced node${candidates.length === 1 ? '' : 's'} were found and placed individually without changing semantic project state.`
       : 'Workspace pass complete. The graph was already organized, so I only inspected its structure.',
-    holdMs: 680,
+    holdMs: 620,
   });
 
   return {
     schemaVersion: 1,
-    planId: `workspace-${snapshot.projectRevision}-${Date.now()}`,
+    planId: `workspace-r${snapshot.projectRevision}-n${candidates.length}`,
     title: 'AI Workspace Drive',
-    summary: 'The AI Director is organizing the visual workflow while native project truth remains protected.',
+    summary: 'The AI Director is physically organizing each displaced workflow node while native project truth remains protected.',
     mode: 'assist',
     provider: 'demo',
     expectedProjectRevision: snapshot.projectRevision,
