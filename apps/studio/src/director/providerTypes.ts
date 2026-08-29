@@ -23,6 +23,7 @@ export interface DirectorProviderStatus {
   capable: boolean;
   loginAvailable: boolean;
   planningAvailable: boolean;
+  chatAvailable: boolean;
   loginPending: boolean;
   executableName: string;
   discovery: string;
@@ -64,4 +65,24 @@ export interface DirectorPlanRequest {
   mode: AutopilotMode;
   selectedId?: string | null;
   workspacePositions?: Record<string, { x: number; y: number }>;
+}
+
+export interface DirectorChatRequest {
+  provider: DirectorProviderId;
+  conversationId?: string | null;
+  message: string;
+  selectedId?: string | null;
+}
+
+export interface DirectorChatResult {
+  provider: DirectorProviderId;
+  conversationId: string;
+  reply: string;
+  turnCount: number;
+  projectRevision: number;
+  context: DirectorContextStats;
+}
+
+export interface DirectorChatCloseResult {
+  closed: boolean;
 }
