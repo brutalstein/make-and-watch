@@ -16,13 +16,13 @@ function normalizeDirectory(value) {
   return trimmed ? resolve(trimmed) : null;
 }
 
-function uniqueDirectories(values) {
+function uniqueDirectories(values, platform) {
   const result = [];
   const seen = new Set();
   for (const value of values) {
     const normalized = normalizeDirectory(value);
     if (!normalized) continue;
-    const key = process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+    const key = platform === 'win32' ? normalized.toLowerCase() : normalized;
     if (seen.has(key)) continue;
     seen.add(key);
     result.push(normalized);
@@ -31,8 +31,9 @@ function uniqueDirectories(values) {
 }
 
 function searchDirectories(env, platform) {
+  const pathDelimiter = platform === 'win32' ? ';' : delimiter;
   const pathDirectories = String(env.PATH ?? env.Path ?? env.path ?? '')
-    .split(delimiter)
+    .split(pathDelimiter)
     .filter(Boolean);
 
   const userProfile = env.USERPROFILE ?? env.HOME ?? '';
@@ -56,8 +57,8 @@ function searchDirectories(env, platform) {
       ];
 
   return {
-    pathDirectories: uniqueDirectories(pathDirectories),
-    allDirectories: uniqueDirectories([...pathDirectories, ...fallbacks]),
+    pathDirectories: uniqueDirectories(pathDirectories, platform),
+    allDirectories: uniqueDirectories([...pathDirectories, ...fallbacks], platform),
   };
 }
 
@@ -127,12 +128,12 @@ function quoteCmdArgument(value) {
   const text = String(value);
   if (!text) return '""';
   // Provider arguments are generated internally; user prompts always travel on stdin.
-  // Escape cmd.exe metacharacters defensively for npm .cmd shims.
+  // Escape cmd.exe expansion/metacharacters for npm .cmd shims.
   const escaped = text
     .replace(/\^/g, '^^')
     .replace(/%/g, '%%')
-    .replace(/!/g, '^!')
-    .replace(/"/g, '\\"');
+    .replace(/!/g, '^!');
+  if (escaped.includes('"')) throw new Error('quoted cmd.exe provider argument is unsupported');
   return `"${escaped}"`;
 }
 
@@ -142,6 +143,7 @@ export function spawnProviderExecutable(executable, args, options = {}) {
 
   const env = options.env ?? process.env;
   const comspec = env.ComSpec ?? env.COMSPEC ?? process.env.ComSpec ?? process.env.COMSPEC ?? 'cmd.exe';
-  const commandLine = [quoteCmdArgument(executable.path), ...args.map(quoteCmdArgument)].join(' ');
-  return spawn(comspec, ['/d', '/s', '/c', commandLine], options);
+  const inner = [quoteCmdArgument(executable.path), ...args.map(quoteCmdArgument)].join(' ');
+  // cmd.exe /S /C requires the extra outer quote when the executable path itself is quoted.
+  return spawn(comspec, ['/d', '/s', '/c', `"${inner}"`], options);
 }
