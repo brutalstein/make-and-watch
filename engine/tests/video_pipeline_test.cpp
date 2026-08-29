@@ -85,6 +85,12 @@ int main() {
   assert(plan.total_duration_seconds == 4.5);
   snapshot.graph.nodes[4].metadata["durationSeconds"] = "3.0";
 
+  snapshot.graph.nodes[0].stale = true;
+  const auto stale_series_status = compiler.compile(snapshot, EntityId{"episode.1"}, {}, plan);
+  assert(stale_series_status.ok());
+  assert(!plan.ready_for_final_synthesis);
+  snapshot.graph.nodes[0].stale = false;
+
   snapshot.graph.nodes[2].stale = true;
   const auto stale_scene_status = compiler.compile(snapshot, EntityId{"episode.1"}, {}, plan);
   assert(stale_scene_status.ok());
@@ -96,6 +102,17 @@ int main() {
   assert(draft_episode_status.ok());
   assert(!plan.ready_for_final_synthesis);
   snapshot.graph.nodes[1].approval = ApprovalState::kApproved;
+
+  snapshot.graph.nodes.push_back(node("episode.other", NodeKind::kEpisode, "Other Episode"));
+  edge(snapshot, "scene.1", "episode.other");
+  const auto ambiguous_scene_status = compiler.compile(snapshot, EntityId{"episode.1"}, {}, plan);
+  assert(ambiguous_scene_status.ok());
+  assert(!plan.ready_for_final_synthesis);
+  assert(std::any_of(plan.issues.begin(), plan.issues.end(), [](const std::string& issue) {
+    return issue.find("scene scene.1 must belong to exactly one episode") != std::string::npos;
+  }));
+  snapshot.graph.dependencies.pop_back();
+  snapshot.graph.nodes.pop_back();
 
   snapshot.graph.nodes.push_back(node("scene.2", NodeKind::kScene, "Scene 2"));
   snapshot.graph.nodes.back().metadata["index"] = "2";
