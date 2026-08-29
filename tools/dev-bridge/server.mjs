@@ -41,6 +41,7 @@ if (!existsSync(nativeHost)) {
 
 let stdoutBuffer = '';
 let shuttingDown = false;
+let shutdownPromise = null;
 const pending = new Map();
 
 const native = spawn(nativeHost, ['--db', databasePath], {
@@ -252,6 +253,11 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (shuttingDown) {
+    sendJson(request, response, 503, { ok: false, error: { code: 'shutting_down', message: 'bridge is shutting down' } });
+    return;
+  }
+
   try {
     const url = new URL(request.url ?? '/', `http://${request.headers.host ?? '127.0.0.1'}`);
     if (request.method === 'GET' && url.pathname === '/api/health') {
@@ -347,15 +353,27 @@ server.listen(bridgePort, '127.0.0.1', () => {
   console.log(`[bridge] project database: ${databasePath}`);
 });
 
-function shutdown() {
-  if (shuttingDown) return;
+async function shutdown() {
+  if (shutdownPromise) return shutdownPromise;
   shuttingDown = true;
-  shutdownDirectorProviders();
-  server.close();
-  native.stdin.end();
-  if (native.exitCode === null) native.kill();
+  shutdownPromise = (async () => {
+    server.close();
+    await shutdownDirectorProviders();
+    native.stdin.end();
+    if (native.exitCode === null) native.kill();
+  })();
+  return shutdownPromise;
 }
 
-process.on('SIGINT', () => { shutdown(); process.exit(0); });
-process.on('SIGTERM', () => { shutdown(); process.exit(0); });
-process.on('exit', shutdown);
+async function exitAfterShutdown(exitCode) {
+  try {
+    await shutdown();
+  } catch (error) {
+    console.error(`[bridge] shutdown error: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    process.exit(exitCode);
+  }
+}
+
+process.once('SIGINT', () => { void exitAfterShutdown(0); });
+process.once('SIGTERM', () => { void exitAfterShutdown(0); });
