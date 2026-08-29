@@ -28,9 +28,13 @@ using domain::ApprovalState;
 using project::NodeKind;
 
 constexpr std::size_t kMaxApplyCommands = 128;
+constexpr std::size_t kMaxSnapshotNodes = 4096;
+constexpr std::size_t kMaxSnapshotDependencies = 16384;
 constexpr std::size_t kDefaultHistoryTransactions = 10;
 constexpr std::size_t kMaxHistoryTransactions = 24;
-constexpr std::size_t kHistoryEventBudgetPerTransaction = 384;
+// A PatchNode can emit node.updated + approval.changed + dependents.invalidated.
+// 128 * 3 command events + one transaction marker is the maximum normal batch.
+constexpr std::size_t kHistoryEventBudgetPerTransaction = 385;
 constexpr std::size_t kMaxContextSourceLength = 160;
 constexpr std::size_t kMaxContextPlanLength = 192;
 constexpr std::size_t kMaxContextReasonLength = 1024;
@@ -56,7 +60,6 @@ struct ParsedProvenance final {
   std::string plan_id;
   std::string reason;
   std::string event_detail;
-  bool encoded{false};
 };
 
 const char* error_code_name(ErrorCode code) noexcept {
@@ -147,6 +150,10 @@ Status invalid(std::string message) {
   return Status::failure(ErrorCode::kInvalidArgument, std::move(message));
 }
 
+Status revision_conflict(std::string message) {
+  return Status::failure(ErrorCode::kRevisionConflict, std::move(message));
+}
+
 bool read_uint64(const Json& value, std::uint64_t& output) {
   if (value.is_number_unsigned()) {
     output = value.get<std::uint64_t>();
@@ -183,7 +190,7 @@ CommitContextParseResult parse_commit_context(const Json& params) {
     return {Status::success(), std::move(context)};
   }
   const auto& source = params["context"];
-  if (!source.is_object()) return {invalid("project.apply context must be an object"), {}};
+  if (!source.is_object()) return {invalid("commit context must be an object"), {}};
 
   if (source.contains("actor")) {
     if (!source["actor"].is_string()) return {invalid("context.actor must be a string"), {}};
@@ -251,7 +258,6 @@ ParsedProvenance parse_provenance(std::string_view detail) {
     return result;
   }
 
-  result.encoded = true;
   for (std::size_t index = 1; index < fields.size(); ++index) {
     const auto separator = fields[index].find('=');
     if (separator == std::string::npos) continue;
@@ -294,7 +300,9 @@ Json snapshot_json(const project::ProjectSnapshot& snapshot) {
               {"dependencies", std::move(dependencies)}};
 }
 
-Json event_json(const project::Event& event, const std::optional<std::string>& detail_override = std::nullopt) {
+Json event_json(
+    const project::Event& event,
+    const std::optional<std::string>& detail_override = std::nullopt) {
   Json affected = Json::array();
   for (const auto& id : event.affected) affected.push_back(id.value());
   Json item{{"type", event_type_name(event.type)},
@@ -386,8 +394,9 @@ CommandParseResult parse_command(const Json& input) {
       return {invalid("node.create requires node"), std::nullopt};
     }
     const auto& source = input["node"];
-    if (!source.contains("id") || !source["id"].is_string() || !source.contains("kind") ||
-        !source["kind"].is_string() || !source.contains("title") || !source["title"].is_string()) {
+    if (!source.contains("id") || !source["id"].is_string() ||
+        !source.contains("kind") || !source["kind"].is_string() ||
+        !source.contains("title") || !source["title"].is_string()) {
       return {invalid("new node requires string id, kind, and title"), std::nullopt};
     }
     const auto kind = parse_node_kind(source["kind"].get<std::string>());
@@ -398,24 +407,34 @@ CommandParseResult parse_command(const Json& input) {
     node.kind = *kind;
     node.title = source["title"].get<std::string>();
     if (source.contains("metadata")) {
-      if (!source["metadata"].is_object()) return {invalid("node.metadata must be an object"), std::nullopt};
+      if (!source["metadata"].is_object()) {
+        return {invalid("node.metadata must be an object"), std::nullopt};
+      }
       for (const auto& [key, value] : source["metadata"].items()) {
-        if (!value.is_string()) return {invalid("node metadata values must be strings"), std::nullopt};
+        if (!value.is_string()) {
+          return {invalid("node metadata values must be strings"), std::nullopt};
+        }
         node.metadata[key] = value.get<std::string>();
       }
     }
     if (source.contains("approval")) {
-      if (!source["approval"].is_string()) return {invalid("node.approval must be a string"), std::nullopt};
+      if (!source["approval"].is_string()) {
+        return {invalid("node.approval must be a string"), std::nullopt};
+      }
       const auto approval = parse_approval(source["approval"].get<std::string>());
       if (!approval.has_value()) return {invalid("unknown approval state"), std::nullopt};
       node.approval = *approval;
     }
     if (source.contains("locked")) {
-      if (!source["locked"].is_boolean()) return {invalid("node.locked must be boolean"), std::nullopt};
+      if (!source["locked"].is_boolean()) {
+        return {invalid("node.locked must be boolean"), std::nullopt};
+      }
       node.locked = source["locked"].get<bool>();
     }
     if (source.contains("stale")) {
-      if (!source["stale"].is_boolean()) return {invalid("node.stale must be boolean"), std::nullopt};
+      if (!source["stale"].is_boolean()) {
+        return {invalid("node.stale must be boolean"), std::nullopt};
+      }
       node.stale = source["stale"].get<bool>();
     }
     return {Status::success(), project::Command{project::CreateNode{std::move(node)}}};
@@ -429,7 +448,9 @@ CommandParseResult parse_command(const Json& input) {
     patch.id = core::EntityId{input["id"].get<std::string>()};
     if (input.contains("expectedRevision")) {
       std::uint64_t value = 0;
-      if (!read_uint64(input["expectedRevision"], value)) return {invalid("expectedRevision must be a non-negative integer"), std::nullopt};
+      if (!read_uint64(input["expectedRevision"], value)) {
+        return {invalid("expectedRevision must be a non-negative integer"), std::nullopt};
+      }
       patch.expected_revision = value;
     }
     if (input.contains("title")) {
@@ -437,22 +458,32 @@ CommandParseResult parse_command(const Json& input) {
       patch.title = input["title"].get<std::string>();
     }
     if (input.contains("approval")) {
-      if (!input["approval"].is_string()) return {invalid("approval must be a string"), std::nullopt};
+      if (!input["approval"].is_string()) {
+        return {invalid("approval must be a string"), std::nullopt};
+      }
       const auto approval = parse_approval(input["approval"].get<std::string>());
       if (!approval.has_value()) return {invalid("unknown approval state"), std::nullopt};
       patch.approval = *approval;
     }
     if (input.contains("metadataUpdates")) {
-      if (!input["metadataUpdates"].is_object()) return {invalid("metadataUpdates must be an object"), std::nullopt};
+      if (!input["metadataUpdates"].is_object()) {
+        return {invalid("metadataUpdates must be an object"), std::nullopt};
+      }
       for (const auto& [key, value] : input["metadataUpdates"].items()) {
-        if (!value.is_string()) return {invalid("metadata update values must be strings"), std::nullopt};
+        if (!value.is_string()) {
+          return {invalid("metadata update values must be strings"), std::nullopt};
+        }
         patch.metadata_updates[key] = value.get<std::string>();
       }
     }
     if (input.contains("metadataRemovals")) {
-      if (!input["metadataRemovals"].is_array()) return {invalid("metadataRemovals must be an array"), std::nullopt};
+      if (!input["metadataRemovals"].is_array()) {
+        return {invalid("metadataRemovals must be an array"), std::nullopt};
+      }
       for (const auto& value : input["metadataRemovals"]) {
-        if (!value.is_string()) return {invalid("metadata removal keys must be strings"), std::nullopt};
+        if (!value.is_string()) {
+          return {invalid("metadata removal keys must be strings"), std::nullopt};
+        }
         patch.metadata_removals.insert(value.get<std::string>());
       }
     }
@@ -466,7 +497,9 @@ CommandParseResult parse_command(const Json& input) {
     std::optional<std::uint64_t> expected;
     if (input.contains("expectedRevision")) {
       std::uint64_t value = 0;
-      if (!read_uint64(input["expectedRevision"], value)) return {invalid("expectedRevision must be a non-negative integer"), std::nullopt};
+      if (!read_uint64(input["expectedRevision"], value)) {
+        return {invalid("expectedRevision must be a non-negative integer"), std::nullopt};
+      }
       expected = value;
     }
     const core::EntityId id{input["id"].get<std::string>()};
@@ -474,7 +507,8 @@ CommandParseResult parse_command(const Json& input) {
       if (!input.contains("locked") || !input["locked"].is_boolean()) {
         return {invalid("node.lock requires boolean locked"), std::nullopt};
       }
-      return {Status::success(), project::Command{project::SetLock{id, input["locked"].get<bool>(), expected}}};
+      return {Status::success(),
+              project::Command{project::SetLock{id, input["locked"].get<bool>(), expected}}};
     }
     if (type == "node.markFresh") {
       return {Status::success(), project::Command{project::MarkFresh{id, expected}}};
@@ -500,9 +534,16 @@ CommandParseResult parse_command(const Json& input) {
 
 SnapshotParseResult parse_snapshot(const Json& input) {
   if (!input.is_object() || !input.contains("schemaVersion") || input["schemaVersion"] != 1 ||
-      !input.contains("projectRevision") || !input.contains("nodes") || !input["nodes"].is_array() ||
+      !input.contains("projectRevision") ||
+      !input.contains("nodes") || !input["nodes"].is_array() ||
       !input.contains("dependencies") || !input["dependencies"].is_array()) {
     return {invalid("snapshot must match protocol schema version 1"), {}};
+  }
+  if (input["nodes"].size() > kMaxSnapshotNodes) {
+    return {invalid("snapshot exceeds maximum node count"), {}};
+  }
+  if (input["dependencies"].size() > kMaxSnapshotDependencies) {
+    return {invalid("snapshot exceeds maximum dependency count"), {}};
   }
 
   project::ProjectSnapshot snapshot;
@@ -512,19 +553,23 @@ SnapshotParseResult parse_snapshot(const Json& input) {
 
   for (const auto& source : input["nodes"]) {
     if (!source.is_object() || !source.contains("id") || !source["id"].is_string() ||
-        !source.contains("kind") || !source["kind"].is_string() || !source.contains("title") ||
-        !source["title"].is_string() || !source.contains("revision") ||
+        !source.contains("kind") || !source["kind"].is_string() ||
+        !source.contains("title") || !source["title"].is_string() ||
+        !source.contains("revision") ||
         !source.contains("approval") || !source["approval"].is_string() ||
         !source.contains("locked") || !source["locked"].is_boolean() ||
         !source.contains("stale") || !source["stale"].is_boolean()) {
       return {invalid("snapshot contains malformed node"), {}};
     }
+
     const auto kind = parse_node_kind(source["kind"].get<std::string>());
     const auto approval = parse_approval(source["approval"].get<std::string>());
     std::uint64_t revision = 0;
-    if (!kind.has_value() || !approval.has_value() || !read_uint64(source["revision"], revision)) {
+    if (!kind.has_value() || !approval.has_value() ||
+        !read_uint64(source["revision"], revision)) {
       return {invalid("snapshot node contains invalid enum or revision"), {}};
     }
+
     project::Node node;
     node.id = core::EntityId{source["id"].get<std::string>()};
     node.kind = *kind;
@@ -534,9 +579,13 @@ SnapshotParseResult parse_snapshot(const Json& input) {
     node.locked = source["locked"].get<bool>();
     node.stale = source["stale"].get<bool>();
     if (source.contains("metadata")) {
-      if (!source["metadata"].is_object()) return {invalid("snapshot metadata must be an object"), {}};
+      if (!source["metadata"].is_object()) {
+        return {invalid("snapshot metadata must be an object"), {}};
+      }
       for (const auto& [key, value] : source["metadata"].items()) {
-        if (!value.is_string()) return {invalid("snapshot metadata values must be strings"), {}};
+        if (!value.is_string()) {
+          return {invalid("snapshot metadata values must be strings"), {}};
+        }
         node.metadata[key] = value.get<std::string>();
       }
     }
@@ -544,7 +593,8 @@ SnapshotParseResult parse_snapshot(const Json& input) {
   }
 
   for (const auto& source : input["dependencies"]) {
-    if (!source.is_object() || !source.contains("dependent") || !source["dependent"].is_string() ||
+    if (!source.is_object() ||
+        !source.contains("dependent") || !source["dependent"].is_string() ||
         !source.contains("dependency") || !source["dependency"].is_string()) {
       return {invalid("snapshot contains malformed dependency"), {}};
     }
@@ -553,6 +603,24 @@ SnapshotParseResult parse_snapshot(const Json& input) {
         core::EntityId{source["dependency"].get<std::string>()}});
   }
   return {Status::success(), std::move(snapshot)};
+}
+
+std::optional<Status> check_expected_project_revision(
+    const Json& params,
+    std::uint64_t live_revision,
+    bool required) {
+  if (!params.contains("expectedProjectRevision")) {
+    if (required) return invalid("expectedProjectRevision is required");
+    return std::nullopt;
+  }
+  std::uint64_t expected = 0;
+  if (!read_uint64(params["expectedProjectRevision"], expected)) {
+    return invalid("expectedProjectRevision must be a non-negative integer");
+  }
+  if (expected != live_revision) {
+    return revision_conflict("project revision does not match expected revision");
+  }
+  return std::nullopt;
 }
 
 }  // namespace
@@ -564,11 +632,19 @@ std::string Dispatcher::handle(std::string_view request_line) {
   }
 
   std::string id;
-  if (request.contains("id") && request["id"].is_string()) id = request["id"].get<std::string>();
-  if (id.empty()) return failure_response(id, invalid("request.id must be a non-empty string")).dump();
+  if (request.contains("id") && request["id"].is_string()) {
+    id = request["id"].get<std::string>();
+  }
+  if (id.empty()) {
+    return failure_response(id, invalid("request.id must be a non-empty string")).dump();
+  }
   if (!request.contains("protocol") || request["protocol"] != kProtocolVersion) {
-    return failure_response(id, Status::failure(ErrorCode::kUnsupportedVersion,
-                                                "unsupported IPC protocol version")).dump();
+    return failure_response(
+               id,
+               Status::failure(
+                   ErrorCode::kUnsupportedVersion,
+                   "unsupported IPC protocol version"))
+        .dump();
   }
   if (!request.contains("method") || !request["method"].is_string()) {
     return failure_response(id, invalid("request.method must be a string")).dump();
@@ -576,14 +652,18 @@ std::string Dispatcher::handle(std::string_view request_line) {
 
   const auto method = request["method"].get<std::string>();
   const Json params = request.contains("params") ? request["params"] : Json::object();
-  if (!params.is_object()) return failure_response(id, invalid("request.params must be an object")).dump();
+  if (!params.is_object()) {
+    return failure_response(id, invalid("request.params must be an object")).dump();
+  }
 
   if (method == "health") {
     const auto snapshot = session_.snapshot();
-    return success_response(id, Json{{"service", "makewatch-engine"},
-                                     {"protocolVersion", kProtocolVersion},
-                                     {"projectRevision", snapshot.project_revision},
-                                     {"nodeCount", snapshot.graph.nodes.size()}})
+    return success_response(
+               id,
+               Json{{"service", "makewatch-engine"},
+                    {"protocolVersion", kProtocolVersion},
+                    {"projectRevision", snapshot.project_revision},
+                    {"nodeCount", snapshot.graph.nodes.size()}})
         .dump();
   }
 
@@ -595,11 +675,14 @@ std::string Dispatcher::handle(std::string_view request_line) {
     if (!params.contains("source") || !params["source"].is_string()) {
       return failure_response(id, invalid("project.impact requires string source")).dump();
     }
-    const auto report = session_.preview_impact(core::EntityId{params["source"].get<std::string>()});
+    const auto report =
+        session_.preview_impact(core::EntityId{params["source"].get<std::string>()});
     if (!report.ok()) return failure_response(id, report.status).dump();
-    return success_response(id, Json{{"affected", ids_json(report.affected)},
-                                     {"locked", ids_json(report.locked)},
-                                     {"alreadyStale", ids_json(report.already_stale)}})
+    return success_response(
+               id,
+               Json{{"affected", ids_json(report.affected)},
+                    {"locked", ids_json(report.locked)},
+                    {"alreadyStale", ids_json(report.already_stale)}})
         .dump();
   }
 
@@ -609,25 +692,45 @@ std::string Dispatcher::handle(std::string_view request_line) {
       std::uint64_t requested = 0;
       if (!read_uint64(params["limit"], requested) || requested == 0 ||
           requested > kMaxHistoryTransactions) {
-        return failure_response(id, invalid("project.history limit must be between 1 and 24")).dump();
+        return failure_response(
+                   id,
+                   invalid("project.history limit must be between 1 and 24"))
+            .dump();
       }
       transaction_limit = static_cast<std::size_t>(requested);
     }
-    const std::size_t event_budget = transaction_limit * kHistoryEventBudgetPerTransaction;
+    const std::size_t event_budget =
+        transaction_limit * kHistoryEventBudgetPerTransaction;
     auto history = session_.history(event_budget);
     if (!history.ok()) return failure_response(id, history.status).dump();
-    return success_response(id, Json{{"transactions", history_json(history.events, transaction_limit)}}).dump();
+    return success_response(
+               id,
+               Json{{"transactions", history_json(history.events, transaction_limit)}})
+        .dump();
   }
 
   if (method == "project.apply") {
+    const auto live_revision = session_.snapshot().project_revision;
+    if (const auto status =
+            check_expected_project_revision(params, live_revision, false);
+        status.has_value()) {
+      return failure_response(id, *status).dump();
+    }
     if (!params.contains("commands") || !params["commands"].is_array()) {
       return failure_response(id, invalid("project.apply requires commands array")).dump();
     }
-    if (params["commands"].empty() || params["commands"].size() > kMaxApplyCommands) {
-      return failure_response(id, invalid("project.apply commands must contain between 1 and 128 items")).dump();
+    if (params["commands"].empty() ||
+        params["commands"].size() > kMaxApplyCommands) {
+      return failure_response(
+                 id,
+                 invalid(
+                     "project.apply commands must contain between 1 and 128 items"))
+          .dump();
     }
     auto parsed_context = parse_commit_context(params);
-    if (!parsed_context.status.ok()) return failure_response(id, parsed_context.status).dump();
+    if (!parsed_context.status.ok()) {
+      return failure_response(id, parsed_context.status).dump();
+    }
 
     std::vector<project::Command> commands;
     commands.reserve(params["commands"].size());
@@ -638,11 +741,42 @@ std::string Dispatcher::handle(std::string_view request_line) {
       }
       commands.push_back(std::move(*parsed.command));
     }
+
     auto result = session_.apply_batch(commands, parsed_context.context);
     if (!result.ok()) return failure_response(id, result.status).dump();
-    return success_response(id, Json{{"projectRevision", result.project_revision},
-                                     {"events", events_json(result.events)},
-                                     {"snapshot", snapshot_json(session_.snapshot())}})
+    return success_response(
+               id,
+               Json{{"projectRevision", result.project_revision},
+                    {"events", events_json(result.events)},
+                    {"snapshot", snapshot_json(session_.snapshot())}})
+        .dump();
+  }
+
+  if (method == "project.restore") {
+    const auto live_revision = session_.snapshot().project_revision;
+    if (const auto status =
+            check_expected_project_revision(params, live_revision, true);
+        status.has_value()) {
+      return failure_response(id, *status).dump();
+    }
+    if (!params.contains("snapshot")) {
+      return failure_response(id, invalid("project.restore requires snapshot")).dump();
+    }
+    auto parsed_context = parse_commit_context(params);
+    if (!parsed_context.status.ok()) {
+      return failure_response(id, parsed_context.status).dump();
+    }
+    auto parsed = parse_snapshot(params["snapshot"]);
+    if (!parsed.status.ok()) return failure_response(id, parsed.status).dump();
+
+    auto result =
+        session_.restore(parsed.snapshot, live_revision, parsed_context.context);
+    if (!result.ok()) return failure_response(id, result.status).dump();
+    return success_response(
+               id,
+               Json{{"projectRevision", result.project_revision},
+                    {"events", events_json(result.events)},
+                    {"snapshot", snapshot_json(session_.snapshot())}})
         .dump();
   }
 
@@ -658,7 +792,10 @@ std::string Dispatcher::handle(std::string_view request_line) {
     return success_response(id, snapshot_json(session_.snapshot())).dump();
   }
 
-  return failure_response(id, Status::failure(ErrorCode::kNotFound, "unknown IPC method")).dump();
+  return failure_response(
+             id,
+             Status::failure(ErrorCode::kNotFound, "unknown IPC method"))
+      .dump();
 }
 
 }  // namespace makewatch::ipc
