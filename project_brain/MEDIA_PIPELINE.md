@@ -1,4 +1,4 @@
-# Series Continuity and Video Pipeline
+# Series Continuity and Media Pipeline
 
 ## Purpose
 
@@ -19,9 +19,6 @@ canonical Series / Episode / Scene / Shot / Character graph
                          |
                          v
                episode assembly task
-                         |
-                         v
-        future WorkerSupervisor/providers/render
 ```
 
 Semantic continuity and media execution remain separate.
@@ -40,16 +37,12 @@ Characters are not copied per episode. A single canonical `character` node is re
 
 A canonical Character revision is therefore the current semantic identity version. A change can invalidate dependent work across episodes through the native graph instead of creating silent divergent copies.
 
-### Ownership hardening
-
-Continuity compilation now rejects ambiguous topology as readiness issues rather than emitting duplicate bindings:
+Continuity compilation rejects ambiguous topology as readiness issues rather than emitting duplicate bindings:
 
 - one Scene appearing under multiple Episodes in the same Series;
 - one Shot appearing under multiple Scenes in the same Series.
 
-Duplicate ownership is skipped deterministically after being reported.
-
-Series readiness itself also participates: stale or non-final-approved Series state prevents final-synthesis readiness. Referenced Character anchors must remain identity-locked, fresh and approved/locked.
+Duplicate ownership is skipped deterministically after being reported. Series readiness itself participates: stale or non-final-approved Series state prevents final-synthesis readiness. Referenced Character anchors must remain identity-locked, fresh and approved/locked.
 
 ## Video render-plan compiler
 
@@ -63,13 +56,83 @@ For every valid uniquely-owned Shot it creates:
 
 The plan records project revision, output profile, duration, explicit generation strategy, continuity Character IDs, task dependencies and readiness issues.
 
+## First concrete generation path: scene storyboard preview
+
+The first real media execution path is deliberately smaller than final video synthesis. It generates one storyboard/reference frame per Shot in a Scene through a local ComfyUI server and persists the result back into the authoritative project graph as downstream `generation` nodes.
+
+```text
+Studio Scene context action
+        |
+        v
+local generation gateway :4178
+        |
+        +--> authoritative snapshot from project bridge :4177
+        |
+        +--> prompt compiler
+        |      series visual language
+        |      episode / scene summary
+        |      shot framing / camera
+        |      linked characters / locations
+        |
+        +--> local ComfyUI :8188
+        |      POST /prompt
+        |      GET /history/{prompt_id}
+        |      GET /view
+        |
+        +--> .makewatch/artifacts/scenes/...
+        |
+        +--> native project.apply
+               generation.preview.<shot-id>
+               depends on Shot
+               status / artifact / provider provenance
+```
+
+This is real local image generation, not a placeholder preview. It is intentionally called **storyboard preview** rather than final synthesis: a future I2V/video worker can consume the same canonical Shot and generated reference artifacts without changing project identity.
+
+### Generation gateway invariants
+
+- ComfyUI endpoint is restricted to localhost HTTP by default.
+- Default ComfyUI address is `127.0.0.1:8188` and can be overridden with `MAKEWATCH_COMFYUI_URL` only to another localhost address.
+- Prompt JSON and returned images have explicit byte bounds.
+- Completion is confirmed through bounded `/history/{prompt_id}` polling rather than depending solely on WebSocket delivery.
+- A Scene generation job is bounded to 64 Shots and the local queue is bounded.
+- Only one preview job executes at a time in v1 to avoid uncontrolled VRAM concurrency.
+- Generated artifacts are written under `.makewatch/artifacts/scenes`.
+- Project semantic state is never edited directly by the generation gateway; generation status/provenance is committed through revision-checked native `project.apply`.
+- Graph cycle, lock and revision rules remain native authority.
+- Generated preview nodes are downstream of their canonical Shot, so later Shot edits invalidate the correct dependency path.
+- A generation failure is recorded as failed generation metadata and does not silently mark the Shot itself as approved.
+
+Environment controls:
+
+- `MAKEWATCH_COMFYUI_URL`
+- `MAKEWATCH_COMFYUI_CHECKPOINT`
+- `MAKEWATCH_COMFYUI_TIMEOUT_MS`
+- `MAKEWATCH_GENERATION_PORT`
+- `MAKEWATCH_PREVIEW_WIDTH`
+- `MAKEWATCH_PREVIEW_HEIGHT`
+- `MAKEWATCH_ARTIFACT_DIR`
+
+`dev.ps1` / `tools/dev-runner.mjs` starts the Make & Watch generation gateway automatically. ComfyUI itself remains an external local inference service in this milestone; if it is offline Studio remains usable and the Scene generation action reports that exact state.
+
+## Workflow context actions
+
+Studio right-click actions map to project semantics, not cosmetic graph edits.
+
+- **Selected → this node** means the clicked node depends on the other selected nodes.
+- **This node → selected** means each other selected node depends on the clicked node.
+- Add Scene and Add Shot create native nodes plus their parent dependency.
+- Lock/unlock and delete route through native commands.
+- React Flow's local Delete/Backspace mutation is intercepted so presentation state cannot delete authoritative project nodes on its own.
+- Cycle detection, locked-node rejection and revision conflicts are surfaced from the native engine.
+
 ## Video compiler hard bounds
 
-The compiler now fails closed or reports not-ready state for malformed media inputs:
+The compiler fails closed or reports not-ready state for malformed media inputs:
 
 - width/height must be non-zero and <= 16384;
 - FPS must be finite, positive and <= 240;
-- Shot `durationSeconds` must parse completely to a finite positive number; `nan`, infinity, range overflow and malformed suffixes are invalid;
+- Shot `durationSeconds` must parse completely to a finite positive number;
 - accumulated Episode duration must remain finite;
 - metadata index parsing requires full-string consumption;
 - an Episode must depend on exactly one Series;
@@ -84,34 +147,29 @@ A plan may still be returned with issues for inspection/repair, but `ready_for_f
 
 ## Public-repository IP boundary
 
-The compiler does **not** choose a generation representation automatically. `generationStrategy` remains explicit project metadata.
+The native compiler does **not** choose a final generation representation automatically. `generationStrategy` remains explicit project metadata.
 
-Patent-sensitive adaptive representation selection, quality/resource control loops and unpublished scheduling heuristics remain intentionally excluded from this public repository until IP strategy is settled.
+Patent-sensitive adaptive representation selection, quality/resource control loops and unpublished scheduling heuristics remain intentionally excluded from this public repository until IP strategy is settled. Storyboard preview uses an explicit generic local T2I path and does not implement adaptive synthesis selection.
 
-## Current tests
+## Current verification
 
-Native tests cover:
+Native tests cover continuity, deterministic video planning, malformed duration/FPS/topology cases, resource lifecycle and worker process ownership. JavaScript quality gates additionally cover:
 
-- canonical cross-episode Character reuse and revision propagation;
-- identity lock readiness;
-- stale Series readiness;
-- duplicate Shot ownership in continuity;
-- deterministic Shot synthesis/composite/Episode assembly dependencies;
-- NaN FPS rejection;
-- NaN Shot duration handling;
-- stale Scene and draft Episode readiness;
-- duplicate Shot task suppression;
-- missing explicit strategy readiness.
+- deterministic ComfyUI workflow construction without contacting a remote service;
+- scene prompt composition from canonical graph context;
+- generation-node provenance and Shot dependency creation;
+- artifact manifest creation;
+- no-Shot Scene rejection;
+- syntax/type/build gates for the Studio generation UI.
 
-The native build remains warning-clean under the repository compiler policy.
+## Next media-runtime milestone
 
-## What is not implemented yet
+Storyboard generation is not yet the final movie renderer. Remaining work for full video output includes:
 
-- concrete OS/Python WorkerSupervisor;
-- actual image/video model process launch;
-- content-addressed generated-asset/provenance store;
-- FFmpeg execution/compositing worker;
-- checkpoint/resume for active media jobs;
-- adaptive strategy selection.
-
-The next media-runtime milestone must connect this deterministic plan to `BackgroundJobRuntime` through a concrete WorkerSupervisor and typed capability handshake. Resource leases must remain owned until the real worker confirms stop/completion.
+- typed I2V/video model worker integration for `kSynthesizeShot`;
+- explicit use of `WorkerSupervisor` resource leases for final media workers;
+- video compositing/FFmpeg execution for `kCompositeShot`;
+- Episode assembly execution for `kAssembleEpisode`;
+- persistent checkpoint/resume for active media jobs;
+- richer content-addressed artifact provenance and garbage collection;
+- only after IP strategy allows it, any adaptive strategy-selection layer.
