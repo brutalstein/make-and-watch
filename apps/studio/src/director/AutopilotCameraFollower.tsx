@@ -17,7 +17,7 @@ const FOLLOW_EPSILON = 2;
 const MOTION_GRACE_MS = 260;
 const MIN_AUTOPILOT_ZOOM = 0.48;
 const MAX_AUTOPILOT_ZOOM = 1.14;
-const VIEWPORT_FRAME_MS = 1000 / AUTOPILOT_PRESENTATION_FPS;
+const PRESENTATION_FRAME_MS = 1000 / AUTOPILOT_PRESENTATION_FPS;
 
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.min(maximum, Math.max(minimum, value));
@@ -86,11 +86,10 @@ interface AutopilotCameraFollowerProps {
 /**
  * Presentation-only camera controller for AI takeover.
  *
- * The loop may observe browser frames at the display refresh rate, but viewport
- * writes are budgeted to the same 24 FPS cadence as cursor/node presentation.
- * Only one React Flow viewport write may be outstanding at once. This prevents
- * camera promises from piling up when React is busy and removes a major source
- * of visible freezes on larger workflows.
+ * Cursor, node motion, DOM observation and viewport writes share one bounded
+ * 24 FPS presentation cadence. Only one React Flow viewport write may be
+ * outstanding. A 144/165 Hz display therefore cannot multiply layout reads or
+ * queue viewport promises beyond the deterministic presentation budget.
  */
 export function AutopilotCameraFollower({ state }: AutopilotCameraFollowerProps) {
   const reactFlow = useReactFlow();
@@ -102,6 +101,7 @@ export function AutopilotCameraFollower({ state }: AutopilotCameraFollowerProps)
   const surfaceRef = useRef<HTMLElement | null>(null);
   const activeClassRef = useRef(false);
   const engagedClassRef = useRef(false);
+  const lastSampleRef = useRef(0);
   const lastViewportWriteRef = useRef(0);
   const viewportWritePendingRef = useRef(false);
 
@@ -112,6 +112,7 @@ export function AutopilotCameraFollower({ state }: AutopilotCameraFollowerProps)
       previousCursorRef.current = null;
       motionUntilRef.current = 0;
       homeZoomRef.current = null;
+      lastSampleRef.current = 0;
       lastViewportWriteRef.current = 0;
     }
   }, [state]);
@@ -135,6 +136,13 @@ export function AutopilotCameraFollower({ state }: AutopilotCameraFollowerProps)
     };
 
     const tick = () => {
+      const now = performance.now();
+      if (now - lastSampleRef.current < PRESENTATION_FRAME_MS) {
+        animationFrame = requestAnimationFrame(tick);
+        return;
+      }
+      lastSampleRef.current = now;
+
       const current = stateRef.current;
       const takeoverActive = document.querySelector('.studio-shell--autopilot') !== null;
       const surface = surfaceRef.current ?? document.querySelector<HTMLElement>('.flow-surface');
@@ -151,7 +159,6 @@ export function AutopilotCameraFollower({ state }: AutopilotCameraFollowerProps)
         return;
       }
 
-      const now = performance.now();
       const surfaceRect = surface.getBoundingClientRect();
       const rawCursor = { x: current.x, y: current.y };
       const previousCursor = previousCursorRef.current;
@@ -178,10 +185,7 @@ export function AutopilotCameraFollower({ state }: AutopilotCameraFollowerProps)
         return;
       }
 
-      // Observe every display frame for responsiveness, but mutate the React
-      // Flow viewport only on the bounded presentation cadence and never while
-      // a previous write is still resolving.
-      if (viewportWritePendingRef.current || now - lastViewportWriteRef.current < VIEWPORT_FRAME_MS) {
+      if (viewportWritePendingRef.current || now - lastViewportWriteRef.current < PRESENTATION_FRAME_MS) {
         animationFrame = requestAnimationFrame(tick);
         return;
       }
