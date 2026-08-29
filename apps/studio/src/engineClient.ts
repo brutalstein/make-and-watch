@@ -9,6 +9,9 @@ import type {
 } from '@makewatch/contracts';
 
 import type {
+  DirectorChatCloseResult,
+  DirectorChatRequest,
+  DirectorChatResult,
   DirectorConnectResult,
   DirectorPlanRequest,
   DirectorPlanResult,
@@ -67,6 +70,14 @@ export const engineClient = {
   connectDirector: (provider: DirectorProviderId) => request<DirectorConnectResult>('/director/connect', {
     method: 'POST',
     body: JSON.stringify({ provider }),
+  }),
+  directorChat: (input: DirectorChatRequest) => request<DirectorChatResult>('/director/chat', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  }),
+  closeDirectorChat: (provider: DirectorProviderId, conversationId: string) => request<DirectorChatCloseResult>('/director/chat/close', {
+    method: 'POST',
+    body: JSON.stringify({ provider, conversationId }),
   }),
   directorPlan: (input: DirectorPlanRequest) => request<DirectorPlanResult>('/director/plan', {
     method: 'POST',
