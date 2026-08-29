@@ -82,6 +82,9 @@ export interface DirectorChatResult {
   conversationId: string;
   reply: string;
   turnCount: number;
+  title: string;
+  updatedAt: string;
+  runtimeMode: DirectorRuntimeMode;
   projectRevision: number;
   projectChanged: boolean;
   context: DirectorContextStats;
@@ -89,4 +92,67 @@ export interface DirectorChatResult {
 
 export interface DirectorChatCloseResult {
   closed: boolean;
+}
+
+export type DirectorConversationMessageRole = 'user' | 'assistant' | 'system';
+export type DirectorConversationDelivery = 'complete' | 'failed';
+
+export interface DirectorConversationMessage {
+  id: string;
+  role: DirectorConversationMessageRole;
+  text: string;
+  createdAt: string;
+  projectRevision: number | null;
+  delivery: DirectorConversationDelivery;
+}
+
+export interface DirectorConversationSummary {
+  id: string;
+  provider: DirectorProviderId;
+  runtimeMode: DirectorRuntimeMode;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  archivedAt: string | null;
+  turnCount: number;
+  providerThreadId: string | null;
+  providerThreadArchived: boolean;
+  lastProjectRevision: number | null;
+  messageCount: number;
+  preview: string;
+}
+
+export interface DirectorConversationDocument {
+  schemaVersion: 1;
+  id: string;
+  provider: DirectorProviderId;
+  runtimeMode: DirectorRuntimeMode;
+  providerThreadId: string | null;
+  providerThreadArchived: boolean;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  archivedAt: string | null;
+  turnCount: number;
+  lastProjectRevision: number | null;
+  messages: DirectorConversationMessage[];
+}
+
+export interface DirectorConversationListResult {
+  conversations: DirectorConversationSummary[];
+}
+
+export interface DirectorConversationReadResult {
+  conversation: DirectorConversationDocument;
+}
+
+export interface DirectorConversationMutationResult {
+  conversation: DirectorConversationSummary;
+  providerWarning?: string;
+}
+
+export interface DirectorConversationDeleteResult {
+  deleted: boolean;
+  conversation: DirectorConversationSummary;
+  providerWarning?: string;
 }
