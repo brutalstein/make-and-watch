@@ -26,7 +26,10 @@ function deterministicTextCompare(left: string, right: string) {
 }
 
 function dragDurationMs(distanceUnits: number) {
-  return Math.round(clamp(900 + distanceUnits * 0.46, 980, 1800));
+  // Faster than the first exact-pointer pass, but still long enough to read the
+  // physical grab/transport/drop choreography. Camera follow removes the need
+  // for long cross-canvas cursor travel while the node is held.
+  return Math.round(clamp(430 + distanceUnits * 0.26, 520, 980));
 }
 
 export function buildWorkspaceAutopilotPlan(
@@ -38,8 +41,8 @@ export function buildWorkspaceAutopilotPlan(
     {
       id: 'announce.start',
       type: 'announce',
-      message: 'I’ll find every displaced workflow node, pick it up visibly, place it in dependency order, and hand control back.',
-      holdMs: 720,
+      message: 'I’ll find each displaced node, grab it, place it in dependency order, and return control.',
+      holdMs: 360,
     },
   ];
 
@@ -73,8 +76,8 @@ export function buildWorkspaceAutopilotPlan(
       steps.push({
         id: `wait.after.${index}`,
         type: 'wait',
-        durationMs: 150,
-        label: 'Checking the placement',
+        durationMs: 52,
+        label: 'Placement verified',
       });
     }
   }
@@ -104,9 +107,9 @@ export function buildWorkspaceAutopilotPlan(
     id: 'announce.finish',
     type: 'announce',
     message: candidates.length > 0
-      ? `Workspace pass complete. ${candidates.length} displaced node${candidates.length === 1 ? '' : 's'} were found and placed individually without changing semantic project state.`
+      ? `Workspace pass complete. ${candidates.length} displaced node${candidates.length === 1 ? '' : 's'} were placed individually without changing semantic project state.`
       : 'Workspace pass complete. The graph was already organized, so I only inspected its structure.',
-    holdMs: 620,
+    holdMs: 320,
   });
 
   return {
