@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { discoverProviderExecutable, spawnProviderExecutable } from './provider-executable.mjs';
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const planSchemaPath = resolve(root, 'schemas', 'v1', 'director-autopilot-plan.schema.json');
 
@@ -17,12 +19,6 @@ const EXPERIMENTAL_CLAUDE_CODE = process.env.MAKEWATCH_ENABLE_EXPERIMENTAL_CLAUD
 let activeRun = null;
 let activePlanChild = null;
 let claudeSchemaPromise = null;
-
-function providerCommand(provider) {
-  if (provider === 'codex') return 'codex';
-  if (provider === 'claude') return 'claude';
-  throw new Error(`unsupported Director provider: ${provider}`);
-}
 
 function terminateProcessTree(child) {
   if (!child || child.exitCode !== null || child.killed) return;
@@ -69,7 +65,7 @@ function appendChunk(state, chunk, maximum, label, child) {
   state.chunks.push(chunk);
 }
 
-function runBounded(command, args, {
+function runBounded(executable, args, {
   input = '',
   timeoutMs = STATUS_TIMEOUT_MS,
   maxOutputBytes = MAX_STATUS_BYTES,
@@ -78,7 +74,7 @@ function runBounded(command, args, {
   trackPlanChild = false,
 } = {}) {
   return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn(command, args, {
+    const child = spawnProviderExecutable(executable, args, {
       cwd,
       windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -133,45 +129,65 @@ function runBounded(command, args, {
   });
 }
 
-async function helpText(command, args) {
+async function helpText(executable, args) {
   try {
-    const result = await runBounded(command, args, { timeoutMs: STATUS_TIMEOUT_MS });
+    const result = await runBounded(executable, args, { timeoutMs: STATUS_TIMEOUT_MS });
     return `${result.stdout}\n${result.stderr}`;
   } catch {
     return '';
   }
 }
 
-function safeStatusDetail({ provider, installed, authenticated, capable, policy }) {
+function safeStatusDetail({ provider, installed, authenticated, capable, policy, discovery }) {
   if (provider === 'claude' && policy === 'api_required') {
     return installed
-      ? 'Claude Code detected; third-party product use requires a supported Anthropic API path'
+      ? 'Claude Code is detected locally; product use requires a supported Anthropic API path'
       : 'Production Claude integration requires Anthropic API/Console credentials';
   }
-  if (!installed) return 'Official client not found on PATH';
-  if (!capable) return 'Official client must be updated for required safe automation flags';
-  if (!authenticated) return 'Official client is installed and awaiting first-party sign-in';
+  if (!installed) return 'Official client was not found in PATH or common user CLI locations';
+  if (!capable) return 'Official client was detected but must be updated for required safe automation flags';
+  if (!authenticated) return `Official client detected via ${discovery || 'local discovery'} and awaiting first-party sign-in`;
   return policy === 'experimental_local_client'
     ? 'Developer-preview Claude Code bridge is enabled locally'
     : 'Official client is authenticated and ready for Make & Watch Director planning';
 }
 
+function unavailableStatus(provider, policy) {
+  return {
+    provider,
+    policy,
+    installed: false,
+    authenticated: false,
+    authMethod: '',
+    version: '',
+    capable: false,
+    executableName: '',
+    discovery: '',
+    detail: safeStatusDetail({ provider, installed: false, authenticated: false, capable: false, policy, discovery: '' }),
+  };
+}
+
 async function codexStatus() {
   const policy = 'supported_local_client';
-  const command = providerCommand('codex');
+  const executable = discoverProviderExecutable('codex');
+  if (!executable) return unavailableStatus('codex', policy);
+
   let version = '';
   try {
-    const versionResult = await runBounded(command, ['--version']);
+    const versionResult = await runBounded(executable, ['--version']);
     if (versionResult.code !== 0) throw new Error('codex --version failed');
     version = (versionResult.stdout || versionResult.stderr).slice(0, 160);
   } catch {
     return {
-      provider: 'codex', policy, installed: false, authenticated: false, authMethod: '', version: '', capable: false,
-      detail: safeStatusDetail({ provider: 'codex', installed: false, authenticated: false, capable: false, policy }),
+      ...unavailableStatus('codex', policy),
+      installed: true,
+      executableName: executable.name,
+      discovery: executable.discovery,
+      detail: 'Codex executable was found but could not be launched by the local bridge',
     };
   }
 
-  const execHelp = await helpText(command, ['exec', '--help']);
+  const execHelp = await helpText(executable, ['exec', '--help']);
   const capable = execHelp.includes('--output-schema')
     && execHelp.includes('--output-last-message')
     && execHelp.includes('--sandbox')
@@ -180,9 +196,9 @@ async function codexStatus() {
   let authenticated = false;
   let authMethod = '';
   try {
-    const status = await runBounded(command, ['login', 'status']);
+    const status = await runBounded(executable, ['login', 'status']);
     const text = `${status.stdout}\n${status.stderr}`.trim();
-    authenticated = status.code === 0 && !/not logged in/i.test(text);
+    authenticated = status.code === 0 && !/not logged in|logged out/i.test(text);
     if (/chatgpt/i.test(text)) authMethod = 'chatgpt';
     else if (/api key/i.test(text)) authMethod = 'api_key';
     else if (/agent identity/i.test(text)) authMethod = 'agent_identity';
@@ -191,27 +207,42 @@ async function codexStatus() {
   }
 
   return {
-    provider: 'codex', policy, installed: true, authenticated, authMethod, version, capable,
-    detail: safeStatusDetail({ provider: 'codex', installed: true, authenticated, capable, policy }),
+    provider: 'codex',
+    policy,
+    installed: true,
+    authenticated,
+    authMethod,
+    version,
+    capable,
+    executableName: executable.name,
+    discovery: executable.discovery,
+    detail: safeStatusDetail({
+      provider: 'codex', installed: true, authenticated, capable, policy, discovery: executable.discovery,
+    }),
   };
 }
 
 async function claudeStatus() {
   const policy = EXPERIMENTAL_CLAUDE_CODE ? 'experimental_local_client' : 'api_required';
-  const command = providerCommand('claude');
+  const executable = discoverProviderExecutable('claude');
+  if (!executable) return unavailableStatus('claude', policy);
+
   let version = '';
   try {
-    const versionResult = await runBounded(command, ['--version']);
+    const versionResult = await runBounded(executable, ['--version']);
     if (versionResult.code !== 0) throw new Error('claude --version failed');
     version = (versionResult.stdout || versionResult.stderr).slice(0, 160);
   } catch {
     return {
-      provider: 'claude', policy, installed: false, authenticated: false, authMethod: '', version: '', capable: false,
-      detail: safeStatusDetail({ provider: 'claude', installed: false, authenticated: false, capable: false, policy }),
+      ...unavailableStatus('claude', policy),
+      installed: true,
+      executableName: executable.name,
+      discovery: executable.discovery,
+      detail: 'Claude executable was found but could not be launched by the local bridge',
     };
   }
 
-  const cliHelp = await helpText(command, ['--help']);
+  const cliHelp = await helpText(executable, ['--help']);
   const technicallyCapable = cliHelp.includes('--output-format')
     && cliHelp.includes('--max-turns')
     && cliHelp.includes('--permission-mode')
@@ -222,7 +253,7 @@ async function claudeStatus() {
   let authenticated = false;
   let authMethod = '';
   try {
-    const status = await runBounded(command, ['auth', 'status']);
+    const status = await runBounded(executable, ['auth', 'status']);
     const text = `${status.stdout}\n${status.stderr}`.trim();
     try {
       const parsed = JSON.parse(status.stdout);
@@ -238,8 +269,18 @@ async function claudeStatus() {
   }
 
   return {
-    provider: 'claude', policy, installed: true, authenticated, authMethod, version, capable,
-    detail: safeStatusDetail({ provider: 'claude', installed: true, authenticated, capable, policy }),
+    provider: 'claude',
+    policy,
+    installed: true,
+    authenticated,
+    authMethod,
+    version,
+    capable,
+    executableName: executable.name,
+    discovery: executable.discovery,
+    detail: safeStatusDetail({
+      provider: 'claude', installed: true, authenticated, capable, policy, discovery: executable.discovery,
+    }),
   };
 }
 
@@ -250,19 +291,19 @@ export async function providerStatuses() {
 
 function enforceProviderPolicy(provider) {
   if (provider === 'claude' && !EXPERIMENTAL_CLAUDE_CODE) {
-    throw new Error('Claude Code subscription routing is disabled for the public product; use Codex or a future supported Anthropic API provider');
+    throw new Error('Claude Code subscription routing is disabled for the public product; use Codex or a supported Anthropic API provider');
   }
 }
 
 export async function launchProviderLogin(provider) {
   enforceProviderPolicy(provider);
-  const command = providerCommand(provider);
   const status = provider === 'codex' ? await codexStatus() : await claudeStatus();
-  if (!status.installed) throw new Error(`${provider} official client is not installed`);
+  const executable = discoverProviderExecutable(provider);
+  if (!status.installed || !executable) throw new Error(`${provider} official client is not installed`);
   if (!status.capable) throw new Error(`${provider} official client does not meet the required integration capability`);
 
   const args = provider === 'codex' ? ['login'] : ['auth', 'login'];
-  const child = spawn(command, args, {
+  const child = spawnProviderExecutable(executable, args, {
     cwd: root,
     detached: true,
     windowsHide: false,
@@ -273,8 +314,8 @@ export async function launchProviderLogin(provider) {
   return {
     provider,
     launched: true,
-    command: `${command} ${args.join(' ')}`,
-    message: 'Authentication remains inside the official provider client. Make & Watch does not receive OAuth credentials.',
+    command: `${executable.name} ${args.join(' ')}`,
+    message: 'Authentication stays inside the official provider client. Make & Watch does not receive OAuth credentials.',
   };
 }
 
@@ -318,6 +359,8 @@ async function claudeSchemaString() {
 }
 
 async function invokeCodex(prompt) {
+  const executable = discoverProviderExecutable('codex');
+  if (!executable) throw new Error('Codex official client is no longer available');
   const temp = await mkdtemp(join(tmpdir(), 'makewatch-codex-'));
   const outputPath = join(temp, 'plan.json');
   try {
@@ -329,7 +372,7 @@ async function invokeCodex(prompt) {
       '--output-last-message', outputPath,
       '-',
     ];
-    const result = await runBounded('codex', args, {
+    const result = await runBounded(executable, args, {
       input: prompt,
       timeoutMs: PLAN_TIMEOUT_MS,
       maxOutputBytes: MAX_PLAN_PROCESS_BYTES,
@@ -347,8 +390,10 @@ async function invokeCodex(prompt) {
 
 async function invokeClaude(prompt) {
   enforceProviderPolicy('claude');
+  const executable = discoverProviderExecutable('claude');
+  if (!executable) throw new Error('Claude Code official client is no longer available');
   const schema = await claudeSchemaString();
-  const result = await runBounded('claude', [
+  const result = await runBounded(executable, [
     '-p',
     '--output-format', 'json',
     '--permission-mode', 'plan',
