@@ -20,7 +20,7 @@ This folder is the canonical context handoff for **Make & Watch**. A new enginee
 14. `QUALITY_GATES.md` — objective standards behind the quality target.
 15. `ROADMAP.md` — milestone sequence.
 16. `VALIDATION.md` — tests and environments that were actually executed.
-17. `HANDOFF.md` — current continuation point.
+17. `HANDOFF.md` — current continuation point and live product-machine gate.
 
 ## One-sentence product definition
 
