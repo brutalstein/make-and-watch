@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,6 +9,7 @@ import {
   discoverProviderExecutable,
   guardProviderStdio,
   providerLaunchSummary,
+  spawnProviderExecutable,
 } from './provider-executable.mjs';
 
 const temp = await mkdtemp(join(tmpdir(), 'makewatch-provider-discovery-'));
@@ -82,6 +83,27 @@ try {
     code: 'EPIPE',
     message: 'broken pipe',
   });
+
+  if (process.platform !== 'win32') {
+    const nodeExecutable = {
+      path: process.execPath,
+      name: 'node',
+      discovery: 'test',
+      commandShellRequired: false,
+    };
+    const child = spawnProviderExecutable(
+      nodeExecutable,
+      ['-e', 'setInterval(() => {}, 1000)'],
+      { stdio: 'ignore' },
+    );
+    assert.equal(child.makewatchOwnProcessGroup, true, 'POSIX provider process should own a dedicated process group');
+    const closed = once(child, 'close');
+    assert.equal(child.kill('SIGTERM'), true, 'owned provider process group should accept termination');
+    await Promise.race([
+      closed,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('POSIX provider group did not terminate')), 3000)),
+    ]);
+  }
 
   console.log('director provider-executable check: passed');
 } finally {
