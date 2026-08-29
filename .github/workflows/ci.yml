@@ -13,7 +13,7 @@ jobs:
     name: Native core
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Ninja
         run: sudo apt-get update && sudo apt-get install -y ninja-build
       - name: Configure
@@ -27,16 +27,16 @@ jobs:
     name: Studio contracts and build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
         with:
           version: 10.15.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: Install
-        run: pnpm install --no-frozen-lockfile
-      - name: Bridge syntax
+        run: pnpm install --frozen-lockfile
+      - name: Bridge and Director checks
         run: pnpm bridge:check
       - name: Typecheck
         run: pnpm typecheck
