@@ -28,32 +28,37 @@ const snapshot = {
 };
 const positions = Object.fromEntries(nodes.map((node, index) => [node.id, { x: index * 120, y: index * 40 }]));
 
-const first = await buildDirectorContextPack({
+const input = {
   provider: 'codex',
   objective: 'Organize the episode workflow without changing semantic state.',
   mode: 'assist',
   snapshot,
   selectedId: 'scene.001',
   workspacePositions: positions,
-});
-const second = await buildDirectorContextPack({
-  provider: 'codex',
-  objective: 'Organize the episode workflow without changing semantic state.',
-  mode: 'assist',
-  snapshot,
-  selectedId: 'scene.001',
-  workspacePositions: positions,
-});
+};
+
+const first = await buildDirectorContextPack(input);
+const second = await buildDirectorContextPack(input);
 
 assert.equal(first.hash, second.hash, 'identical live context must produce a deterministic hash');
+assert.equal(first.prompt, second.prompt, 'identical live context must produce byte-identical prompts');
 assert.ok(first.chars <= 16_000, `context pack exceeded bound: ${first.chars}`);
 assert.ok(first.estimatedTokens <= 4_000, `estimated token budget exceeded: ${first.estimatedTokens}`);
-assert.equal(first.nodeCountIncluded, 72, 'node context must be capped');
-assert.ok(first.dependencyCountIncluded <= 120, 'dependency context must be capped');
+assert.ok(first.nodeCountIncluded >= 1 && first.nodeCountIncluded <= 72, 'node context must stay inside its hard cap');
+assert.ok(first.dependencyCountIncluded <= 120, 'dependency context must stay inside its hard cap');
+assert.ok(first.dependencyCountIncluded <= Math.max(0, first.nodeCountIncluded - 1), 'dependency slice must only reference included nodes');
 assert.ok(!first.prompt.includes('ignoredLargeField'), 'irrelevant metadata must not leak into compact context');
 assert.ok(first.prompt.includes('MAKEWATCH DIRECTOR MODE'), 'Director mode marker must be present');
-assert.ok(first.prompt.includes('scene.001'), 'selected/live project context must be present');
+assert.ok(first.prompt.includes('scene.001'), 'selected/live project context must be preserved even when the pack is reduced');
 assert.ok(first.prompt.includes('policyHash'), 'canonical Director policy version must be observable without resending full policy');
 assert.ok(!first.prompt.includes('# Make & Watch — AI Director Compact Context'), 'stable policy must not be duplicated in each request');
 
-console.log('director context-pack check: passed');
+const marker = 'Live bounded project context';
+const markerIndex = first.prompt.indexOf(marker);
+assert.ok(markerIndex >= 0, 'bounded context marker must be present');
+const contextStart = first.prompt.indexOf('\n', markerIndex) + 1;
+const contextEnd = first.prompt.indexOf('\n\nReturn exactly one AutopilotPlan', contextStart);
+assert.ok(contextStart > 0 && contextEnd > contextStart, 'serialized live context must be extractable');
+assert.doesNotThrow(() => JSON.parse(first.prompt.slice(contextStart, contextEnd)), 'budget reduction must never truncate JSON syntax');
+
+console.log(`director context-pack check: passed (${first.nodeCountIncluded} nodes, ${first.dependencyCountIncluded} edges, ~${first.estimatedTokens} tokens)`);
