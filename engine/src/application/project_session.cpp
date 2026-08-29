@@ -52,12 +52,11 @@ void attach_commit_context(
   }
 }
 
-project::Event restore_event(
-    project::EventType type,
+project::Event restore_commit_event(
     std::uint64_t project_revision,
     std::string detail) {
   project::Event event;
-  event.type = type;
+  event.type = project::EventType::kTransactionCommitted;
   event.project_revision = project_revision;
   event.detail = std::move(detail);
   return event;
@@ -125,26 +124,19 @@ project::CommandResult ProjectSession::restore(
     return project::CommandResult{status, engine_.project_revision(), {}};
   }
 
-  std::string detail{"workflow restored from "};
+  std::string detail{"atomic workflow restore committed: "};
   detail += std::to_string(before.graph.nodes.size());
   detail += " nodes / ";
   detail += std::to_string(before.graph.dependencies.size());
-  detail += " dependencies to ";
+  detail += " dependencies -> ";
   detail += std::to_string(target.graph.nodes.size());
   detail += " nodes / ";
   detail += std::to_string(target.graph.dependencies.size());
   detail += " dependencies";
 
   std::vector<project::Event> events;
-  events.reserve(2);
-  events.push_back(restore_event(
-      project::EventType::kProjectRestored,
-      target.project_revision,
-      std::move(detail)));
-  events.push_back(restore_event(
-      project::EventType::kTransactionCommitted,
-      target.project_revision,
-      "atomic workflow restore committed"));
+  events.reserve(1);
+  events.push_back(restore_commit_event(target.project_revision, std::move(detail)));
   attach_commit_context(events, context);
 
   if (const auto status = store_.save_commit(staged.snapshot(), events, context); !status.ok()) {
