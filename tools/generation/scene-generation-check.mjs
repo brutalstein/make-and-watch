@@ -203,4 +203,30 @@ try {
   }
 }
 
+// A diffusion model does not process negation in the positive conditioning:
+// asking for "no typography" there puts typography into the conditioning and
+// makes on-screen text MORE likely. Exclusions must live in the negative
+// prompt, which is what actually suppresses them.
+{
+  const { STYLE_PRESETS, BASE_NEGATIVE_PROMPT } = sceneGenerationInternals;
+
+  for (const [name, preset] of Object.entries(STYLE_PRESETS)) {
+    for (const phrase of ['no ', 'without ', 'avoid ', 'not ']) {
+      assert.ok(
+        !preset.lead.includes(phrase) && !preset.tail.includes(phrase),
+        `${name} puts the negation "${phrase.trim()}" in the positive prompt; move it to the preset negative`,
+      );
+    }
+  }
+
+  // The exclusions that keep rendered frames usable as film frames.
+  for (const term of ['text', 'typography', 'subtitles', 'watermark', 'logo', 'ui overlay', 'hud', 'timecode']) {
+    assert.ok(
+      BASE_NEGATIVE_PROMPT.includes(term),
+      `base negative prompt must exclude "${term}"`,
+    );
+  }
+}
+
+console.log('scene generation prompt polarity check: passed');
 console.log('scene generation style preset check: passed');

@@ -3,6 +3,11 @@ import { randomUUID } from 'node:crypto';
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8188';
 const DEFAULT_TIMEOUT_MS = 180_000;
 const DEFAULT_POLL_MS = 750;
+// ComfyUI serves HTTP from the same thread that loads checkpoints, so it stops
+// answering while a multi-gigabyte SDXL model is read off disk. A 15s cap made
+// the first generation after a checkpoint change fail as "unreachable" even
+// though the server was healthy and simply busy.
+const DEFAULT_REQUEST_TIMEOUT_MS = Number(process.env.MAKEWATCH_COMFYUI_REQUEST_TIMEOUT_MS ?? 120_000);
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 
@@ -179,12 +184,18 @@ export class ComfyUiClient {
       response = await fetch(this.url(pathname), {
         ...init,
         headers: { 'Content-Type': 'application/json', ...(init.headers ?? {}) },
-        signal: init.signal ?? AbortSignal.timeout(Math.min(this.timeoutMs, 15_000)),
+        signal: init.signal ?? AbortSignal.timeout(Math.min(this.timeoutMs, DEFAULT_REQUEST_TIMEOUT_MS)),
       });
     } catch (error) {
       // A bare "fetch failed" reaches the user and the Director as a generation
-      // job error, so name the runtime that is actually missing.
+      // job error, so name the runtime and separate "absent" from "busy".
       const reason = error instanceof Error ? error.message : String(error);
+      if (error instanceof Error && error.name === 'TimeoutError') {
+        throw new Error(
+          `ComfyUI at ${this.baseUrl.origin} stopped responding for ${Math.round(Math.min(this.timeoutMs, DEFAULT_REQUEST_TIMEOUT_MS) / 1000)}s. `
+          + 'It is usually still loading a large checkpoint; retry once the model is resident.',
+        );
+      }
       throw new Error(
         `ComfyUI is not reachable at ${this.baseUrl.origin} (${reason}). `
         + 'Start the local image runtime, or wait for Make & Watch to finish preparing it.',

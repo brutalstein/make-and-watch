@@ -5,7 +5,14 @@ import { extname, join, relative, resolve } from 'node:path';
 const MAX_PENDING_JOBS = 8;
 const MAX_RETAINED_JOBS = 100;
 const MAX_SHOTS_PER_SCENE = 64;
-const BASE_NEGATIVE_PROMPT = 'low quality, blurry, deformed, duplicate subject, watermark, logo, text, bad anatomy';
+// Diffusion models do not process negation in the positive conditioning: an
+// instruction to exclude something puts that concept INTO the conditioning and
+// makes it more likely, not less. Every exclusion belongs here instead.
+const BASE_NEGATIVE_PROMPT = [
+  'low quality, blurry, deformed, duplicate subject, bad anatomy',
+  'text, typography, caption, subtitles, watermark, logo, signature',
+  'ui overlay, hud, viewfinder, timecode, recording indicator, border, letterboxing',
+].join(', ');
 
 // A Series declares its rendering idiom once and every Shot inherits it. The
 // scaffold used to be hardcoded photoreal wording, which actively fought any
@@ -16,7 +23,7 @@ const BASE_NEGATIVE_PROMPT = 'low quality, blurry, deformed, duplicate subject, 
 const STYLE_PRESETS = {
   'live-action-cinematic': {
     lead: 'cinematic storyboard frame, coherent production design, physically plausible materials',
-    tail: 'cinematic lighting, consistent identity, coherent environment geometry, restrained filmic color grade, no typography',
+    tail: 'cinematic lighting, consistent identity, coherent environment geometry, restrained filmic color grade',
     negative: 'oversaturated, plastic skin',
     steps: 20,
     cfg: 6.5,
@@ -26,7 +33,7 @@ const STYLE_PRESETS = {
   },
   'anime-cinematic': {
     lead: 'cinematic anime film still, animation production key art, confident clean linework, painted backgrounds',
-    tail: 'dramatic cinematic composition, expressive character acting, cel shading with painted light, filmic depth, consistent character identity, no typography',
+    tail: 'dramatic cinematic composition, expressive character acting, cel shading with painted light, filmic depth, consistent character identity',
     negative: '3d render, photorealistic, live action, western cartoon, chibi, sketch, flat lighting',
     steps: 30,
     cfg: 7,
@@ -40,7 +47,7 @@ const STYLE_PRESETS = {
   },
   illustration: {
     lead: 'cinematic illustrated frame, deliberate composition, painterly rendering',
-    tail: 'expressive lighting, coherent environment geometry, consistent identity, no typography',
+    tail: 'expressive lighting, coherent environment geometry, consistent identity',
     negative: '3d render, photorealistic',
     steps: 28,
     cfg: 7,
@@ -50,7 +57,7 @@ const STYLE_PRESETS = {
   },
   'stylized-3d': {
     lead: 'cinematic stylized 3d animated film frame, feature animation production render',
-    tail: 'cinematic lighting, subsurface skin shading, coherent environment geometry, consistent identity, no typography',
+    tail: 'cinematic lighting, subsurface skin shading, coherent environment geometry, consistent identity',
     negative: 'photorealistic, live action, flat 2d',
     steps: 26,
     cfg: 7,
