@@ -1,0 +1,34 @@
+.flow-surface--ai-panning::before {
+  content: '';
+  position: absolute;
+  inset: 8px;
+  z-index: 45;
+  pointer-events: none;
+  border: 1px solid rgba(139, 119, 255, .22);
+  border-radius: 15px;
+  box-shadow: inset 0 0 34px rgba(114, 91, 255, .04), 0 0 28px rgba(104, 82, 230, .05);
+}
+
+.flow-surface--ai-panning::after {
+  content: 'AI WORKSPACE  ·  PANNING TO NODE';
+  position: absolute;
+  top: 12px;
+  right: 13px;
+  z-index: 46;
+  pointer-events: none;
+  padding: 5px 7px;
+  border: 1px solid rgba(121, 105, 210, .34);
+  border-radius: 999px;
+  color: rgba(216, 210, 255, .84);
+  background: rgba(15, 16, 27, .78);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, .22);
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: .11em;
+}
+
+.studio-shell--autopilot .react-flow__node.dragging .flow-card {
+  border-color: #8d7aed;
+  box-shadow: 0 0 0 1px rgba(143, 124, 243, .26), 0 24px 56px rgba(0, 0, 0, .42);
+}
