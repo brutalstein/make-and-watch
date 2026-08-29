@@ -9,8 +9,10 @@ const planSchemaPath = resolve(root, 'schemas', 'v1', 'director-autopilot-plan.s
 
 const STATUS_TIMEOUT_MS = 5_000;
 const PLAN_TIMEOUT_MS = 120_000;
+const PROVIDER_SHUTDOWN_WAIT_MS = 2_000;
 const MAX_STATUS_BYTES = 256 * 1024;
 const MAX_PLAN_PROCESS_BYTES = 2 * 1024 * 1024;
+const EXPERIMENTAL_CLAUDE_CODE = process.env.MAKEWATCH_ENABLE_EXPERIMENTAL_CLAUDE_CODE === '1';
 
 let activeRun = null;
 let activePlanChild = null;
@@ -37,6 +39,24 @@ function terminateProcessTree(child) {
     if (child.exitCode === null && !child.killed) child.kill('SIGKILL');
   }, 700);
   timer.unref();
+}
+
+function waitForProcessExit(child, timeoutMs) {
+  if (!child || child.exitCode !== null) return Promise.resolve(true);
+  return new Promise((resolvePromise) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.off('close', onClose);
+      resolvePromise(value);
+    };
+    const onClose = () => finish(true);
+    const timer = setTimeout(() => finish(child.exitCode !== null), timeoutMs);
+    timer.unref();
+    child.once('close', onClose);
+  });
 }
 
 function appendChunk(state, chunk, maximum, label, child) {
@@ -122,14 +142,22 @@ async function helpText(command, args) {
   }
 }
 
-function safeStatusDetail({ installed, authenticated, capable }) {
+function safeStatusDetail({ provider, installed, authenticated, capable, policy }) {
+  if (provider === 'claude' && policy === 'api_required') {
+    return installed
+      ? 'Claude Code detected; third-party product use requires a supported Anthropic API path'
+      : 'Production Claude integration requires Anthropic API/Console credentials';
+  }
   if (!installed) return 'Official client not found on PATH';
-  if (!capable) return 'Official client is installed but must be updated for required safe automation flags';
+  if (!capable) return 'Official client must be updated for required safe automation flags';
   if (!authenticated) return 'Official client is installed and awaiting first-party sign-in';
-  return 'Official client is authenticated and ready for Make & Watch Director planning';
+  return policy === 'experimental_local_client'
+    ? 'Developer-preview Claude Code bridge is enabled locally'
+    : 'Official client is authenticated and ready for Make & Watch Director planning';
 }
 
 async function codexStatus() {
+  const policy = 'supported_local_client';
   const command = providerCommand('codex');
   let version = '';
   try {
@@ -138,8 +166,8 @@ async function codexStatus() {
     version = (versionResult.stdout || versionResult.stderr).slice(0, 160);
   } catch {
     return {
-      provider: 'codex', installed: false, authenticated: false, authMethod: '', version: '', capable: false,
-      detail: safeStatusDetail({ installed: false, authenticated: false, capable: false }),
+      provider: 'codex', policy, installed: false, authenticated: false, authMethod: '', version: '', capable: false,
+      detail: safeStatusDetail({ provider: 'codex', installed: false, authenticated: false, capable: false, policy }),
     };
   }
 
@@ -163,12 +191,13 @@ async function codexStatus() {
   }
 
   return {
-    provider: 'codex', installed: true, authenticated, authMethod, version, capable,
-    detail: safeStatusDetail({ installed: true, authenticated, capable }),
+    provider: 'codex', policy, installed: true, authenticated, authMethod, version, capable,
+    detail: safeStatusDetail({ provider: 'codex', installed: true, authenticated, capable, policy }),
   };
 }
 
 async function claudeStatus() {
+  const policy = EXPERIMENTAL_CLAUDE_CODE ? 'experimental_local_client' : 'api_required';
   const command = providerCommand('claude');
   let version = '';
   try {
@@ -177,17 +206,18 @@ async function claudeStatus() {
     version = (versionResult.stdout || versionResult.stderr).slice(0, 160);
   } catch {
     return {
-      provider: 'claude', installed: false, authenticated: false, authMethod: '', version: '', capable: false,
-      detail: safeStatusDetail({ installed: false, authenticated: false, capable: false }),
+      provider: 'claude', policy, installed: false, authenticated: false, authMethod: '', version: '', capable: false,
+      detail: safeStatusDetail({ provider: 'claude', installed: false, authenticated: false, capable: false, policy }),
     };
   }
 
   const cliHelp = await helpText(command, ['--help']);
-  const capable = cliHelp.includes('--output-format')
+  const technicallyCapable = cliHelp.includes('--output-format')
     && cliHelp.includes('--max-turns')
     && cliHelp.includes('--permission-mode')
     && cliHelp.includes('--json-schema')
     && cliHelp.includes('--tools');
+  const capable = technicallyCapable && EXPERIMENTAL_CLAUDE_CODE;
 
   let authenticated = false;
   let authMethod = '';
@@ -208,8 +238,8 @@ async function claudeStatus() {
   }
 
   return {
-    provider: 'claude', installed: true, authenticated, authMethod, version, capable,
-    detail: safeStatusDetail({ installed: true, authenticated, capable }),
+    provider: 'claude', policy, installed: true, authenticated, authMethod, version, capable,
+    detail: safeStatusDetail({ provider: 'claude', installed: true, authenticated, capable, policy }),
   };
 }
 
@@ -218,10 +248,18 @@ export async function providerStatuses() {
   return { providers: [codex, claude], activeProviderRun: activeRun?.provider ?? null };
 }
 
+function enforceProviderPolicy(provider) {
+  if (provider === 'claude' && !EXPERIMENTAL_CLAUDE_CODE) {
+    throw new Error('Claude Code subscription routing is disabled for the public product; use Codex or a future supported Anthropic API provider');
+  }
+}
+
 export async function launchProviderLogin(provider) {
+  enforceProviderPolicy(provider);
   const command = providerCommand(provider);
   const status = provider === 'codex' ? await codexStatus() : await claudeStatus();
   if (!status.installed) throw new Error(`${provider} official client is not installed`);
+  if (!status.capable) throw new Error(`${provider} official client does not meet the required integration capability`);
 
   const args = provider === 'codex' ? ['login'] : ['auth', 'login'];
   const child = spawn(command, args, {
@@ -308,6 +346,7 @@ async function invokeCodex(prompt) {
 }
 
 async function invokeClaude(prompt) {
+  enforceProviderPolicy('claude');
   const schema = await claudeSchemaString();
   const result = await runBounded('claude', [
     '-p',
@@ -343,11 +382,12 @@ async function invokeClaude(prompt) {
 }
 
 export async function invokeDirectorPlan(provider, prompt) {
+  enforceProviderPolicy(provider);
   if (activeRun) throw new Error(`Director provider is busy with ${activeRun.provider}`);
   const status = provider === 'codex' ? await codexStatus() : await claudeStatus();
   if (!status.installed) throw new Error(`${provider} official client is not installed`);
   if (!status.authenticated) throw new Error(`${provider} official client is not authenticated`);
-  if (!status.capable) throw new Error(`${provider} client version lacks required safe automation flags; update the official client`);
+  if (!status.capable) throw new Error(`${provider} client does not meet required integration capability`);
 
   const run = { provider, startedAt: Date.now() };
   activeRun = run;
@@ -362,8 +402,12 @@ export async function invokeDirectorPlan(provider, prompt) {
   }
 }
 
-export function shutdownDirectorProviders() {
-  if (activePlanChild) terminateProcessTree(activePlanChild);
-  activePlanChild = null;
+export async function shutdownDirectorProviders() {
+  const child = activePlanChild;
+  if (child) {
+    terminateProcessTree(child);
+    await waitForProcessExit(child, PROVIDER_SHUTDOWN_WAIT_MS);
+  }
+  if (activePlanChild === child) activePlanChild = null;
   activeRun = null;
 }
