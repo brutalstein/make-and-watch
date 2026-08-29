@@ -5,11 +5,15 @@ import { resolve } from 'node:path';
 import { AudioGenerationService } from '../audio/audio-generation-service.mjs';
 import { compileEpisodeComposition } from '../composition/episode-composition.mjs';
 import { EpisodeRenderService } from '../composition/episode-render-service.mjs';
+import { localGpuTelemetry } from '../runtime/gpu-telemetry.mjs';
 import { GenerationBridgeClient } from './bridge-client.mjs';
 import { ComfyUiClient } from './comfyui-client.mjs';
+import { FramePackTemporalProvider } from './framepack-temporal-provider.mjs';
 import { GpuExclusiveScheduler } from './gpu-scheduler.mjs';
 import { SceneGenerationService } from './scene-generation-service.mjs';
-import { buildTemporalShotRequest, temporalShotContract } from './temporal-shot-contract.mjs';
+import { temporalShotContract } from './temporal-shot-contract.mjs';
+import { TemporalProviderRegistry } from './temporal-provider-registry.mjs';
+import { TemporalShotGenerationService } from './temporal-shot-generation-service.mjs';
 
 const root = process.cwd();
 const port = Number(process.env.MAKEWATCH_GENERATION_PORT ?? 4178);
@@ -42,6 +46,16 @@ const renderService = new EpisodeRenderService({
   projectRoot: root,
   artifactRoot: episodeArtifactRoot,
   cacheRoot: renderCacheRoot,
+});
+const temporalRegistry = new TemporalProviderRegistry().register(new FramePackTemporalProvider({
+  projectRoot: root,
+  workerPath: resolve(root, 'tools/generation/framepack-temporal-worker.py'),
+}));
+const temporalService = new TemporalShotGenerationService({
+  bridge,
+  registry: temporalRegistry,
+  scheduler,
+  hardware: async () => localGpuTelemetry(),
 });
 
 if (!Number.isInteger(port) || port < 1024 || port > 65535) {
@@ -91,6 +105,13 @@ function boundedId(value, label) {
   return value;
 }
 
+function boundedProviderId(value) {
+  if (typeof value !== 'string' || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(value)) {
+    throw Object.assign(new Error('providerId is invalid'), { code: 'invalid_argument' });
+  }
+  return value;
+}
+
 function boundedNumber(value, fallback, minimum, maximum) {
   if (value === null || value === undefined || value === '') return fallback;
   const number = Number(value);
@@ -100,9 +121,10 @@ function boundedNumber(value, fallback, minimum, maximum) {
 
 function errorStatus(error) {
   if (error?.code === 'not_found') return 404;
-  if (error?.code === 'busy' || error?.code === 'not_ready') return 409;
+  if (error?.code === 'busy' || error?.code === 'not_ready' || error?.code === 'stale_request' || error?.code === 'conflict') return 409;
   if (error?.code === 'resource_exhausted') return 429;
   if (error?.code === 'invalid_argument') return 400;
+  if (error?.code === 'timeout') return 504;
   return 502;
 }
 
@@ -130,8 +152,9 @@ const server = createServer(async (request, response) => {
     if (request.method === 'GET' && url.pathname === '/api/health') {
       sendJson(request, response, 200, {
         service: 'makewatch-media-generation',
-        modes: ['storyboard-preview', 'temporal-shot-planning', 'multilingual-voice', 'episode-composition', 'episode-preview-render'],
+        modes: ['storyboard-preview', 'temporal-i2v', 'multilingual-voice', 'episode-composition', 'episode-preview-render'],
         temporal: temporalShotContract,
+        gpu: localGpuTelemetry(),
         gpuScheduler: scheduler.status(),
       });
       return;
@@ -144,6 +167,10 @@ const server = createServer(async (request, response) => {
       sendJson(request, response, 200, await audioService.providerStatus());
       return;
     }
+    if (request.method === 'GET' && url.pathname === '/api/temporal/providers') {
+      sendJson(request, response, 200, { providers: await temporalService.providerStatuses() });
+      return;
+    }
     if (request.method === 'GET' && url.pathname === '/api/jobs') {
       const limit = Number(url.searchParams.get('limit') ?? '20');
       sendJson(request, response, 200, { jobs: sceneService.list(Number.isInteger(limit) ? limit : 20) });
@@ -152,6 +179,11 @@ const server = createServer(async (request, response) => {
     if (request.method === 'GET' && url.pathname === '/api/audio/jobs') {
       const limit = Number(url.searchParams.get('limit') ?? '20');
       sendJson(request, response, 200, { jobs: audioService.list(Number.isInteger(limit) ? limit : 20) });
+      return;
+    }
+    if (request.method === 'GET' && url.pathname === '/api/temporal/jobs') {
+      const limit = Number(url.searchParams.get('limit') ?? '20');
+      sendJson(request, response, 200, { jobs: temporalService.list(Number.isInteger(limit) ? limit : 20) });
       return;
     }
     if (request.method === 'GET' && url.pathname === '/api/render/jobs') {
@@ -171,16 +203,24 @@ const server = createServer(async (request, response) => {
       sendJson(request, response, 202, { job });
       return;
     }
+    if (request.method === 'POST' && url.pathname === '/api/temporal/shots') {
+      const body = await readJson(request);
+      const job = await temporalService.startShot({
+        shotId: boundedId(body.shotId, 'shotId'),
+        providerId: boundedProviderId(body.providerId),
+      });
+      sendJson(request, response, 202, { job });
+      return;
+    }
 
     const temporalPlanMatch = /^\/api\/temporal\/shots\/([A-Za-z0-9._:-]+)\/plan$/.exec(url.pathname);
     if (request.method === 'GET' && temporalPlanMatch) {
       const shotId = boundedId(temporalPlanMatch[1], 'shotId');
-      const totalVramMb = boundedNumber(url.searchParams.get('vramMb'), 8192, 0, 196_608);
+      const totalVramMb = boundedNumber(url.searchParams.get('vramMb'), undefined, 0, 196_608);
       const maxSegmentSeconds = boundedNumber(url.searchParams.get('maxSegmentSeconds'), undefined, 1, 10);
-      const snapshot = await bridge.snapshot();
       sendJson(request, response, 200, {
-        plan: buildTemporalShotRequest(snapshot, shotId, {
-          totalVramMb,
+        plan: await temporalService.plan(shotId, {
+          ...(totalVramMb === undefined ? {} : { totalVramMb }),
           ...(maxSegmentSeconds === undefined ? {} : { maxSegmentSeconds }),
         }),
       });
@@ -209,6 +249,11 @@ const server = createServer(async (request, response) => {
     const audioJobMatch = /^\/api\/audio\/jobs\/([A-Za-z0-9-]+)$/.exec(url.pathname);
     if (request.method === 'GET' && audioJobMatch) {
       sendJson(request, response, 200, { job: audioService.get(audioJobMatch[1]) });
+      return;
+    }
+    const temporalJobMatch = /^\/api\/temporal\/jobs\/([A-Za-z0-9-]+)$/.exec(url.pathname);
+    if (request.method === 'GET' && temporalJobMatch) {
+      sendJson(request, response, 200, { job: temporalService.get(temporalJobMatch[1]) });
       return;
     }
     const renderJobMatch = /^\/api\/render\/jobs\/([A-Za-z0-9-]+)$/.exec(url.pathname);
@@ -258,6 +303,11 @@ server.listen(port, '127.0.0.1', () => {
   });
   void audioService.providerStatus().then((status) => {
     console.log(`[audio] Chatterbox ${status.ready ? 'ready' : status.detail}`);
+  });
+  void temporalService.providerStatuses().then((providers) => {
+    for (const provider of providers) {
+      console.log(`[temporal] ${provider.displayName} ${provider.ready ? 'ready' : provider.detail}`);
+    }
   });
 });
 
