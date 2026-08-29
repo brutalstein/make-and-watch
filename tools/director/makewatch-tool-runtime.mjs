@@ -1,8 +1,25 @@
+import { GenerationGatewayClient } from '../generation/gateway-api-client.mjs';
 import { handleMakeWatchToolCall, makeWatchDynamicToolSpecs } from './makewatch-tools.mjs';
+import {
+  handleTemporalMediaToolCall,
+  temporalMediaDynamicToolSpecs,
+  temporalMediaToolLimits,
+} from './temporal-media-tools.mjs';
 
 let runtime = null;
+let temporalRuntime = null;
 
-export function configureMakeWatchToolRuntime(nextRuntime) {
+function createTemporalRuntime(client = new GenerationGatewayClient()) {
+  return {
+    temporalProviders: () => client.temporalProviders(),
+    temporalShotPlan: ({ shotId, maxSegmentSeconds }) => client.temporalShotPlan(shotId, { maxSegmentSeconds }),
+    startTemporalShotGeneration: ({ shotId, providerId }) => client.startTemporalShot(shotId, providerId),
+    temporalJob: ({ jobId }) => client.temporalJob(jobId),
+    temporalJobs: ({ limit }) => client.temporalJobs(limit),
+  };
+}
+
+export function configureMakeWatchToolRuntime(nextRuntime, options = {}) {
   if (!nextRuntime || typeof nextRuntime !== 'object') {
     throw new Error('Make & Watch tool runtime must be an object');
   }
@@ -19,10 +36,12 @@ export function configureMakeWatchToolRuntime(nextRuntime) {
     }
   }
   runtime = nextRuntime;
+  temporalRuntime = options.temporalRuntime ?? createTemporalRuntime(options.generationGatewayClient);
 }
 
 export function clearMakeWatchToolRuntime() {
   runtime = null;
+  temporalRuntime = null;
 }
 
 export function hasMakeWatchToolRuntime() {
@@ -30,10 +49,13 @@ export function hasMakeWatchToolRuntime() {
 }
 
 export function configuredMakeWatchDynamicToolSpecs() {
-  return runtime ? makeWatchDynamicToolSpecs() : [];
+  return runtime ? [...makeWatchDynamicToolSpecs(), ...temporalMediaDynamicToolSpecs()] : [];
 }
 
 export async function handleConfiguredMakeWatchToolCall(call) {
   if (!runtime) throw new Error('Make & Watch project tool runtime is not configured');
+  if (call?.namespace === temporalMediaToolLimits.namespace) {
+    return handleTemporalMediaToolCall(call, temporalRuntime);
+  }
   return handleMakeWatchToolCall(call, runtime);
 }
