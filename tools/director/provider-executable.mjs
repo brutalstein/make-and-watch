@@ -184,13 +184,32 @@ export function guardProviderStdio(child) {
   return child;
 }
 
+function providerSpawnOptions(options) {
+  if (process.platform === 'win32' || options.detached !== undefined) return options;
+  // Put every owned provider runtime in its own POSIX process group. This makes
+  // shutdown symmetrical with Windows taskkill /T: descendants cannot outlive a
+  // failed/aborted provider turn merely because only the leader received SIGTERM.
+  return { ...options, detached: true };
+}
+
+function markOwnedProcessGroup(child, options) {
+  if (process.platform !== 'win32' && options.detached === true) {
+    child.makewatchOwnProcessGroup = true;
+  }
+  return guardProviderStdio(child);
+}
+
 export function spawnProviderExecutable(executable, args, options = {}) {
   if (!executable) throw new Error('provider executable is not resolved');
+  const launchOptions = providerSpawnOptions(options);
   if (!executable.commandShellRequired) {
-    return guardProviderStdio(spawn(executable.path, args, options));
+    return markOwnedProcessGroup(
+      spawn(executable.path, args, launchOptions),
+      launchOptions,
+    );
   }
 
-  const env = options.env ?? process.env;
+  const env = launchOptions.env ?? process.env;
   const comspec = env.ComSpec ?? env.COMSPEC ?? process.env.ComSpec ?? process.env.COMSPEC ?? 'cmd.exe';
   const command = buildWindowsCmdCommand(executable, args);
 
@@ -201,7 +220,7 @@ export function spawnProviderExecutable(executable, args, options = {}) {
   // generated and quoteCmdArgument escapes cmd expansion characters; user text is
   // always supplied over stdin, never interpolated into this command line.
   return guardProviderStdio(spawn(comspec, ['/d', '/s', '/c', command], {
-    ...options,
+    ...launchOptions,
     windowsVerbatimArguments: true,
   }));
 }
