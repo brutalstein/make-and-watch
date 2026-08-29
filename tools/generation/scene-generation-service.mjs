@@ -32,9 +32,11 @@ const STYLE_PRESETS = {
     cfg: 7,
     // Illustrious/SDXL anime checkpoints are tuned for ancestral sampling.
     sampler: 'euler_ancestral',
-    // SDXL degrades badly below its training resolution.
-    width: 1152,
-    height: 648,
+    // SDXL degrades below its training resolution, but a full 1024x1024-area
+    // frame does not leave headroom on an 8 GB card while Studio and ComfyUI
+    // are both resident. 1024x576 is the compromise that still renders cleanly.
+    width: 1024,
+    height: 576,
   },
   illustration: {
     lead: 'cinematic illustrated frame, deliberate composition, painterly rendering',
@@ -43,8 +45,8 @@ const STYLE_PRESETS = {
     steps: 28,
     cfg: 7,
     sampler: null,
-    width: 1152,
-    height: 648,
+    width: 1024,
+    height: 576,
   },
   'stylized-3d': {
     lead: 'cinematic stylized 3d animated film frame, feature animation production render',
@@ -53,8 +55,8 @@ const STYLE_PRESETS = {
     steps: 26,
     cfg: 7,
     sampler: null,
-    width: 1152,
-    height: 648,
+    width: 1024,
+    height: 576,
   },
 };
 
