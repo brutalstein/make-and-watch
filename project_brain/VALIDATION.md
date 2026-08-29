@@ -23,9 +23,14 @@ Current code-level behavior:
 
 ## 2026-08-29 — Resilient Codex local runtime
 
-Hands-on Windows testing showed a real Codex state where the CLI was installed/authenticated but `codex app-server` exited immediately with code 1. Blocking the whole product behind `Update required` was therefore rejected.
+Hands-on Windows testing showed a real Codex state where the CLI was installed/authenticated but `codex app-server` initially could not be launched through the bridge. Windows `.cmd` shim launching was corrected with explicit `cmd.exe /D /S /C` quoting and verbatim argument ownership. Subsequent live validation reached:
 
-The supported Codex local-client runtime is now:
+```text
+Codex Director ready · App Server · plus
+Codex launcher: codex.cmd · path
+```
+
+The supported Codex local-client runtime remains:
 
 ```text
 App Server available -> app_server
@@ -43,14 +48,49 @@ Code-level checks cover:
 - bounded temporary final-message files removed after every run;
 - typed planning additionally requiring output-schema capability;
 - bounded in-memory compatibility transcript rather than fake provider-native thread ownership;
-- App Server mid-conversation failure may fail over to compatibility mode if the safe exec capability exists;
 - active exec/login child ownership during shutdown.
 
-CI helper `codex-exec-runtime-check.mjs` validates login parsing, capability detection and transcript bounds without requiring a real user credential.
+## 2026-08-29 — Live App Server wire-contract correction
+
+The first authenticated chat request reached the real Codex App Server and exposed a wire-enum mismatch:
+
+```text
+Invalid request: unknown variant `readOnly`, expected one of `read-only`, `workspace-write`, `danger-full-access`
+```
+
+The corrected contract is field-specific:
+
+- `thread/start.sandbox = "read-only"`;
+- `turn/start.sandboxPolicy.type = "readOnly"`.
+
+Regression tests now assert both values separately so camelCase/kebab-case conventions cannot be accidentally unified again.
+
+## 2026-08-29 — Provider pipe crash isolation + telemetry backoff
+
+A later browser trace showed `/api/director/chat` followed by repeated `/api/system net::ERR_CONNECTION_REFUSED`, indicating the local bridge had exited while Studio remained open.
+
+The Director child-process boundary was hardened:
+
+- all owned provider stdin/stdout/stderr pipes now have explicit `error` listeners;
+- Windows `EPIPE`/broken-pipe events are recorded on the child instead of becoming an unhandled EventEmitter error capable of terminating the whole Node bridge;
+- the provider executable regression check explicitly emits an `EPIPE` on guarded stdin and proves it is contained;
+- higher-level provider logic still observes child exit/request timeout and fails over or reports failure normally.
+
+Studio telemetry was also hardened:
+
+- one system request may be in flight at a time;
+- the last valid telemetry value is cached;
+- bridge failures use exponential retry backoff from 2.5 s up to 30 s;
+- repeated 2.5 s browser fetch spam is suppressed while the bridge is unavailable;
+- successful telemetry resets the backoff automatically.
+
+## 2026-08-29 — React Flow attribution compliance
+
+Studio previously set React Flow's `hideAttribution` option and emitted the library's Pro-license warning. Make & Watch does not assume a React Flow Pro subscription. A visible React Flow attribution is now rendered inside the workflow surface with Studio-consistent styling; the matching development warning is filtered only because the attribution is explicitly restored rather than removed.
 
 ## 2026-08-29 — Premium toggleable Studio sidecars
 
-Code-level Studio behavior now includes independent persisted presentation states for:
+Code-level Studio behavior includes independent persisted presentation states for:
 
 - Creative Control;
 - Director Chat;
@@ -59,8 +99,6 @@ Code-level Studio behavior now includes independent persisted presentation state
 Collapsed panels become narrow cinematic rails and return width to the workflow. The Autopilot interaction veil follows the active sidecar widths.
 
 A screenshot audit found a second outer `.director-panel` scroll container that caused native Windows white scrollbar chrome/arrows. The final CSS forces Creative Control outer overflow hidden and leaves only the inner `chat-history` scroll container. WebKit scrollbar buttons are suppressed and side-panel thumbs use the Studio visual language.
-
-The legacy decorative Inspector chevron is hidden so the real toggle is the sole control.
 
 ## 2026-08-29 — Native media/runtime hardening
 
@@ -72,19 +110,17 @@ Resource/runtime audit also hardened allocation-failure windows around scoped re
 
 ## Latest code-level CI
 
-GitHub Actions for code head `4952b1e677ff3354ee950b87943a76dd66729a44` completed successfully.
+GitHub Actions for code head `5ee898d59ba2beecfbab677d9c089c20c3767a84` completed successfully.
 
 Passed:
 
-- Bridge and Director checks, including Codex exec compatibility regression;
+- Bridge and Director checks, including Windows launcher, App Server wire enums, Codex exec fallback and provider EPIPE containment;
 - strict TypeScript;
 - Studio production build;
 - native configure/build;
 - complete CTest suite.
 
-Subsequent commits before this record are documentation-only.
-
-This proves code-level gates, not the real authenticated Windows product path.
+This proves code-level gates, not the final real authenticated Windows chat-response gate.
 
 ## Required Windows product-machine gate
 
@@ -96,15 +132,16 @@ git pull
 .\dev.ps1
 ```
 
-### Codex
+### Codex / bridge survival
 
-1. startup must print the real runtime: `App Server`, `CLI compatibility`, or precise unavailable/auth-required state;
-2. if the existing official Codex login is ChatGPT-based and App Server still exits, Studio must use **CLI compatibility** rather than a blocking `Update required` state;
-3. type and Send without manual service management;
-4. if authentication is required, first Send must preserve the message while official Codex login completes;
-5. a second message must preserve bounded conversation continuity;
-6. chat/planning alone must not advance native semantic project revision;
-7. stopping dev runtime during a turn must leave no owned Codex process orphaned.
+1. startup reports `Codex Director ready · App Server · plus` or a safe compatibility state;
+2. send a normal chat message;
+3. the message must return a Codex reply without sandbox-enum error;
+4. provider failure, if any, must return a bounded chat error while `/api/system` and `/api/project` remain reachable;
+5. browser console must not enter repeated `ERR_CONNECTION_REFUSED` telemetry spam;
+6. send a second message and confirm the same conversation continues;
+7. chat/planning alone must not advance native semantic project revision;
+8. stopping dev runtime during a turn must leave no owned Codex process orphaned.
 
 ### Side panels
 
@@ -113,13 +150,14 @@ git pull
 3. no panel may overlay the workflow;
 4. Creative Control must not show the old white native outer scrollbar/arrows;
 5. open/closed preferences must survive restart;
-6. Autopilot must still protect workflow geometry while Chat remains interactive.
+6. Autopilot must still protect workflow geometry while Chat remains interactive;
+7. visible React Flow attribution must remain present in the workflow surface.
 
 ### Exact pointer / native runtime
 
 Retest exact cursor/node alignment, focal camera follow, pause and Esc takeover after side-panel width changes. `verify.ps1` must also keep all native continuity/video/resource/background tests green on Windows.
 
-Any blocking `Update required` despite a safe authenticated fallback, duplicate queued message, credential leakage, orphan process, panel overlap, nested native scrollbar, pointer drift, resource-accounting regression or malformed media acceptance is a failed gate.
+Any bridge termination from a Director failure, blocking provider dead-end, duplicate queued message, credential leakage, orphan process, panel overlap, nested native scrollbar, pointer drift, resource-accounting regression or malformed media acceptance is a failed gate.
 
 ## Next after the live gate
 
