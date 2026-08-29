@@ -15,8 +15,8 @@ This folder is the canonical context handoff for **Make & Watch**. A new enginee
 9. `AI_DIRECTOR_CONTEXT.md` — compact stable creative-Director policy.
 10. `DIRECTOR_PROVIDERS.md` — Codex App Server / Claude provider policy and bounded multi-turn chat.
 11. `AUTH_AND_AI_DIRECTOR.md` — authentication invariants and provider authority.
-12. `RUNTIME_FOUNDATION.md` — native resource admission and lifecycle safety layer.
-13. `BACKGROUND_JOBS.md` — bounded job ownership and deterministic shutdown contract.
+12. `RUNTIME_FOUNDATION.md` — native resource/job/process lifecycle safety layer.
+13. `BACKGROUND_JOBS.md` — bounded jobs, WorkerSupervisor and deterministic shutdown contract.
 14. `MEDIA_PIPELINE.md` — cross-episode continuity and deterministic video render-plan compiler.
 15. `INVARIANTS.md` — rules that must remain true as the repository grows.
 16. `DECISIONS.md` — architecture decisions already made.
@@ -31,30 +31,34 @@ Make & Watch is a local-first desktop series-production studio where a user dire
 
 ## Current stage
 
-**Foundation v1 / Self-starting Director Chat + continuity/video compiler hardening.**
+**Runtime v1 foundation / concrete WorkerSupervisor + Director and media hardening.**
 
-Current validated code foundation includes:
+Current code foundation includes:
 
 - transactional C++ semantic project graph;
 - SQLite snapshot + append-only journal persistence;
 - versioned JSONL native IPC and `ProjectSession` persist-before-live-commit boundary;
 - live Studio workflow/Inspector/Activity surfaces;
-- exact-pointer Autopilot with explicit takeover;
+- exact-pointer Autopilot with explicit takeover and bounded workspace passes;
 - native `ResourceManager` + bounded `BackgroundJobRuntime`;
+- concrete cross-platform `WorkerSupervisor` with real process-tree ownership, typed readiness/capability handshake, bounded logs and bounded shutdown escalation;
+- Linux process-group and Windows Job Object worker containment;
 - official Codex App Server integration with ChatGPT-managed authentication and no OAuth credential custody;
+- safe bounded `codex exec` compatibility fallback;
 - bounded multi-turn Director Chat;
 - a cinematic toggleable Chat sidecar whose composer is writable before provider readiness;
-- `dev-runner` Codex warm-up before Studio startup;
-- first-Send auth continuation: if sign-in is needed, the user message remains queued locally and is submitted after the official ChatGPT flow completes;
+- first-Send auth continuation through the official provider login flow;
+- POSIX provider process-group ownership and guarded provider/native bridge pipes;
 - cross-episode canonical Character continuity projection;
 - deterministic native Episode video render-plan compilation with explicit shot strategy metadata;
-- hardened finite/bounded media validation and duplicate ownership checks.
+- final-readiness checks for Series/Episode/Scene/Shot hierarchy and continuity anchors;
+- Linux + Windows native CI and Studio/Director build checks.
 
-Director conversation remains **non-authoritative**. Natural-language discussion never becomes project truth by itself. Real semantic change must still cross typed validation and the native project transaction boundary.
+Director conversation remains **non-authoritative**. Natural-language discussion never becomes project truth by itself. Real semantic change must still cross typed plan validation and the native project transaction boundary.
 
 Claude Code may be detected, but public-product Claude subscription routing remains disabled. Shipping Claude chat requires a supported Anthropic API/Console/cloud-provider path.
 
-No heavyweight image/video/voice model is a hard dependency yet. The next major runtime milestone is a concrete WorkerSupervisor, followed by provenance-backed local media workers and FFmpeg/native execution.
+No heavyweight image/video/voice model is a hard dependency yet. The next major runtime milestone is provenance-backed/resumable generated-asset storage, followed by the first lightweight image worker over `WorkerSupervisor`.
 
 ## UX startup principle
 
@@ -62,13 +66,17 @@ The normal user path must not require service administration:
 
 ```text
 start Make & Watch
- -> native engine / bridge / Codex App Server are prepared by the runtime
+ -> native engine / bridge / Codex runtime are prepared
  -> Studio opens
  -> user types immediately
  -> Send works directly or continues through official ChatGPT sign-in if required
 ```
 
 Provider diagnostics and manual Connect actions are recovery/control surfaces, not the happy-path workflow.
+
+## Current branch warning
+
+The current implementation lives on `runtime/worker-supervisor-v1`, based on `foundation/series-engine-v0`. Read `HANDOFF.md` before pulling/testing so the correct branch is used.
 
 ## Public-repository warning
 
