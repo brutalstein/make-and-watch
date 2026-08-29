@@ -22,8 +22,7 @@ void require(bool condition, const std::string& message) {
   }
 }
 
-ResourceManager configured_resources() {
-  ResourceManager resources;
+void configure_resources(ResourceManager& resources) {
   require(resources.configure(ResourceBudget{
       .vram_total_mb = 8192,
       .vram_reserve_mb = 1024,
@@ -31,7 +30,6 @@ ResourceManager configured_resources() {
       .ram_reserve_mb = 2048,
       .cpu_threads = 8,
   }).ok(), "resource manager should configure");
-  return resources;
 }
 
 BackgroundJobRequest job(
@@ -56,7 +54,8 @@ BackgroundJobRequest job(
 }
 
 void test_bounded_submission_and_duplicate_rejection() {
-  auto resources = configured_resources();
+  ResourceManager resources;
+  configure_resources(resources);
   BackgroundJobRuntime runtime{resources, 2};
 
   require(runtime.submit(job("job.a", "image", 512, 512, 1)).ok(),
@@ -74,7 +73,8 @@ void test_bounded_submission_and_duplicate_rejection() {
 }
 
 void test_ready_scan_avoids_gpu_head_of_line_blocking() {
-  auto resources = configured_resources();
+  ResourceManager resources;
+  configure_resources(resources);
   BackgroundJobRuntime runtime{resources, 6};
 
   require(runtime.submit(job("gpu.exclusive", "video", 6000, 4096, 3, true)).ok(),
@@ -112,7 +112,8 @@ void test_ready_scan_avoids_gpu_head_of_line_blocking() {
 }
 
 void test_running_cancel_holds_resources_until_stop_confirmation() {
-  auto resources = configured_resources();
+  ResourceManager resources;
+  configure_resources(resources);
   BackgroundJobRuntime runtime{resources, 4};
   require(runtime.submit(job("job.cancel", "image", 2048, 1024, 2)).ok(),
           "cancellable job should queue");
@@ -136,7 +137,8 @@ void test_running_cancel_holds_resources_until_stop_confirmation() {
 }
 
 void test_shutdown_stops_running_jobs_exactly_one_at_a_time() {
-  auto resources = configured_resources();
+  ResourceManager resources;
+  configure_resources(resources);
   BackgroundJobRuntime runtime{resources, 8};
 
   require(runtime.submit(job("job.1", "cpu", 0, 256, 1)).ok(), "job 1 should queue");
@@ -192,7 +194,8 @@ void test_shutdown_stops_running_jobs_exactly_one_at_a_time() {
 }
 
 void test_invalid_shutdown_confirmation_is_fail_closed() {
-  auto resources = configured_resources();
+  ResourceManager resources;
+  configure_resources(resources);
   BackgroundJobRuntime runtime{resources, 2};
   require(runtime.submit(job("job.safe", "cpu", 0, 256, 1)).ok(), "safe job should queue");
   require(runtime.start_one_ready().started(), "safe job should start");
