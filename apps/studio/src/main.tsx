@@ -5,8 +5,10 @@ import '@xyflow/react/dist/style.css';
 import './styles.css';
 import './director/autopilot.css';
 import './director/workflowPointer.css';
+import './director/director-link.css';
 import './activity.css';
 import { App } from './App';
+import { DirectorProviderDock } from './director/DirectorProviderDock';
 
 const root = document.getElementById('root');
 if (!root) {
@@ -17,6 +19,7 @@ createRoot(root).render(
   <StrictMode>
     <ReactFlowProvider>
       <App />
+      <DirectorProviderDock />
     </ReactFlowProvider>
   </StrictMode>,
 );
