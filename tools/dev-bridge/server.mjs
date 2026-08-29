@@ -7,8 +7,11 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
+import { buildDirectorChatTurn } from '../director/chat-context.mjs';
 import { buildDirectorContextPack } from '../director/context-pack.mjs';
 import {
+  closeDirectorConversation,
+  invokeDirectorChat,
   invokeDirectorPlan,
   launchProviderLogin,
   providerStatuses,
@@ -90,9 +93,7 @@ native.on('exit', (code, signal) => {
 });
 
 function rpc(method, params = {}) {
-  if (native.exitCode !== null || native.killed) {
-    return Promise.reject(new Error('native engine is not running'));
-  }
+  if (native.exitCode !== null || native.killed) return Promise.reject(new Error('native engine is not running'));
   const id = randomUUID();
   return new Promise((resolvePromise, rejectPromise) => {
     const timer = setTimeout(() => {
@@ -161,6 +162,18 @@ function directorObjective(value) {
   return value.trim();
 }
 
+function directorChatMessage(value) {
+  if (typeof value !== 'string' || !value.trim()) throw new Error('Director chat message is required');
+  if (value.length > 6_000) throw new Error('Director chat message exceeds 6000 characters');
+  return value.trim();
+}
+
+function optionalConversationId(value) {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string' || value.length > 128) throw new Error('Director conversation ID is invalid');
+  return value;
+}
+
 async function systemTelemetry() {
   const telemetry = {
     platform: platform(),
@@ -175,10 +188,7 @@ async function systemTelemetry() {
   try {
     const { stdout } = await execFileAsync(
       'nvidia-smi',
-      [
-        '--query-gpu=name,memory.total,memory.used,utilization.gpu,temperature.gpu',
-        '--format=csv,noheader,nounits',
-      ],
+      ['--query-gpu=name,memory.total,memory.used,utilization.gpu,temperature.gpu', '--format=csv,noheader,nounits'],
       { timeout: 1800, windowsHide: true },
     );
     const [name, total, used, utilization, temperature] = stdout.trim().split(',').map((value) => value.trim());
@@ -193,7 +203,7 @@ async function systemTelemetry() {
       temperatureC: Number(temperature),
     };
   } catch {
-    // GPU telemetry is optional. The native resource layer remains authoritative for admission.
+    // GPU telemetry is optional. Native resource admission remains authoritative.
   }
   return telemetry;
 }
@@ -210,9 +220,7 @@ async function ensureDevelopmentFixture(initialHealth) {
   }
 
   const snapshotResponse = await rpc('project.snapshot');
-  if (!snapshotResponse.ok) {
-    throw new Error(`development fixture inspection failed: ${snapshotResponse.error?.message ?? 'unknown error'}`);
-  }
+  if (!snapshotResponse.ok) throw new Error(`development fixture inspection failed: ${snapshotResponse.error?.message ?? 'unknown error'}`);
 
   const snapshot = snapshotResponse.result;
   const series = snapshot.nodes.find((node) => node.id === 'series.afterlight');
@@ -221,11 +229,7 @@ async function ensureDevelopmentFixture(initialHealth) {
   const commands = [];
   const relockSeries = series.locked === true;
   if (relockSeries) commands.push({ type: 'node.lock', id: series.id, locked: false });
-  commands.push({
-    type: 'node.patch',
-    id: series.id,
-    metadataUpdates: { devSeedVersion: DEV_SEED_VERSION },
-  });
+  commands.push({ type: 'node.patch', id: series.id, metadataUpdates: { devSeedVersion: DEV_SEED_VERSION } });
   for (const node of snapshot.nodes) commands.push({ type: 'node.markFresh', id: node.id });
   if (relockSeries) commands.push({ type: 'node.lock', id: series.id, locked: true });
 
@@ -233,16 +237,12 @@ async function ensureDevelopmentFixture(initialHealth) {
     commands,
     context: { actor: 'system', source: 'development-seed-migration', reason: `upgrade bundled fixture to v${DEV_SEED_VERSION}` },
   });
-  if (!migrated.ok) {
-    throw new Error(`development fixture migration failed: ${migrated.error?.message ?? 'unknown error'}`);
-  }
+  if (!migrated.ok) throw new Error(`development fixture migration failed: ${migrated.error?.message ?? 'unknown error'}`);
   console.log(`[bridge] migrated persistent development fixture to v${DEV_SEED_VERSION}`);
 }
 
 const initialHealth = await rpc('health');
-if (!initialHealth.ok) {
-  throw new Error(`native health failed: ${initialHealth.error?.message ?? 'unknown error'}`);
-}
+if (!initialHealth.ok) throw new Error(`native health failed: ${initialHealth.error?.message ?? 'unknown error'}`);
 await ensureDevelopmentFixture(initialHealth);
 
 const server = createServer(async (request, response) => {
@@ -286,15 +286,50 @@ const server = createServer(async (request, response) => {
       sendJson(request, response, 200, localSuccess(await launchProviderLogin(directorProvider(body.provider))));
       return;
     }
+    if (request.method === 'POST' && url.pathname === '/api/director/chat') {
+      const body = await readJsonBody(request);
+      const provider = directorProvider(body.provider);
+      const message = directorChatMessage(body.message);
+      const conversationId = optionalConversationId(body.conversationId);
+      const snapshotResponse = await rpc('project.snapshot');
+      if (!snapshotResponse.ok) throw new Error(`native snapshot failed before Director chat: ${snapshotResponse.error?.message ?? 'unknown error'}`);
+      const firstTurn = conversationId === null;
+      const context = buildDirectorChatTurn({
+        message,
+        snapshot: snapshotResponse.result,
+        selectedId: typeof body.selectedId === 'string' ? body.selectedId : null,
+        firstTurn,
+      });
+      const chat = await invokeDirectorChat(provider, context.prompt, conversationId);
+      sendJson(request, response, 200, localSuccess({
+        ...chat,
+        projectRevision: snapshotResponse.result.projectRevision,
+        context: {
+          hash: context.hash,
+          chars: context.chars,
+          estimatedTokens: context.estimatedTokens,
+          nodeCountIncluded: context.nodeCountIncluded,
+          dependencyCountIncluded: context.dependencyCountIncluded,
+        },
+      }));
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/director/chat/close') {
+      const body = await readJsonBody(request);
+      const provider = directorProvider(body.provider);
+      const conversationId = optionalConversationId(body.conversationId);
+      sendJson(request, response, 200, localSuccess(
+        conversationId ? await closeDirectorConversation(provider, conversationId) : { closed: false },
+      ));
+      return;
+    }
     if (request.method === 'POST' && url.pathname === '/api/director/plan') {
       const body = await readJsonBody(request);
       const provider = directorProvider(body.provider);
       const mode = directorMode(body.mode ?? 'guided');
       const objective = directorObjective(body.objective);
       const snapshotResponse = await rpc('project.snapshot');
-      if (!snapshotResponse.ok) {
-        throw new Error(`native snapshot failed before Director planning: ${snapshotResponse.error?.message ?? 'unknown error'}`);
-      }
+      if (!snapshotResponse.ok) throw new Error(`native snapshot failed before Director planning: ${snapshotResponse.error?.message ?? 'unknown error'}`);
       const context = await buildDirectorContextPack({
         provider,
         objective,
@@ -318,10 +353,7 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === 'POST' && url.pathname === '/api/project/apply') {
       const body = await readJsonBody(request);
-      sendJson(request, response, 200, await rpc('project.apply', {
-        commands: body.commands,
-        context: body.context,
-      }));
+      sendJson(request, response, 200, await rpc('project.apply', { commands: body.commands, context: body.context }));
       return;
     }
     if (request.method === 'POST' && url.pathname === '/api/project/impact') {
