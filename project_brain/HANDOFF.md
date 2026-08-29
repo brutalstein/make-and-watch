@@ -4,78 +4,91 @@
 
 Foundation work is on `foundation/series-engine-v0` and tracked by draft PR #1.
 
-Implemented and committed:
+The current foundation includes:
 
-- canonical `project_brain/` session handoff system;
-- C++20 transactional semantic project graph with typed commands/events, optimistic revisions, locks, staleness, DAG validation, dependency invalidation, impact preview, snapshots, and guarded hydration;
-- embedded SQLite 3.53.4 persistence behind `SnapshotStore`, with WAL, foreign keys, full synchronization, transactional replacement, and load validation;
-- SQLite schema v2 append-only native event journal with in-place migration from schema v1;
-- `ProjectSession` stages mutations and atomically persists snapshot + native events before replacing live state;
-- durable versioned commit context (`mwctx1`) with actor/source/plan/reason attribution;
-- versioned JSONL IPC protocol v1 and `makewatch_engine_host`;
-- native methods for health, snapshot, impact, apply, bounded history, and project replacement;
-- `project.apply` now validates/bounds commit context and 1..128 command batches before native mutation;
-- bounded `project.history` returns 1..24 complete committed revision groups with parsed native attribution instead of leaking storage encoding;
-- real process-boundary smoke test covers SQLite mutation, snapshot, attributed history, and host stdin/stdout transport;
-- localhost bridge with correlation, timeout, bounded request bodies, native failure propagation, bounded history route, and NVIDIA/system telemetry;
-- React/TypeScript Studio driven by the real native snapshot;
-- draggable controlled workflow canvas with 8 px snap, local persistent positions, dependency-aware Arrange, Fit/`F`, focus, Scene Strip, approval/lock/impact and real GPU telemetry;
-- semantic vs presentation boundary: drag/camera/layout never mutate `ProjectEngine` or project revision;
-- typed AI Director Autopilot schema, validator, cancellable executor, pause/resume/checkpoints, and deterministic Assist-mode planner;
-- premium virtual AI cursor, takeover banner, interaction lock, `Esc` / **Take back control**, and `Space` pause/resume;
-- cinematic workflow camera with dead-zone follow, edge protection, search-time widen, manipulation-time tighten and transient ownership;
-- explicit **24 FPS Autopilot presentation governor** for cursor, node motion and camera observation;
-- virtual cursor state isolated with `useSyncExternalStore`, so cursor frames no longer re-render the whole Studio application tree;
-- distance-aware readable cursor pacing and deterministic frame-index animation; pause/background stalls do not teleport progress;
-- camera DOM/React Flow observation is capped at 24 FPS and only one viewport write may be outstanding;
-- stale edge animation is disabled during takeover to reduce unnecessary presentation load;
-- Workspace Drive physically handles at most five representative displaced nodes; repetitive remainder settles in one deterministic presentation-only pass;
-- presentation-step watchdog prevents visual/read-only steps from holding takeover forever;
-- authoritative semantic `applyCommands` deliberately remains owned by transport + native transaction correlation, not a competing UI race timeout;
-- premium Inspector **Durable Activity** feed backed by native `project.history`, distinguishing You / AI Director / System and allowing focus on a surviving primary entity;
-- Activity is revision-based and persisted across restart; no synthetic timestamps/schema migration were invented;
-- hardened C++ `ResourceManager` with VRAM/RAM reserves, CPU budget, duplicate protection, correct GPU-only exclusivity, admission preview, projected headroom, high-water telemetry, counters, and move-only RAII `ResourceLease`;
-- CPU-only work may continue alongside exclusive GPU work when RAM/CPU capacity fits;
-- development fixture v2 with topology-first, freshness-finalization, locks-last plus scoped old-fixture migration;
-- one-command Windows quality gate `./verify.ps1` and `./dev.ps1` live runtime;
-- provider-agnostic AI Director boundary; Claude/Codex authentication remains intentionally unimplemented rather than faked.
+- C++20 transactional semantic project graph with typed commands/events, revisions, locks, approvals, staleness, dependency invalidation, impact preview, snapshots and guarded hydration;
+- SQLite schema v2 with WAL, foreign keys, atomic snapshot + append-only journal persistence and v1 migration;
+- `ProjectSession` persist-before-live-commit semantics;
+- durable commit provenance (`actor`, `source`, `plan`, `reason`) and bounded native `project.history`;
+- JSONL IPC v1 + real `makewatch_engine_host` process;
+- localhost development bridge and native-driven React/TypeScript Studio;
+- presentation-only workflow layout separated from semantic state;
+- Durable Activity feed backed by native history;
+- generic native `ResourceManager` with VRAM/RAM/CPU budgets, GPU exclusivity, admission preview, high-water metrics, counters and move-only `ResourceLease`;
+- native `BackgroundJobRuntime` with bounded job capacity, resource-aware ready scanning, cancellation ownership and deterministic one-at-a-time shutdown contract;
+- typed AI Director Autopilot with exact-revision validation, pause/resume/cancel/checkpoints and emergency takeover;
+- exact workflow pointer pick-and-place interaction for every displaced node;
+- provider-agnostic Director boundary; Claude/Codex authentication remains intentionally unimplemented rather than faked.
 
-Subsystem context:
+## Exact pointer milestone
 
-- `FOUNDATION_V1.md` — semantic project graph.
-- `PERSISTENCE.md` — SQLite snapshot+journal boundary.
-- `JOURNAL_AND_RECOVERY.md` — native history and future recovery constraints.
-- `IPC_AND_SESSION.md` — transaction, IPC, bounded history, bridge.
-- `WORKSPACE_LAYOUT.md` — presentation-only workflow layout.
-- `AUTOPILOT.md` — typed takeover, deterministic presentation governor, camera, safety.
-- `RUNTIME_FOUNDATION.md` — resource-safety/admission layer.
-- `AUTH_AND_AI_DIRECTOR.md` — Claude/Codex constraints.
+The previous autonomous camera-follower design was removed after hands-on testing showed visible pointer/node drift.
 
-## Validation status
+`AutopilotCameraFollower.tsx` is deleted. `VirtualCursor` no longer clamps the rendered pointer away from its logical coordinate.
 
-GitHub Actions is the code-level gate for every branch commit and must remain green across Studio and Native core before product-machine validation.
+The canonical workflow interaction now lives in `workflowPointerInteraction.ts` and follows:
 
-Validated in CI across milestones:
+```text
+pan workspace -> find node -> exact hover -> settle -> press ->
+move node + pointer from the same projected anchor -> release -> verify -> next node
+```
 
-- bridge/fixture JavaScript checks;
-- strict shared/Studio TypeScript and Vite production build;
-- strict native C/C++ configure/build;
-- semantic graph tests;
-- ResourceManager preview/high-water/exclusivity/scoped-lease tests;
-- SQLite snapshot/journal + schema-v1→v2 migration tests;
-- ProjectSession persistence-failure/no-false-history guarantees;
-- IPC parser/dispatcher tests;
-- attributed context parsing and bounded history tests;
-- real native-host process smoke test including durable history;
-- Autopilot production build and camera/cursor integration.
+Important implementation guarantees:
 
-During the history milestone, CI caught a legitimate C++ lambda constness error in `history_json`; it was fixed in code without reducing warnings. Test includes were also made explicit instead of relying on transitive headers.
+- off-screen nodes are found by visible bounded workspace pan gestures, not hidden `fitView`/teleport;
+- pointer location is reprojected after viewport mutations before press;
+- rendered pointer coordinate equals logical pointer coordinate;
+- drag does not use `delta * zoom` integration;
+- viewport stays fixed while a node is held;
+- every drag frame projects the exact next node anchor and places the pointer at the same point;
+- pre-grab and post-drop alignment are checked with a small epsilon;
+- every displaced node gets its own `dragNode` step; the old five-node limit/bulk remainder path is gone;
+- deterministic 24 FPS animation remains, with awaited frame callbacks so viewport writes cannot overtake one another;
+- pause preserves grab presentation instead of pretending to release the node;
+- cancellation clears panning/dragging presentation state immediately.
 
-The primary Windows/NVIDIA machine previously passed the full foundation gate and opened the live native Studio. Hands-on Autopilot testing then exposed cursor visibility, endless-feeling traversal, excessive speed, and transient freezing. The current code addresses those with bounded choreography and the 24 FPS presentation governor, but this newest performance/history build still requires a fresh Windows live run before being called product-machine validated.
+See `AUTOPILOT.md`.
 
-## Immediate next gate
+## Background runtime milestone
 
-On Windows:
+`BackgroundJobRuntime` now sits above `ResourceManager`.
+
+It does **not** launch model processes yet. It owns lifecycle/admission state and each running job's resource lease so the future process supervisor cannot free accounting early.
+
+Key rules:
+
+- queued + running work is bounded by fixed capacity;
+- duplicate job IDs are rejected;
+- resource-blocked GPU work does not cause head-of-line blocking for later safe CPU-only work;
+- cancelling queued work removes it immediately because it owns no lease;
+- cancelling running work changes state to cancellation-requested but retains VRAM/RAM/CPU accounting;
+- resources are released only after actual stop/completion confirmation;
+- shutdown stops new admission and cancels queued work;
+- exactly one running shutdown target is exposed at a time;
+- the same target remains current until stop is confirmed;
+- wrong-target confirmation fails closed;
+- shutdown releases running resource leases one-by-one in deterministic oldest-first order.
+
+See `BACKGROUND_JOBS.md` and `RUNTIME_FOUNDATION.md`.
+
+## CI validation
+
+The exact-pointer + BackgroundJobRuntime code passed the current GitHub Actions code gates:
+
+- bridge/fixture checks;
+- strict shared/Studio TypeScript;
+- Vite production build;
+- strict native configure/build;
+- complete CTest suite;
+- new background lifecycle tests.
+
+Background runtime tests cover bounded capacity, duplicate rejection, GPU head-of-line avoidance, cancellation retaining resource reservations, sequential shutdown, wrong-target fail-closed behavior and active resource count reaching zero only after final confirmed stop.
+
+Code-level CI is green; the newest pointer behavior still requires a hands-on Windows/NVIDIA product-machine run before it is called visually validated.
+
+## Immediate Windows gate
+
+From repository root:
 
 ```powershell
 git pull
@@ -83,57 +96,55 @@ git pull
 .\dev.ps1
 ```
 
-In Studio:
+Then deliberately scatter multiple nodes far apart and run **Let AI drive this workflow**.
 
-1. manually scatter many nodes far from organized positions;
-2. run **Let AI drive this workflow**;
-3. confirm motion is visibly slower/readable rather than racing;
-4. confirm UI remains responsive while cursor moves — Inspector/topbar should not freeze with every cursor frame;
-5. confirm camera follows smoothly without high-refresh-rate oscillation/backlog;
-6. confirm only five representative nodes at most are individually dragged and repetitive remainder settles together;
-7. confirm pass reaches completed state and manual control returns;
-8. pause for several seconds with `Space`, resume, and confirm no teleport;
-9. cancel with `Esc` / **Take back control** and confirm immediate ownership return;
-10. confirm Assist-mode layout does not advance native revision;
-11. restart and confirm layout persistence;
-12. inspect **Durable Activity** in the Inspector;
-13. manually lock/unlock or approve a node and confirm a new **You** history entry appears with the new native revision;
-14. restart and confirm Activity survives because it is read from SQLite journal;
-15. older unattributed commits may appear as System; new manual commits must be attributed;
-16. `./verify.ps1` must pass expanded native history/ResourceManager tests on Windows GNU 15.2.
+Validate:
 
-Any freeze, camera backlog, Activity attribution/history, SQLite, or resource-accounting regression found here must be fixed before media/provider work.
+1. AI moves through workflow space to find an off-screen target by visibly panning the canvas;
+2. cursor ends visibly on the node body before any grab;
+3. a short hover/settle is visible;
+4. cursor presses while exactly on the node;
+5. node and pointer remain locked together throughout the drag;
+6. pointer releases at the final node position;
+7. it repeats the full sequence for every displaced node, not only a sample;
+8. no hidden camera motion fights the cursor;
+9. `Space` pause during a grab freezes the held state without teleport/release;
+10. `Esc` / **Take back control** cancels and returns interaction immediately;
+11. Studio remains responsive during movement;
+12. presentation-only layout does not increment native project revision;
+13. arranged positions persist after restart;
+14. `./verify.ps1` passes the new background lifecycle tests on the Windows toolchain.
 
-## Next engineering milestone after that gate
+Any pointer/node mismatch or freeze found on the product machine must be treated as a failed gate, not papered over by more camera motion.
 
-1. checkpoint/recovery policy on top of snapshot + journal;
-2. content-addressed asset/provenance storage separated from semantic graph state;
-3. bounded native pending-job queue;
-4. worker supervisor + capability/health contract, with worker lifetime owning `ResourceLease`;
-5. native hardware-profile probing/calibration without making CUDA/NVIDIA mandatory for all installs;
-6. first lightweight local voice and storyboard/image provider paths;
-7. Claude/Codex Director plan producers only after supported authentication behavior is reverified.
+## Next engineering sequence
 
-## What not to do next
+1. concrete cross-platform WorkerSupervisor on top of `BackgroundJobRuntime`;
+2. graceful stop -> bounded wait -> one-process termination escalation -> confirmed exit -> lease release;
+3. typed worker health/capability handshake and bounded logs;
+4. checkpoint/recovery policy on snapshot + journal;
+5. content-addressed asset/provenance storage;
+6. hardware-profile probing/calibration;
+7. first lightweight local voice/storyboard provider paths;
+8. Claude/Codex plan producers only after supported authentication is reverified.
 
-- Do not wire heavyweight models directly into React.
-- Do not store workspace x/y or camera transforms in semantic metadata.
-- Do not let cosmetic drag call `project.apply`.
-- Do not give providers unrestricted OS mouse/keyboard authority.
-- Do not map provider text directly to arbitrary DOM handlers.
-- Do not let Assist mode mutate semantic state.
-- Do not remove emergency takeover.
-- Do not add a UI-only race timeout around an authoritative semantic commit.
-- Do not drive Autopilot presentation at unrestricted display refresh rate.
-- Do not let scheduling bypass `ResourceManager`.
-- Do not classify CPU-only work as GPU work for exclusivity.
-- Do not let React/Node duplicate graph/persistence invariants or parse SQLite provenance encoding.
+## What not to do
+
+- Do not reintroduce `AutopilotCameraFollower` or cursor safe-frame clamping.
+- Do not use stale DOM coordinates after viewport movement.
+- Do not use `delta * zoom` cursor integration during node drag.
+- Do not bulk-move displaced nodes while claiming the AI handled them individually.
+- Do not let presentation state mutate native semantic state.
+- Do not give providers unrestricted OS mouse/keyboard or arbitrary DOM authority.
+- Do not free running-job resources when cancellation is merely requested.
+- Do not expose a second shutdown target before the first worker is confirmed stopped.
+- Do not let scheduler/provider code bypass `ResourceManager`.
+- Do not claim WorkerSupervisor/process launching exists yet.
 - Do not make ComfyUI project-state owner.
-- Do not implement fake/custom Claude subscription OAuth or ship OAuth tokens in `.env`.
-- Do not treat the journal as a full event-sourced replay engine yet.
-- Do not weaken strict compiler/type gates.
-- Do not expose patent-sensitive adaptive synthesis-selection logic while repo is public.
+- Do not implement fake/custom Claude subscription OAuth.
+- Do not weaken strict type/compiler/test gates.
+- Do not publicly disclose patent-sensitive adaptive synthesis-selection logic while the repo is public.
 
 ## Quality bar
 
-Every milestone must remain buildable, testable, explainable, reversible, bounded, and explicit about what is actually validated. “100/100” is the quality target backed by evidence; it is not a claim that software can never contain defects.
+“100/100” is the engineering target: deterministic behavior, explicit ownership, bounded failure modes, strict tests and product-machine evidence. It is not a claim that software can never contain a defect.
