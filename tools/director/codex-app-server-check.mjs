@@ -15,6 +15,7 @@ class FakeChild extends EventEmitter {
     this.pid = 4242;
     this.buffer = '';
     this.requests = [];
+    this.serverResponses = [];
     this.profilesSupported = profilesSupported;
     this.failNextTurnStart = false;
 
@@ -39,6 +40,10 @@ class FakeChild extends EventEmitter {
     return true;
   }
 
+  sendServerRequest(message) {
+    this.#send(message);
+  }
+
   #close(code) {
     if (this.exitCode !== null) return;
     this.exitCode = code;
@@ -50,6 +55,10 @@ class FakeChild extends EventEmitter {
   }
 
   #handle(message) {
+    if (Object.prototype.hasOwnProperty.call(message, 'id') && typeof message.method !== 'string') {
+      this.serverResponses.push(message);
+      return;
+    }
     this.requests.push(message);
     if (!Object.prototype.hasOwnProperty.call(message, 'id')) return;
 
@@ -152,7 +161,7 @@ assert.equal(JSON.stringify(account).includes('must-not-leak'), false, 'account 
 assert.equal(client.readOnlyPermissionMode, 'profile', 'modern App Server should use named permission profiles');
 
 const initializeRequest = fake.requests.find((request) => request.method === 'initialize');
-assert.equal(initializeRequest?.params?.capabilities?.experimentalApi, true, 'permission profiles require experimentalApi capability opt-in');
+assert.equal(initializeRequest?.params?.capabilities?.experimentalApi, true, 'permission profiles and dynamic tools require experimentalApi capability opt-in');
 const profileRequest = fake.requests.find((request) => request.method === 'permissionProfile/list');
 assert.ok(profileRequest, 'App Server startup must discover permission profiles');
 const normalizedRuntimeCwd = profileRequest.params.cwd.replaceAll('\\', '/');
@@ -170,6 +179,7 @@ assert.ok(threadRequest, 'Director planning must create a thread');
 assert.equal(threadRequest.params.approvalPolicy, 'never');
 assert.equal(threadRequest.params.permissions, ':read-only', 'modern thread/start must select the built-in read-only permission profile');
 assert.equal(Object.prototype.hasOwnProperty.call(threadRequest.params, 'sandbox'), false, 'permissions and legacy sandbox must never be sent together');
+assert.equal(Object.prototype.hasOwnProperty.call(threadRequest.params, 'dynamicTools'), false, 'plan-preview threads must not receive mutation tools');
 
 const turnRequest = fake.requests.find((request) => request.method === 'turn/start');
 assert.ok(turnRequest, 'Director planning must use turn/start');
@@ -189,6 +199,66 @@ process.off('unhandledRejection', onUnhandled);
 assert.equal(unhandled.length, 0, 'rejected turn/start must not leave an orphaned completion rejection');
 
 await client.shutdown();
+
+let toolFake = null;
+const toolCalls = [];
+const dynamicTools = [{
+  type: 'namespace',
+  name: 'makewatch',
+  description: 'test namespace',
+  tools: [{
+    type: 'function',
+    name: 'project_snapshot',
+    description: 'test tool',
+    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+  }],
+}];
+const toolClient = new CodexAppServerClient({
+  executable,
+  dynamicTools,
+  dynamicToolHandler: async (call) => {
+    toolCalls.push(call);
+    if (call.tool === 'fail') throw new Error('simulated tool failure');
+    return JSON.stringify({ projectRevision: 11, nodes: [] });
+  },
+  processFactory: () => {
+    toolFake = new FakeChild();
+    return toolFake;
+  },
+});
+await toolClient.accountRead();
+assert.deepEqual(toolClient.dynamicToolSpecs(), dynamicTools, 'configured dynamic tool specs must remain available to chat threads');
+
+toolFake.sendServerRequest({
+  id: 9001,
+  method: 'item/tool/call',
+  params: {
+    threadId: 'thread-tools',
+    turnId: 'turn-tools',
+    callId: 'call-tools',
+    namespace: 'makewatch',
+    tool: 'project_snapshot',
+    arguments: {},
+  },
+});
+await new Promise((resolvePromise) => setImmediate(resolvePromise));
+assert.equal(toolCalls.length, 1);
+assert.equal(toolCalls[0].namespace, 'makewatch');
+assert.equal(toolCalls[0].tool, 'project_snapshot');
+const toolResponse = toolFake.serverResponses.find((response) => response.id === 9001);
+assert.equal(toolResponse?.result?.success, true, 'successful host tool execution must return an App Server tool result');
+assert.equal(toolResponse.result.contentItems[0].type, 'inputText');
+assert.equal(JSON.parse(toolResponse.result.contentItems[0].text).projectRevision, 11);
+
+toolFake.sendServerRequest({
+  id: 9002,
+  method: 'workspace/write-file',
+  params: {},
+});
+await new Promise((resolvePromise) => setImmediate(resolvePromise));
+const rejectedServerRequest = toolFake.serverResponses.find((response) => response.id === 9002);
+assert.equal(rejectedServerRequest?.error?.code, -32601, 'all non-tool server requests must remain fail-closed');
+await toolClient.shutdown();
 
 let legacyFake = null;
 const legacyClient = new CodexAppServerClient({
