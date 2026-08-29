@@ -37,6 +37,7 @@ add_library(makewatch_engine STATIC
   src/ipc/dispatcher.cpp
   src/project/graph.cpp
   src/project/engine.cpp
+  src/runtime/background_job_runtime.cpp
   src/runtime/resource_manager.cpp
   src/persistence/sqlite_snapshot_store.cpp
 )
@@ -75,6 +76,9 @@ if(MAKEWATCH_BUILD_TESTS)
   add_executable(makewatch_resource_manager_tests tests/resource_manager_test.cpp)
   target_link_libraries(makewatch_resource_manager_tests PRIVATE makewatch::engine)
 
+  add_executable(makewatch_background_job_runtime_tests tests/background_job_runtime_test.cpp)
+  target_link_libraries(makewatch_background_job_runtime_tests PRIVATE makewatch::engine)
+
   add_executable(makewatch_sqlite_snapshot_store_tests tests/sqlite_snapshot_store_test.cpp)
   target_link_libraries(makewatch_sqlite_snapshot_store_tests PRIVATE makewatch::engine makewatch_sqlite)
 
@@ -88,6 +92,7 @@ if(MAKEWATCH_BUILD_TESTS)
       makewatch_engine_tests
       makewatch_project_engine_tests
       makewatch_resource_manager_tests
+      makewatch_background_job_runtime_tests
       makewatch_sqlite_snapshot_store_tests
       makewatch_project_session_tests
       makewatch_ipc_dispatcher_tests)
@@ -101,6 +106,7 @@ if(MAKEWATCH_BUILD_TESTS)
   add_test(NAME makewatch_engine_tests COMMAND makewatch_engine_tests)
   add_test(NAME makewatch_project_engine_tests COMMAND makewatch_project_engine_tests)
   add_test(NAME makewatch_resource_manager_tests COMMAND makewatch_resource_manager_tests)
+  add_test(NAME makewatch_background_job_runtime_tests COMMAND makewatch_background_job_runtime_tests)
   add_test(NAME makewatch_sqlite_snapshot_store_tests COMMAND makewatch_sqlite_snapshot_store_tests)
   add_test(NAME makewatch_project_session_tests COMMAND makewatch_project_session_tests)
   add_test(NAME makewatch_ipc_dispatcher_tests COMMAND makewatch_ipc_dispatcher_tests)
