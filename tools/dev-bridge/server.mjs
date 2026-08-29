@@ -10,6 +10,10 @@ import { promisify } from 'node:util';
 import { buildDirectorChatTurn } from '../director/chat-context.mjs';
 import { buildDirectorContextPack } from '../director/context-pack.mjs';
 import {
+  clearMakeWatchToolRuntime,
+  configureMakeWatchToolRuntime,
+} from '../director/makewatch-tool-runtime.mjs';
+import {
   closeDirectorConversation,
   invokeDirectorChat,
   invokeDirectorPlan,
@@ -18,6 +22,8 @@ import {
   shutdownDirectorProviders,
 } from '../director/provider-manager.mjs';
 import { DEV_SEED_COMMANDS, DEV_SEED_VERSION } from './dev-seed.mjs';
+import { WorkflowService } from './workflow-service.mjs';
+import { WorkflowStore } from './workflow-store.mjs';
 
 const execFileAsync = promisify(execFile);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -30,6 +36,8 @@ const nativeHost = resolve(
   process.platform === 'win32' ? 'makewatch_engine_host.exe' : 'makewatch_engine_host',
 );
 const databasePath = resolve(root, process.env.MAKEWATCH_PROJECT_DB ?? '.makewatch/dev-project.sqlite3');
+const workflowDirectory = resolve(root, process.env.MAKEWATCH_WORKFLOW_DIR ?? '.makewatch/workflows');
+const ENABLE_DEV_SEED = process.env.MAKEWATCH_ENABLE_DEV_SEED === '1';
 const MAX_NATIVE_LINE_BUFFER_BYTES = 8 * 1024 * 1024;
 const NATIVE_SHUTDOWN_GRACE_MS = 1_500;
 const SERVER_SHUTDOWN_GRACE_MS = 1_000;
@@ -134,6 +142,7 @@ function rpc(method, params = {}) {
       pending.delete(id);
       rejectPromise(new Error(`native RPC timeout: ${method}`));
     }, 10_000);
+    timer.unref();
     pending.set(id, { resolve: resolvePromise, reject: rejectPromise, timer });
     const payload = `${JSON.stringify({ protocol: 1, id, method, params })}\n`;
     native.stdin.write(payload, (error) => {
@@ -147,6 +156,10 @@ function rpc(method, params = {}) {
   });
 }
 
+const workflowStore = new WorkflowStore({ rootDirectory: workflowDirectory });
+const workflowService = new WorkflowService({ rpc, store: workflowStore });
+configureMakeWatchToolRuntime(workflowService.directorRuntime());
+
 function allowOrigin(request, response) {
   const origin = request.headers.origin;
   if (typeof origin === 'string' && /^https?:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) {
@@ -159,7 +172,10 @@ function allowOrigin(request, response) {
 
 function sendJson(request, response, status, payload) {
   allowOrigin(request, response);
-  response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+  response.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
+  });
   response.end(JSON.stringify(payload));
 }
 
@@ -186,6 +202,20 @@ function boundedHistoryLimit(value) {
     throw new Error('history limit must be an integer between 1 and 24');
   }
   return parsed;
+}
+
+function expectedProjectRevision(value) {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error('expectedProjectRevision must be a non-negative integer');
+  }
+  return value;
+}
+
+function boundedWorkflowText(value, label, maximum, { required = false } = {}) {
+  const text = String(value ?? '').trim();
+  if (required && !text) throw new Error(`${label} is required`);
+  if (text.length > maximum) throw new Error(`${label} exceeds ${maximum} characters`);
+  return text;
 }
 
 function directorProvider(value) {
@@ -268,8 +298,13 @@ async function systemTelemetry() {
 async function ensureDevelopmentFixture(initialHealth) {
   if (initialHealth.result.nodeCount === 0) {
     const seeded = await rpc('project.apply', {
+      expectedProjectRevision: initialHealth.result.projectRevision,
       commands: DEV_SEED_COMMANDS,
-      context: { actor: 'system', source: 'development-seed', reason: 'initialize bundled development fixture' },
+      context: {
+        actor: 'system',
+        source: 'development-seed',
+        reason: 'initialize bundled development fixture',
+      },
     });
     if (!seeded.ok) throw new Error(`development seed failed: ${seeded.error?.message ?? 'unknown error'}`);
     console.log(`[bridge] created persistent development project seed v${DEV_SEED_VERSION}`);
@@ -278,7 +313,6 @@ async function ensureDevelopmentFixture(initialHealth) {
 
   const snapshotResponse = await rpc('project.snapshot');
   if (!snapshotResponse.ok) throw new Error(`development fixture inspection failed: ${snapshotResponse.error?.message ?? 'unknown error'}`);
-
   const snapshot = snapshotResponse.result;
   const series = snapshot.nodes.find((node) => node.id === 'series.afterlight');
   if (!series || series.metadata?.devSeedVersion === DEV_SEED_VERSION) return;
@@ -291,8 +325,13 @@ async function ensureDevelopmentFixture(initialHealth) {
   if (relockSeries) commands.push({ type: 'node.lock', id: series.id, locked: true });
 
   const migrated = await rpc('project.apply', {
+    expectedProjectRevision: snapshot.projectRevision,
     commands,
-    context: { actor: 'system', source: 'development-seed-migration', reason: `upgrade bundled fixture to v${DEV_SEED_VERSION}` },
+    context: {
+      actor: 'system',
+      source: 'development-seed-migration',
+      reason: `upgrade bundled fixture to v${DEV_SEED_VERSION}`,
+    },
   });
   if (!migrated.ok) throw new Error(`development fixture migration failed: ${migrated.error?.message ?? 'unknown error'}`);
   console.log(`[bridge] migrated persistent development fixture to v${DEV_SEED_VERSION}`);
@@ -300,7 +339,11 @@ async function ensureDevelopmentFixture(initialHealth) {
 
 const initialHealth = await rpc('health');
 if (!initialHealth.ok) throw new Error(`native health failed: ${initialHealth.error?.message ?? 'unknown error'}`);
-await ensureDevelopmentFixture(initialHealth);
+if (ENABLE_DEV_SEED) {
+  await ensureDevelopmentFixture(initialHealth);
+} else {
+  console.log('[bridge] development seed disabled; persisted workflow is authoritative');
+}
 
 const server = createServer(async (request, response) => {
   if (request.method === 'OPTIONS') {
@@ -311,12 +354,16 @@ const server = createServer(async (request, response) => {
   }
 
   if (shuttingDown) {
-    sendJson(request, response, 503, { ok: false, error: { code: 'shutting_down', message: 'bridge is shutting down' } });
+    sendJson(request, response, 503, {
+      ok: false,
+      error: { code: 'shutting_down', message: 'bridge is shutting down' },
+    });
     return;
   }
 
   try {
     const url = new URL(request.url ?? '/', `http://${request.headers.host ?? '127.0.0.1'}`);
+
     if (request.method === 'GET' && url.pathname === '/api/health') {
       sendJson(request, response, 200, await rpc('health'));
       return;
@@ -334,10 +381,57 @@ const server = createServer(async (request, response) => {
       sendJson(request, response, 200, localSuccess(await systemTelemetry()));
       return;
     }
+    if (request.method === 'GET' && url.pathname === '/api/workflows') {
+      const includeRecovery = url.searchParams.get('includeRecovery') !== '0';
+      sendJson(request, response, 200, localSuccess(await workflowService.listWorkflows({ includeRecovery })));
+      return;
+    }
     if (request.method === 'GET' && url.pathname === '/api/director/providers') {
       sendJson(request, response, 200, localSuccess(await providerStatuses()));
       return;
     }
+
+    if (request.method === 'POST' && url.pathname === '/api/workflows/save') {
+      const body = await readJsonBody(request);
+      const workflow = await workflowService.saveWorkflow({
+        name: boundedWorkflowText(body.name, 'workflow name', 120, { required: true }),
+        description: boundedWorkflowText(body.description, 'workflow description', 800),
+      });
+      sendJson(request, response, 200, localSuccess({ workflow }));
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/workflows/new') {
+      const body = await readJsonBody(request);
+      const result = await workflowService.newWorkflow({
+        expectedProjectRevision: expectedProjectRevision(body.expectedProjectRevision),
+        actor: 'user',
+        source: 'studio-workflow-new',
+        reason: boundedWorkflowText(body.reason || 'create clean workflow', 'reason', 600, { required: true }),
+      });
+      sendJson(request, response, 200, localSuccess(result));
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/workflows/load') {
+      const body = await readJsonBody(request);
+      const result = await workflowService.loadWorkflow({
+        workflowId: boundedWorkflowText(body.workflowId, 'workflow id', 100, { required: true }),
+        expectedProjectRevision: expectedProjectRevision(body.expectedProjectRevision),
+        actor: 'user',
+        source: 'studio-workflow-load',
+        reason: boundedWorkflowText(body.reason || 'load saved workflow', 'reason', 600, { required: true }),
+      });
+      sendJson(request, response, 200, localSuccess(result));
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/workflows/delete') {
+      const body = await readJsonBody(request);
+      const workflow = await workflowService.deleteWorkflow({
+        workflowId: boundedWorkflowText(body.workflowId, 'workflow id', 100, { required: true }),
+      });
+      sendJson(request, response, 200, localSuccess({ workflow }));
+      return;
+    }
+
     if (request.method === 'POST' && url.pathname === '/api/director/connect') {
       const body = await readJsonBody(request);
       sendJson(request, response, 200, localSuccess(await launchProviderLogin(directorProvider(body.provider))));
@@ -349,7 +443,10 @@ const server = createServer(async (request, response) => {
       const message = directorChatMessage(body.message);
       const conversationId = optionalConversationId(body.conversationId);
       const snapshotResponse = await rpc('project.snapshot');
-      if (!snapshotResponse.ok) throw new Error(`native snapshot failed before Director chat: ${snapshotResponse.error?.message ?? 'unknown error'}`);
+      if (!snapshotResponse.ok) {
+        throw new Error(`native snapshot failed before Director chat: ${snapshotResponse.error?.message ?? 'unknown error'}`);
+      }
+      const beforeRevision = snapshotResponse.result.projectRevision;
       const firstTurn = conversationId === null;
       const context = buildDirectorChatTurn({
         message,
@@ -358,9 +455,14 @@ const server = createServer(async (request, response) => {
         firstTurn,
       });
       const chat = await invokeDirectorChat(provider, context.prompt, conversationId);
+      const liveAfter = await rpc('project.snapshot');
+      if (!liveAfter.ok) {
+        throw new Error(`native snapshot failed after Director chat: ${liveAfter.error?.message ?? 'unknown error'}`);
+      }
       sendJson(request, response, 200, localSuccess({
         ...chat,
-        projectRevision: snapshotResponse.result.projectRevision,
+        projectRevision: liveAfter.result.projectRevision,
+        projectChanged: liveAfter.result.projectRevision !== beforeRevision,
         context: {
           hash: context.hash,
           chars: context.chars,
@@ -386,7 +488,9 @@ const server = createServer(async (request, response) => {
       const mode = directorMode(body.mode ?? 'guided');
       const objective = directorObjective(body.objective);
       const snapshotResponse = await rpc('project.snapshot');
-      if (!snapshotResponse.ok) throw new Error(`native snapshot failed before Director planning: ${snapshotResponse.error?.message ?? 'unknown error'}`);
+      if (!snapshotResponse.ok) {
+        throw new Error(`native snapshot failed before Director planning: ${snapshotResponse.error?.message ?? 'unknown error'}`);
+      }
       const context = await buildDirectorContextPack({
         provider,
         objective,
@@ -410,7 +514,11 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === 'POST' && url.pathname === '/api/project/apply') {
       const body = await readJsonBody(request);
-      sendJson(request, response, 200, await rpc('project.apply', { commands: body.commands, context: body.context }));
+      sendJson(request, response, 200, await rpc('project.apply', {
+        expectedProjectRevision: body.expectedProjectRevision,
+        commands: body.commands,
+        context: body.context,
+      }));
       return;
     }
     if (request.method === 'POST' && url.pathname === '/api/project/impact') {
@@ -423,16 +531,22 @@ const server = createServer(async (request, response) => {
         ok: false,
         error: {
           code: 'recovery_replace_unavailable',
-          message: 'Snapshot replacement is reserved for the future journal-aware recovery flow.',
+          message: 'Raw snapshot replacement is recovery-only. Use the journal-aware workflow load/new routes.',
         },
       });
       return;
     }
-    sendJson(request, response, 404, { ok: false, error: { code: 'not_found', message: 'route not found' } });
-  } catch (error) {
-    sendJson(request, response, 502, {
+
+    sendJson(request, response, 404, {
       ok: false,
-      error: { code: 'bridge_error', message: error instanceof Error ? error.message : String(error) },
+      error: { code: 'not_found', message: 'route not found' },
+    });
+  } catch (error) {
+    const code = typeof error?.code === 'string' ? error.code : 'bridge_error';
+    const status = code === 'revision_conflict' ? 409 : 502;
+    sendJson(request, response, status, {
+      ok: false,
+      error: { code, message: error instanceof Error ? error.message : String(error) },
     });
   }
 });
@@ -445,6 +559,7 @@ server.on('error', (error) => {
 server.listen(bridgePort, '127.0.0.1', () => {
   console.log(`[bridge] native project bridge ready at http://127.0.0.1:${bridgePort}`);
   console.log(`[bridge] project database: ${databasePath}`);
+  console.log(`[bridge] saved workflows: ${workflowDirectory}`);
 });
 
 function waitForNativeExit(timeoutMs) {
@@ -482,11 +597,9 @@ async function shutdown() {
   if (shutdownPromise) return shutdownPromise;
   shuttingDown = true;
   shutdownPromise = (async () => {
-    // Stop accepting new HTTP work immediately, but do not wait for active
-    // Director requests before asking provider runtimes to stop. Waiting here
-    // would deadlock shutdown on the very turn that provider shutdown must cancel.
     const serverClosed = beginServerClose();
     await shutdownDirectorProviders();
+    clearMakeWatchToolRuntime();
 
     if (native.exitCode === null && !native.stdin.destroyed) native.stdin.end();
     let nativeStopped = await waitForNativeExit(NATIVE_SHUTDOWN_GRACE_MS);
