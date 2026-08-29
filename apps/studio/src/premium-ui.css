@@ -3,10 +3,14 @@
   --mw-text-sm: 11.5px;
   --mw-text-md: 13px;
   --mw-text-lg: 15px;
+  --mw-director-width: 280px;
+  --mw-chat-width: 420px;
+  --mw-chat-rail-width: 62px;
+  --mw-inspector-width: 310px;
 }
 
 html, body, #root {
-  min-width: 1420px;
+  min-width: 1280px;
   overflow: hidden;
 }
 
@@ -21,10 +25,17 @@ body { font-size: 13px; }
 .system-strip { font-size: 11.5px; }
 
 .workspace {
-  grid-template-columns: 280px 410px minmax(520px, 1fr) 310px !important;
+  grid-template-columns: var(--mw-director-width) var(--mw-chat-width) minmax(520px, 1fr) var(--mw-inspector-width) !important;
   height: calc(100vh - 68px) !important;
   min-height: 0;
   overflow: hidden;
+  transition: grid-template-columns 300ms cubic-bezier(.2,.78,.22,1);
+}
+.workspace.workspace--director-chat-open {
+  grid-template-columns: var(--mw-director-width) var(--mw-chat-width) minmax(520px, 1fr) var(--mw-inspector-width) !important;
+}
+.workspace.workspace--director-chat-closed {
+  grid-template-columns: var(--mw-director-width) var(--mw-chat-rail-width) minmax(620px, 1fr) var(--mw-inspector-width) !important;
 }
 
 .director-panel,
@@ -87,13 +98,30 @@ body { font-size: 13px; }
 
 .error-banner { font-size: 11px; }
 
-@media (max-width: 1680px) {
-  html, body, #root { min-width: 1280px; }
-  .workspace { grid-template-columns: 245px 360px minmax(480px, 1fr) 285px !important; }
-  .director-chat { padding: 14px; }
+@media (prefers-reduced-motion: reduce) {
+  .workspace { transition: none; }
 }
 
-@media (max-width: 1450px) {
-  .workspace { grid-template-columns: 230px 330px minmax(440px, 1fr) 270px !important; }
+@media (max-width: 1760px) {
+  :root {
+    --mw-director-width: 248px;
+    --mw-chat-width: 370px;
+    --mw-inspector-width: 288px;
+  }
+  .director-chat { padding: 15px; }
+}
+
+@media (max-width: 1500px) {
+  :root {
+    --mw-director-width: 230px;
+    --mw-chat-width: 340px;
+    --mw-inspector-width: 270px;
+  }
+  .workspace.workspace--director-chat-open {
+    grid-template-columns: var(--mw-director-width) var(--mw-chat-width) minmax(420px, 1fr) var(--mw-inspector-width) !important;
+  }
+  .workspace.workspace--director-chat-closed {
+    grid-template-columns: var(--mw-director-width) var(--mw-chat-rail-width) minmax(520px, 1fr) var(--mw-inspector-width) !important;
+  }
   .system-strip > span:nth-child(2) { display: none; }
 }
