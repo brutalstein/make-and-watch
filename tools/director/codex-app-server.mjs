@@ -18,8 +18,9 @@ const SHUTDOWN_GRACE_MS = 2_000;
 const MAX_PROTOCOL_LINE_BYTES = 2 * 1024 * 1024;
 const MAX_PROTOCOL_WRITE_BYTES = 512 * 1024;
 const MAX_STDERR_BYTES = 64 * 1024;
-const THREAD_READ_ONLY_SANDBOX = 'read-only';
-const TURN_READ_ONLY_SANDBOX = 'readOnly';
+const BUILT_IN_READ_ONLY_PERMISSION_PROFILE = ':read-only';
+const LEGACY_THREAD_READ_ONLY_SANDBOX = 'read-only';
+const LEGACY_TURN_READ_ONLY_SANDBOX = 'readOnly';
 
 let planSchemaPromise = null;
 
@@ -33,6 +34,16 @@ function planSchema() {
 function safeMessage(value, fallback = 'Codex app-server request failed') {
   const text = String(value ?? '').replace(/[\r\n\t]+/g, ' ').trim();
   return (text || fallback).slice(0, 500);
+}
+
+function protocolError(message, fallback) {
+  const error = new Error(safeMessage(message?.error?.message, fallback));
+  if (Number.isInteger(message?.error?.code)) error.code = message.error.code;
+  return error;
+}
+
+function isUnsupportedMethod(error) {
+  return error?.code === -32601 || /method not found|unknown method|experimental api.*disabled|not supported/i.test(String(error?.message ?? ''));
 }
 
 function sanitizeAccount(result) {
@@ -116,6 +127,8 @@ export class CodexAppServerClient extends EventEmitter {
     this.activeTurn = null;
     this.pendingLogin = null;
     this.stderrTail = '';
+    this.permissionMode = 'unknown';
+    this.permissionProfileId = null;
   }
 
   get isRunning() {
@@ -124,6 +137,26 @@ export class CodexAppServerClient extends EventEmitter {
 
   get loginState() {
     return this.pendingLogin ? { ...this.pendingLogin } : null;
+  }
+
+  get readOnlyPermissionMode() {
+    return this.permissionMode;
+  }
+
+  readOnlyThreadSecurityParams() {
+    if (this.permissionMode === 'profile' && this.permissionProfileId) {
+      return { permissions: this.permissionProfileId };
+    }
+    return { sandbox: LEGACY_THREAD_READ_ONLY_SANDBOX };
+  }
+
+  readOnlyTurnSecurityParams() {
+    if (this.permissionMode === 'profile' && this.permissionProfileId) {
+      return { permissions: this.permissionProfileId };
+    }
+    // Older App Server builds support the legacy policy. Do not send the old
+    // restricted `access` object: newer builds explicitly reject that shape.
+    return { sandboxPolicy: { type: LEGACY_TURN_READ_ONLY_SANDBOX } };
   }
 
   async start() {
@@ -140,6 +173,8 @@ export class CodexAppServerClient extends EventEmitter {
 
   async #startInternal() {
     this.shuttingDown = false;
+    this.permissionMode = 'unknown';
+    this.permissionProfileId = null;
     const options = {
       cwd: root,
       windowsHide: true,
@@ -172,6 +207,7 @@ export class CodexAppServerClient extends EventEmitter {
       await this.request('initialize', {
         clientInfo: { name: 'make_and_watch', title: 'Make & Watch', version: '0.1.0' },
         capabilities: {
+          experimentalApi: true,
           optOutNotificationMethods: [
             'item/agentMessage/delta',
             'item/reasoning/summaryTextDelta',
@@ -181,10 +217,30 @@ export class CodexAppServerClient extends EventEmitter {
         },
       }, 12_000);
       this.notify('initialized', {});
+      await this.#negotiateReadOnlyPermissionMode();
       this.initialized = true;
     } catch (error) {
       terminateProcessTree(child);
       throw new Error(`Codex app-server initialization failed: ${safeMessage(error instanceof Error ? error.message : error)}`);
+    }
+  }
+
+  async #negotiateReadOnlyPermissionMode() {
+    try {
+      const result = await this.request('permissionProfile/list', {
+        cwd: directorRuntimeRoot,
+        limit: 64,
+      }, REQUEST_TIMEOUT_MS);
+      const profiles = Array.isArray(result?.data) ? result.data : [];
+      const readOnly = profiles.find((profile) => profile?.id === BUILT_IN_READ_ONLY_PERMISSION_PROFILE);
+      if (!readOnly) throw new Error('Codex did not advertise the built-in :read-only permission profile');
+      if (readOnly.allowed !== true) throw new Error('Codex policy does not allow the built-in :read-only permission profile');
+      this.permissionMode = 'profile';
+      this.permissionProfileId = BUILT_IN_READ_ONLY_PERMISSION_PROFILE;
+    } catch (error) {
+      if (!isUnsupportedMethod(error)) throw error;
+      this.permissionMode = 'legacy';
+      this.permissionProfileId = null;
     }
   }
 
@@ -247,7 +303,7 @@ export class CodexAppServerClient extends EventEmitter {
       if (!waiter) return;
       clearTimeout(waiter.timer);
       this.pending.delete(message.id);
-      if (message.error) waiter.reject(new Error(safeMessage(message.error.message, `${waiter.method} failed`)));
+      if (message.error) waiter.reject(protocolError(message, `${waiter.method} failed`));
       else waiter.resolve(message.result);
       return;
     }
@@ -331,6 +387,8 @@ export class CodexAppServerClient extends EventEmitter {
     if (this.activeTurn) this.#settleTurn(this.activeTurn, reason);
     this.initialized = false;
     this.readyPromise = null;
+    this.permissionMode = 'unknown';
+    this.permissionProfileId = null;
     this.reader?.close();
     this.reader = null;
     this.child = null;
@@ -383,6 +441,9 @@ export class CodexAppServerClient extends EventEmitter {
       resolveCompletion = resolvePromise;
       rejectCompletion = rejectPromise;
     });
+    // A turn/start request can fail before the completion promise is awaited. Keep
+    // an observer attached so cleanup rejection can never become process-fatal.
+    void completion.catch(() => undefined);
     const turn = {
       threadId,
       turnId: null,
@@ -413,7 +474,7 @@ export class CodexAppServerClient extends EventEmitter {
     const threadResult = await this.request('thread/start', {
       cwd: directorRuntimeRoot,
       approvalPolicy: 'never',
-      sandbox: THREAD_READ_ONLY_SANDBOX,
+      ...this.readOnlyThreadSecurityParams(),
       serviceName: 'make_and_watch_director',
     }, 15_000);
     const threadId = threadResult?.thread?.id;
@@ -426,14 +487,7 @@ export class CodexAppServerClient extends EventEmitter {
         input: [{ type: 'text', text: prompt }],
         cwd: directorRuntimeRoot,
         approvalPolicy: 'never',
-        sandboxPolicy: {
-          type: TURN_READ_ONLY_SANDBOX,
-          access: {
-            type: 'restricted',
-            includePlatformDefaults: true,
-            readableRoots: [directorRuntimeRoot],
-          },
-        },
+        ...this.readOnlyTurnSecurityParams(),
         effort: 'medium',
         summary: 'concise',
         outputSchema: schema,
