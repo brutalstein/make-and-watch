@@ -21,6 +21,7 @@ import type {
   DirectorProviderId,
   DirectorProvidersResult,
 } from './director/providerTypes';
+import { announceProjectChanged } from './projectEvents';
 
 const API_BASE = import.meta.env.VITE_ENGINE_BRIDGE_URL ?? 'http://127.0.0.1:4177/api';
 const REQUEST_TIMEOUT_MS = 20_000;
@@ -136,6 +137,35 @@ function systemTelemetry(): Promise<SystemTelemetry> {
   return telemetryInFlight;
 }
 
+async function newWorkflow(expectedProjectRevision: number, reason = 'create clean workflow') {
+  const result = await request<WorkflowRestoreResult>('/workflows/new', {
+    method: 'POST',
+    body: JSON.stringify({ expectedProjectRevision, reason }),
+  });
+  announceProjectChanged({ projectRevision: result.projectRevision, source: 'workflow-manager' });
+  return result;
+}
+
+async function loadWorkflow(workflowId: string, expectedProjectRevision: number, reason = 'load saved workflow') {
+  const result = await request<WorkflowRestoreResult>('/workflows/load', {
+    method: 'POST',
+    body: JSON.stringify({ workflowId, expectedProjectRevision, reason }),
+  });
+  announceProjectChanged({ projectRevision: result.projectRevision, source: 'workflow-manager' });
+  return result;
+}
+
+async function directorChat(input: DirectorChatRequest) {
+  const result = await request<DirectorChatResult>('/director/chat', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+  if (result.projectChanged) {
+    announceProjectChanged({ projectRevision: result.projectRevision, source: 'director-chat' });
+  }
+  return result;
+}
+
 export const engineClient = {
   health: () => request<EngineHealth>('/health'),
   snapshot: () => request<ProjectGraphSnapshot>('/project'),
@@ -146,14 +176,8 @@ export const engineClient = {
     method: 'POST',
     body: JSON.stringify({ name, description }),
   }),
-  newWorkflow: (expectedProjectRevision: number, reason = 'create clean workflow') => request<WorkflowRestoreResult>('/workflows/new', {
-    method: 'POST',
-    body: JSON.stringify({ expectedProjectRevision, reason }),
-  }),
-  loadWorkflow: (workflowId: string, expectedProjectRevision: number, reason = 'load saved workflow') => request<WorkflowRestoreResult>('/workflows/load', {
-    method: 'POST',
-    body: JSON.stringify({ workflowId, expectedProjectRevision, reason }),
-  }),
+  newWorkflow,
+  loadWorkflow,
   deleteWorkflow: (workflowId: string) => request<{ workflow: SavedWorkflowSummary }>('/workflows/delete', {
     method: 'POST',
     body: JSON.stringify({ workflowId }),
@@ -163,10 +187,7 @@ export const engineClient = {
     method: 'POST',
     body: JSON.stringify({ provider }),
   }),
-  directorChat: (input: DirectorChatRequest) => request<DirectorChatResult>('/director/chat', {
-    method: 'POST',
-    body: JSON.stringify(input),
-  }),
+  directorChat,
   closeDirectorChat: (provider: DirectorProviderId, conversationId: string) => request<DirectorChatCloseResult>('/director/chat/close', {
     method: 'POST',
     body: JSON.stringify({ provider, conversationId }),
