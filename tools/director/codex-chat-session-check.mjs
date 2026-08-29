@@ -10,8 +10,20 @@ class FakeClient extends EventEmitter {
     this.requests = [];
     this.turn = 0;
     this.failNextTurnStart = false;
+    this.tools = [{
+      type: 'namespace',
+      name: 'makewatch',
+      description: 'Make & Watch tools',
+      tools: [{
+        type: 'function',
+        name: 'project_snapshot',
+        description: 'Read project',
+        inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+      }],
+    }];
   }
   async start() {}
+  dynamicToolSpecs() { return this.tools; }
   readOnlyThreadSecurityParams() { return { permissions: ':read-only' }; }
   readOnlyTurnSecurityParams() { return { permissions: ':read-only' }; }
   async request(method, params) {
@@ -45,6 +57,7 @@ assert.ok(threadStart, 'chat must create a Codex thread');
 assert.equal(threadStart.params.approvalPolicy, 'never');
 assert.equal(threadStart.params.permissions, ':read-only');
 assert.equal(Object.prototype.hasOwnProperty.call(threadStart.params, 'sandbox'), false);
+assert.deepEqual(threadStart.params.dynamicTools, client.tools, 'chat thread must advertise only host-provided Make & Watch dynamic tools');
 
 assert.equal(await chat.send(threadId, 'first message'), 'reply 1');
 assert.equal(await chat.send(threadId, 'second message'), 'reply 2');
@@ -54,6 +67,7 @@ assert.equal(turns[0].params.threadId, turns[1].params.threadId, 'multi-turn cha
 assert.equal(turns[0].params.approvalPolicy, 'never');
 assert.equal(turns[0].params.permissions, ':read-only');
 assert.equal(Object.prototype.hasOwnProperty.call(turns[0].params, 'sandboxPolicy'), false);
+assert.equal(Object.prototype.hasOwnProperty.call(turns[0].params, 'dynamicTools'), false, 'dynamic tools are thread capabilities and must not be redundantly sent on every turn');
 
 const unhandled = [];
 const onUnhandled = (reason) => unhandled.push(reason);
