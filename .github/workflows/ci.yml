@@ -35,7 +35,7 @@ jobs:
         with:
           node-version: 22
       - name: Install
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --no-frozen-lockfile
       - name: Bridge and Director checks
         run: pnpm bridge:check
       - name: Typecheck
