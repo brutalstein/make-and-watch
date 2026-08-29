@@ -5,7 +5,65 @@ import { extname, join, relative, resolve } from 'node:path';
 const MAX_PENDING_JOBS = 8;
 const MAX_RETAINED_JOBS = 100;
 const MAX_SHOTS_PER_SCENE = 64;
-const NEGATIVE_PROMPT = 'low quality, blurry, deformed, duplicate subject, watermark, logo, text, oversaturated, plastic skin, bad anatomy';
+const BASE_NEGATIVE_PROMPT = 'low quality, blurry, deformed, duplicate subject, watermark, logo, text, bad anatomy';
+
+// A Series declares its rendering idiom once and every Shot inherits it. The
+// scaffold used to be hardcoded photoreal wording, which actively fought any
+// non-photoreal checkpoint: telling an anime model to produce "physically
+// plausible materials" with a "restrained filmic color grade" degrades it.
+// Sampler defaults live here too, because they are part of the idiom rather
+// than something a user should have to tune per shot.
+const STYLE_PRESETS = {
+  'live-action-cinematic': {
+    lead: 'cinematic storyboard frame, coherent production design, physically plausible materials',
+    tail: 'cinematic lighting, consistent identity, coherent environment geometry, restrained filmic color grade, no typography',
+    negative: 'oversaturated, plastic skin',
+    steps: 20,
+    cfg: 6.5,
+    sampler: null,
+    width: 768,
+    height: 432,
+  },
+  'anime-cinematic': {
+    lead: 'cinematic anime film still, animation production key art, confident clean linework, painted backgrounds',
+    tail: 'dramatic cinematic composition, expressive character acting, cel shading with painted light, filmic depth, consistent character identity, no typography',
+    negative: '3d render, photorealistic, live action, western cartoon, chibi, sketch, flat lighting',
+    steps: 30,
+    cfg: 7,
+    // Illustrious/SDXL anime checkpoints are tuned for ancestral sampling.
+    sampler: 'euler_ancestral',
+    // SDXL degrades badly below its training resolution.
+    width: 1152,
+    height: 648,
+  },
+  illustration: {
+    lead: 'cinematic illustrated frame, deliberate composition, painterly rendering',
+    tail: 'expressive lighting, coherent environment geometry, consistent identity, no typography',
+    negative: '3d render, photorealistic',
+    steps: 28,
+    cfg: 7,
+    sampler: null,
+    width: 1152,
+    height: 648,
+  },
+  'stylized-3d': {
+    lead: 'cinematic stylized 3d animated film frame, feature animation production render',
+    tail: 'cinematic lighting, subsurface skin shading, coherent environment geometry, consistent identity, no typography',
+    negative: 'photorealistic, live action, flat 2d',
+    steps: 26,
+    cfg: 7,
+    sampler: null,
+    width: 1152,
+    height: 648,
+  },
+};
+
+const DEFAULT_STYLE_PRESET = 'live-action-cinematic';
+
+function stylePresetFor(series) {
+  const requested = metadataText(series, 'stylePreset');
+  return STYLE_PRESETS[requested] ?? STYLE_PRESETS[DEFAULT_STYLE_PRESET];
+}
 
 function generationError(code, message) {
   const error = new Error(message);
@@ -121,8 +179,9 @@ function compiledShotPrompt(snapshot, scene, shot) {
   const series = seriesForEpisode(snapshot, episode);
   const characters = uniqueKindDependencies(snapshot, scene, shot, 'character');
   const locations = uniqueKindDependencies(snapshot, scene, shot, 'location');
+  const style = stylePresetFor(series);
   const pieces = [
-    'cinematic storyboard frame, coherent production design, physically plausible materials',
+    style.lead,
     series ? `series ${safeTitle(series.title)}` : '',
     metadataText(series, 'genre') ? `genre ${metadataText(series, 'genre')}` : '',
     metadataText(series, 'visualLanguage') ? `visual bible ${metadataText(series, 'visualLanguage')}` : '',
@@ -140,10 +199,11 @@ function compiledShotPrompt(snapshot, scene, shot) {
     characters.length ? `canonical characters: ${characters.map(characterPrompt).join(' | ')}` : '',
     locations.length ? `canonical location: ${locations.map(locationPrompt).join(' | ')}` : '',
     metadataText(shot, 'promptOverride'),
-    'cinematic lighting, consistent identity, coherent environment geometry, restrained filmic color grade, no typography',
+    style.tail,
   ].filter(Boolean);
   return {
     prompt: pieces.join(', ').slice(0, 12_000),
+    style,
     series,
     episode,
     characters,
@@ -328,7 +388,11 @@ export class SceneGenerationService {
       const compiled = compiledShotPrompt(snapshot, liveScene, shot);
       const promptHash = sha256Text(compiled.prompt);
       const seed = resolvedShotSeed(compiled, liveScene, shot);
-      const negativePrompt = [NEGATIVE_PROMPT, metadataText(shot, 'negativePrompt')].filter(Boolean).join(', ');
+      const negativePrompt = [
+        BASE_NEGATIVE_PROMPT,
+        compiled.style.negative,
+        metadataText(shot, 'negativePrompt'),
+      ].filter(Boolean).join(', ');
       const startedAt = new Date().toISOString();
 
       await this.#setGenerationState(snapshot, generationNodeId, liveScene, shot, {
@@ -349,14 +413,17 @@ export class SceneGenerationService {
 
       try {
         const filenamePrefix = `MakeWatch/${safeFilePart(liveScene.id)}/${safeFilePart(shot.id)}`;
-        const width = Number(process.env.MAKEWATCH_PREVIEW_WIDTH ?? 768);
-        const height = Number(process.env.MAKEWATCH_PREVIEW_HEIGHT ?? 432);
+        const width = Number(process.env.MAKEWATCH_PREVIEW_WIDTH ?? compiled.style.width);
+        const height = Number(process.env.MAKEWATCH_PREVIEW_HEIGHT ?? compiled.style.height);
         const generated = await this.comfy.generateStoryboardFrame({
           prompt: compiled.prompt,
           negativePrompt,
           seed,
           width,
           height,
+          steps: Number(process.env.MAKEWATCH_PREVIEW_STEPS ?? compiled.style.steps),
+          cfg: Number(process.env.MAKEWATCH_PREVIEW_CFG ?? compiled.style.cfg),
+          sampler: process.env.MAKEWATCH_PREVIEW_SAMPLER || compiled.style.sampler,
           filenamePrefix,
         });
 
@@ -538,3 +605,12 @@ export class SceneGenerationService {
     }, snapshot.projectRevision);
   }
 }
+
+// Exported so the style contract can be tested without a live ComfyUI.
+export const sceneGenerationInternals = Object.freeze({
+  STYLE_PRESETS,
+  DEFAULT_STYLE_PRESET,
+  stylePresetFor,
+  compiledShotPrompt,
+  BASE_NEGATIVE_PROMPT,
+});

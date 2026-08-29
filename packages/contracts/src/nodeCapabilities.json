@@ -25,6 +25,21 @@
         "defaultValue": "cinematic drama"
       },
       {
+        "key": "stylePreset",
+        "label": "Style preset",
+        "type": "enum",
+        "scope": "production",
+        "description": "Rendering idiom every shot inherits. Selects the prompt scaffold and sampler defaults used by preview generation; visualLanguage refines it.",
+        "options": [
+          "live-action-cinematic",
+          "anime-cinematic",
+          "illustration",
+          "stylized-3d"
+        ],
+        "defaultValue": "live-action-cinematic",
+        "requiredFor": "preview"
+      },
+      {
         "key": "visualLanguage",
         "label": "Visual language",
         "type": "multiline",

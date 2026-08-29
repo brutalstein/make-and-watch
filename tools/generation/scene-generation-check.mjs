@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { SceneGenerationService } from './scene-generation-service.mjs';
+import { SceneGenerationService, sceneGenerationInternals } from './scene-generation-service.mjs';
 
 function baseSnapshot() {
   return {
@@ -146,3 +146,61 @@ try {
 } finally {
   await rm(directory, { recursive: true, force: true });
 }
+
+// --- Style presets -----------------------------------------------------------
+// The prompt scaffold used to be hardcoded photoreal wording, which fought any
+// non-photoreal checkpoint. A Series now declares its rendering idiom and every
+// Shot must inherit it.
+{
+  const { STYLE_PRESETS, DEFAULT_STYLE_PRESET, stylePresetFor, compiledShotPrompt } = sceneGenerationInternals;
+
+  assert.equal(stylePresetFor(null), STYLE_PRESETS[DEFAULT_STYLE_PRESET], 'missing series falls back to the default idiom');
+  assert.equal(
+    stylePresetFor({ metadata: { stylePreset: 'nonsense' } }),
+    STYLE_PRESETS[DEFAULT_STYLE_PRESET],
+    'an unknown preset must not break generation',
+  );
+
+  const styled = (preset) => {
+    const series = { id: 'series.s', kind: 'series', title: 'S', revision: 1, metadata: { stylePreset: preset } };
+    const episode = { id: 'ep.1', kind: 'episode', title: 'E', revision: 1, metadata: {} };
+    const scene = { id: 'sc.1', kind: 'scene', title: 'Sc', revision: 1, metadata: { summary: 'a beat' } };
+    const shot = { id: 'sh.1', kind: 'shot', title: 'Sh', revision: 1, metadata: {} };
+    const snapshot = {
+      schemaVersion: 1,
+      projectRevision: 1,
+      nodes: [series, episode, scene, shot],
+      dependencies: [
+        { dependent: 'ep.1', dependency: 'series.s' },
+        { dependent: 'sc.1', dependency: 'ep.1' },
+        { dependent: 'sh.1', dependency: 'sc.1' },
+      ],
+    };
+    return compiledShotPrompt(snapshot, scene, shot);
+  };
+
+  const anime = styled('anime-cinematic');
+  assert.match(anime.prompt, /anime film still/, 'anime idiom must lead the prompt');
+  assert.doesNotMatch(anime.prompt, /physically plausible materials/, 'photoreal scaffold must not leak into anime');
+  assert.doesNotMatch(anime.prompt, /restrained filmic color grade/, 'photoreal grade must not leak into anime');
+  assert.match(anime.style.negative, /photorealistic/, 'anime idiom must exclude photorealism');
+  assert.equal(anime.style.sampler, 'euler_ancestral');
+  assert.ok(anime.style.width >= 1024, 'SDXL-class idioms must not render below training resolution');
+
+  const live = styled('live-action-cinematic');
+  assert.match(live.prompt, /physically plausible materials/, 'default idiom must keep its existing behaviour');
+  assert.doesNotMatch(live.prompt, /anime/, 'default idiom must not become anime');
+
+  for (const [name, preset] of Object.entries(STYLE_PRESETS)) {
+    for (const key of ['lead', 'tail', 'negative']) {
+      assert.equal(typeof preset[key], 'string', `${name}.${key} must be text`);
+      assert.ok(preset[key].length > 0, `${name}.${key} must not be empty`);
+    }
+    assert.ok(preset.steps >= 1 && preset.steps <= 80, `${name}.steps out of range`);
+    assert.ok(preset.cfg >= 1 && preset.cfg <= 20, `${name}.cfg out of range`);
+    assert.equal(preset.width % 8, 0, `${name}.width must be a multiple of 8`);
+    assert.equal(preset.height % 8, 0, `${name}.height must be a multiple of 8`);
+  }
+}
+
+console.log('scene generation style preset check: passed');

@@ -238,6 +238,9 @@ export class ComfyUiClient {
       checkpoint,
       checkpointCount: checkpoints.length,
       sampler,
+      // Exposed so a style preset can ask for a sampler and be told whether
+      // this ComfyUI actually has it, instead of queueing an invalid workflow.
+      samplers,
       scheduler,
     };
     this.capabilitiesCachedAt = now;
@@ -306,9 +309,17 @@ export class ComfyUiClient {
     seed,
     width = 768,
     height = 432,
+    steps,
+    cfg,
+    sampler,
     filenamePrefix,
   }) {
     const capabilities = await this.capabilities();
+    // A requested sampler is only honoured when this ComfyUI actually offers
+    // it, so a style preset can never queue a workflow the server will reject.
+    const requestedSampler = sampler && capabilities.samplers?.includes(sampler)
+      ? sampler
+      : capabilities.sampler;
     const workflow = buildStoryboardWorkflow({
       checkpoint: capabilities.checkpoint,
       prompt,
@@ -316,7 +327,9 @@ export class ComfyUiClient {
       seed,
       width,
       height,
-      sampler: capabilities.sampler,
+      steps,
+      cfg,
+      sampler: requestedSampler,
       scheduler: capabilities.scheduler,
       filenamePrefix,
     });
