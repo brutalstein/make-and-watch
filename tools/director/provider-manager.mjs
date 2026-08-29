@@ -672,24 +672,32 @@ async function codexConversationTools() {
   return { executable, chat: await chatForCodex(executable) };
 }
 
-async function ensureProviderThreadAvailable(document) {
-  if (document.runtimeMode !== 'app_server' || !document.providerThreadId) return document;
+async function ensureProviderThreadAvailable(document, status) {
+  if (status.runtimeMode !== 'app_server' || !document.providerThreadId) return document;
   const { chat } = await codexConversationTools();
   if (!chat) return document;
-  if (document.providerThreadArchived) {
+
+  let providerThreadArchived = document.providerThreadArchived;
+  if (providerThreadArchived) {
     try {
       await chat.unarchiveThread(document.providerThreadId);
-      await conversationStore.setProviderState(document.id, {
-        runtimeMode: document.runtimeMode,
-        providerThreadId: document.providerThreadId,
-        providerThreadArchived: false,
-      });
-      return { ...document, providerThreadArchived: false };
+      providerThreadArchived = false;
     } catch {
       return document;
     }
   }
-  return document;
+
+  try {
+    await chat.resumeThread(document.providerThreadId);
+    await conversationStore.setProviderState(document.id, {
+      runtimeMode: 'app_server',
+      providerThreadId: document.providerThreadId,
+      providerThreadArchived,
+    });
+    return { ...document, runtimeMode: 'app_server', providerThreadArchived };
+  } catch {
+    return document;
+  }
 }
 
 export async function invokeDirectorChat(provider, prompt, conversationId = null, options = {}) {
@@ -719,7 +727,7 @@ export async function invokeDirectorChat(provider, prompt, conversationId = null
     conversation = await conversationStore.read(conversationId);
     if (conversation.archivedAt) throw new Error('Director conversation is archived; restore it before sending a new message');
     if (conversation.provider !== provider) throw new Error('Director conversation provider mismatch');
-    conversation = await ensureProviderThreadAvailable(conversation);
+    conversation = await ensureProviderThreadAvailable(conversation, status);
   } else {
     const summary = await conversationStore.create({
       provider,
@@ -746,7 +754,7 @@ export async function invokeDirectorChat(provider, prompt, conversationId = null
   try {
     let rawReply;
     let runtimeMode = conversation.runtimeMode;
-    let providerThreadId = conversation.providerThreadId;
+    const providerThreadId = conversation.providerThreadId;
 
     if (runtimeMode === 'app_server' && providerThreadId) {
       try {
@@ -756,14 +764,12 @@ export async function invokeDirectorChat(provider, prompt, conversationId = null
         const probe = await codexStaticProbe(executable);
         if (!probe.exec.chatAvailable) throw error;
         runtimeMode = 'exec_fallback';
-        providerThreadId = null;
         codexAppServerFailures.set(executable.path, boundedText(error instanceof Error ? error.message : error, 240));
         await resetCodexClient();
         rawReply = await execRuntimeForCodex(executable).chat(prompt, compatibilityTranscript(conversation));
       }
     } else {
       runtimeMode = 'exec_fallback';
-      providerThreadId = null;
       rawReply = await execRuntimeForCodex(executable).chat(prompt, compatibilityTranscript(conversation));
     }
 
@@ -816,7 +822,7 @@ export async function renameDirectorConversation(conversationId, title) {
   if (activeRun?.conversationId === conversationId) throw new Error('Director conversation is busy');
   const summary = await conversationStore.rename(conversationId, title);
   let providerWarning = '';
-  if (summary.runtimeMode === 'app_server' && summary.providerThreadId) {
+  if (summary.providerThreadId) {
     try {
       const { chat } = await codexConversationTools();
       await chat?.nameThread(summary.providerThreadId, summary.title);
@@ -832,7 +838,7 @@ export async function archiveDirectorConversation(conversationId) {
   const document = await conversationStore.read(conversationId);
   let providerArchived = document.providerThreadArchived;
   let providerWarning = '';
-  if (document.runtimeMode === 'app_server' && document.providerThreadId && !providerArchived) {
+  if (document.providerThreadId && !providerArchived) {
     try {
       const { chat } = await codexConversationTools();
       if (chat) {
@@ -852,7 +858,7 @@ export async function unarchiveDirectorConversation(conversationId) {
   const document = await conversationStore.read(conversationId);
   let providerArchived = document.providerThreadArchived;
   let providerWarning = '';
-  if (document.runtimeMode === 'app_server' && document.providerThreadId && providerArchived) {
+  if (document.providerThreadId && providerArchived) {
     try {
       const { chat } = await codexConversationTools();
       if (chat) {
@@ -871,7 +877,7 @@ export async function deleteDirectorConversation(conversationId) {
   if (activeRun?.conversationId === conversationId) throw new Error('Director conversation is busy');
   const document = await conversationStore.read(conversationId);
   let providerWarning = '';
-  if (document.runtimeMode === 'app_server' && document.providerThreadId) {
+  if (document.providerThreadId) {
     try {
       const { chat } = await codexConversationTools();
       await chat?.deleteThread(document.providerThreadId);
