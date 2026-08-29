@@ -16,8 +16,11 @@ const directorRuntimeRoot = resolve(root, 'tools', 'director', 'runtime');
 const planSchemaPath = resolve(root, 'schemas', 'v1', 'director-autopilot-plan.schema.json');
 
 const REQUEST_TIMEOUT_MS = 8_000;
-const TOOL_TIMEOUT_MS = 20_000;
-const PLAN_TIMEOUT_MS = 120_000;
+// A makewatch tool call reaches the native engine and, for generation tools,
+// the local media gateway. 20s was tight enough that legitimate multi-command
+// project mutations were reported to Codex as tool failures.
+const TOOL_TIMEOUT_MS = Number(process.env.MAKEWATCH_DIRECTOR_TOOL_TIMEOUT_MS ?? 120_000);
+const PLAN_TIMEOUT_MS = Number(process.env.MAKEWATCH_DIRECTOR_PLAN_TIMEOUT_MS ?? 300_000);
 const INTERRUPT_GRACE_MS = 2_500;
 const SHUTDOWN_GRACE_MS = 2_000;
 const MAX_PROTOCOL_LINE_BYTES = 2 * 1024 * 1024;

@@ -4,7 +4,11 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const directorRuntimeRoot = resolve(root, 'tools', 'director', 'runtime');
 
-const CHAT_TURN_TIMEOUT_MS = 120_000;
+// One Director chat turn may create a whole scene: several authoritative
+// project tool calls plus Codex reasoning between them. This budget must stay
+// BELOW the Studio client budget so a genuinely stuck turn is reported by the
+// server with a real reason instead of being aborted by the browser.
+const CHAT_TURN_TIMEOUT_MS = Number(process.env.MAKEWATCH_DIRECTOR_TURN_TIMEOUT_MS ?? 600_000);
 const TURN_START_TIMEOUT_MS = 20_000;
 const INTERRUPT_TIMEOUT_MS = 2_500;
 const THREAD_TIMEOUT_MS = 15_000;

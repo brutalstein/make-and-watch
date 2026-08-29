@@ -28,6 +28,7 @@ import {
   unarchiveDirectorConversation,
 } from '../director/provider-manager.mjs';
 import { DEV_SEED_COMMANDS, DEV_SEED_VERSION } from './dev-seed.mjs';
+import { GenerationGatewayClient } from './generation-gateway.mjs';
 import { WorkflowService } from './workflow-service.mjs';
 import { WorkflowStore } from './workflow-store.mjs';
 
@@ -45,6 +46,9 @@ const databasePath = resolve(root, process.env.MAKEWATCH_PROJECT_DB ?? '.makewat
 const workflowDirectory = resolve(root, process.env.MAKEWATCH_WORKFLOW_DIR ?? '.makewatch/workflows');
 const ENABLE_DEV_SEED = process.env.MAKEWATCH_ENABLE_DEV_SEED === '1';
 const MAX_NATIVE_LINE_BUFFER_BYTES = 8 * 1024 * 1024;
+// Large transactional applies/restores hit SQLite fsync, which is noticeably
+// slower when the project lives on a synced folder such as OneDrive.
+const NATIVE_RPC_TIMEOUT_MS = Number(process.env.MAKEWATCH_NATIVE_RPC_TIMEOUT_MS ?? 30_000);
 const NATIVE_SHUTDOWN_GRACE_MS = 1_500;
 const SERVER_SHUTDOWN_GRACE_MS = 1_000;
 const TELEMETRY_CACHE_MS = 1_500;
@@ -147,7 +151,7 @@ function rpc(method, params = {}) {
     const timer = setTimeout(() => {
       pending.delete(id);
       rejectPromise(new Error(`native RPC timeout: ${method}`));
-    }, 10_000);
+    }, NATIVE_RPC_TIMEOUT_MS);
     timer.unref();
     pending.set(id, { resolve: resolvePromise, reject: rejectPromise, timer });
     const payload = `${JSON.stringify({ protocol: 1, id, method, params })}\n`;
@@ -164,7 +168,38 @@ function rpc(method, params = {}) {
 
 const workflowStore = new WorkflowStore({ rootDirectory: workflowDirectory });
 const workflowService = new WorkflowService({ rpc, store: workflowStore });
-configureMakeWatchToolRuntime(workflowService.directorRuntime());
+const generationGateway = new GenerationGatewayClient();
+
+// The Director operates the project through exactly one authoritative surface.
+// Project/workflow operations stay native; media operations are delegated to
+// the local generation gateway, which owns GPU scheduling and writes generation
+// provenance and Asset nodes straight back into native state. The bridge never
+// fabricates job or artifact results.
+configureMakeWatchToolRuntime({
+  ...workflowService.directorRuntime(),
+  generationProvider: async () => {
+    const [visual, voice] = await Promise.allSettled([
+      generationGateway.providerStatus(),
+      generationGateway.audioProviderStatus(),
+    ]);
+    return {
+      visual: visual.status === 'fulfilled'
+        ? visual.value
+        : { provider: 'comfyui', online: false, detail: visual.reason?.message ?? 'unavailable' },
+      voice: voice.status === 'fulfilled'
+        ? voice.value
+        : { provider: 'chatterbox', ready: false, detail: voice.reason?.message ?? 'unavailable' },
+    };
+  },
+  startSceneGeneration: ({ sceneId }) => generationGateway.startScene(sceneId),
+  startAudioGeneration: ({ audioId }) => generationGateway.startAudio(audioId),
+  generationJob: ({ jobId, kind }) => (kind === 'audio'
+    ? generationGateway.audioJob(jobId)
+    : generationGateway.job(jobId)),
+  generationJobs: ({ kind, limit }) => (kind === 'audio'
+    ? generationGateway.audioJobs(limit)
+    : generationGateway.jobs(limit)),
+});
 
 function allowOrigin(request, response) {
   const origin = request.headers.origin;

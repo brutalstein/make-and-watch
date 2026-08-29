@@ -9,6 +9,8 @@ export function configureMakeWatchToolRuntime(nextRuntime) {
   const required = [
     'snapshot', 'history', 'impact', 'apply',
     'newWorkflow', 'saveWorkflow', 'listWorkflows', 'loadWorkflow', 'deleteWorkflow',
+    'generationProvider', 'startSceneGeneration', 'startAudioGeneration',
+    'generationJob', 'generationJobs',
   ];
   for (const name of required) {
     if (typeof nextRuntime[name] !== 'function') {

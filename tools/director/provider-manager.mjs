@@ -21,7 +21,7 @@ const planSchemaPath = resolve(root, 'schemas', 'v1', 'director-autopilot-plan.s
 const conversationDirectory = resolve(root, process.env.MAKEWATCH_CONVERSATION_DIR ?? '.makewatch/conversations');
 
 const STATUS_TIMEOUT_MS = 5_000;
-const PLAN_TIMEOUT_MS = 120_000;
+const PLAN_TIMEOUT_MS = Number(process.env.MAKEWATCH_DIRECTOR_PLAN_TIMEOUT_MS ?? 300_000);
 const PROVIDER_SHUTDOWN_WAIT_MS = 2_000;
 const MAX_STATUS_BYTES = 256 * 1024;
 const MAX_PLAN_PROCESS_BYTES = 2 * 1024 * 1024;

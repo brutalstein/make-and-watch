@@ -1,3 +1,5 @@
+import { productionSchemaDigest } from './production-schema.mjs';
+
 const NAMESPACE = 'makewatch';
 const MAX_TOOL_COMMANDS = 64;
 const MAX_QUERY_RESULTS = 100;
@@ -217,6 +219,68 @@ export function makeWatchDynamicToolSpecs() {
         },
       ),
       functionTool(
+        'production_schema',
+        'Read the authoritative Make & Watch production node schema: what each node kind means, which metadata keys the generation and rendering pipeline actually reads, their enum domains and defaults. Call this before authoring Series/Episode/Scene/Shot/Character/Location metadata so keys are not invented.',
+        {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            kinds: { type: 'array', maxItems: nodeKinds.length, items: { type: 'string', enum: nodeKinds } },
+          },
+        },
+        true,
+      ),
+      functionTool(
+        'generation_provider',
+        'Read local media runtime status (ComfyUI storyboard preview and Chatterbox voice). Check this before promising visual or voice output; when a runtime is offline, say so instead of claiming generation succeeded.',
+        { type: 'object', additionalProperties: false, properties: {} },
+      ),
+      functionTool(
+        'scene_generate',
+        'Start real local storyboard preview image generation for every Shot linked to a Scene. Returns a queued job immediately; poll generation_job for progress. Make & Watch writes generation provenance and Asset nodes back into the authoritative project itself, so do not fabricate those nodes.',
+        {
+          type: 'object',
+          additionalProperties: false,
+          required: ['sceneId'],
+          properties: { sceneId: { type: 'string', minLength: 1, maxLength: 160 } },
+        },
+      ),
+      functionTool(
+        'audio_generate',
+        'Start real local voice synthesis for one Audio node. Returns a queued job; poll generation_job with kind audio.',
+        {
+          type: 'object',
+          additionalProperties: false,
+          required: ['audioId'],
+          properties: { audioId: { type: 'string', minLength: 1, maxLength: 160 } },
+        },
+      ),
+      functionTool(
+        'generation_job',
+        'Read one media generation job by id, including status, progress, produced artifacts and any failure reason.',
+        {
+          type: 'object',
+          additionalProperties: false,
+          required: ['jobId'],
+          properties: {
+            jobId: { type: 'string', minLength: 8, maxLength: 80 },
+            kind: { type: 'string', enum: ['visual', 'audio'] },
+          },
+        },
+      ),
+      functionTool(
+        'generation_jobs',
+        'List recent media generation jobs so progress can be reported without guessing.',
+        {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            kind: { type: 'string', enum: ['visual', 'audio'] },
+            limit: { type: 'integer', minimum: 1, maximum: 50 },
+          },
+        },
+      ),
+      functionTool(
         'workflow_delete',
         'Delete one saved workflow snapshot. Use only when the user explicitly asks to delete that saved copy. This never deletes the active project.',
         {
@@ -337,6 +401,36 @@ export async function handleMakeWatchToolCall(call, runtime) {
         expectedProjectRevision: safeInteger(input.expectedProjectRevision, 'expectedProjectRevision'),
         reason: boundedString(input.reason, 'reason', MAX_REASON_CHARS, { required: true }),
         callId: call.callId,
+      });
+      break;
+    case 'production_schema': {
+      const kinds = Array.isArray(input.kinds) ? input.kinds.map((value) => String(value)) : null;
+      result = productionSchemaDigest(kinds);
+      break;
+    }
+    case 'generation_provider':
+      result = await runtime.generationProvider();
+      break;
+    case 'scene_generate':
+      result = await runtime.startSceneGeneration({
+        sceneId: boundedString(input.sceneId, 'sceneId', 160, { required: true }),
+      });
+      break;
+    case 'audio_generate':
+      result = await runtime.startAudioGeneration({
+        audioId: boundedString(input.audioId, 'audioId', 160, { required: true }),
+      });
+      break;
+    case 'generation_job':
+      result = await runtime.generationJob({
+        jobId: boundedString(input.jobId, 'jobId', 80, { required: true }),
+        kind: input.kind === 'audio' ? 'audio' : 'visual',
+      });
+      break;
+    case 'generation_jobs':
+      result = await runtime.generationJobs({
+        kind: input.kind === 'audio' ? 'audio' : 'visual',
+        limit: safeInteger(input.limit, 'limit', { minimum: 1, maximum: 50, fallback: 20 }),
       });
       break;
     case 'workflow_delete':

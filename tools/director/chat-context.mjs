@@ -33,6 +33,19 @@ const CHAT_DIRECTIVE = [
   'Keep answers useful and concise unless the user asks for detail.',
 ].join(' ');
 
+const PRODUCTION_DIRECTIVE = [
+  'Production model: Series owns Episodes; an Episode owns ordered Scenes; a Scene owns ordered Shots.',
+  'Character and Location are reusable continuity anchors, not per-scene copies. Attach them with dependency.add so prompt compilation inherits them; never paste identity text into each Shot.',
+  'Dependency direction is dependent -> dependency: a Shot depends on its Scene, a Scene depends on its Episode, an Episode depends on its Series, and a Shot or Scene depends on each Character/Location it uses.',
+  'Generation and Asset nodes are written by Make & Watch during real generation. Never hand-create them to imply output exists.',
+  'Metadata keys are a fixed schema. Call production_schema before authoring metadata and use only its keys and enum values; unknown keys are stored but ignored by prompt compilation, timing and rendering.',
+  'For a preview-generatable Scene the minimum is: Series.visualLanguage, Scene.summary, Shot.generationStrategy, Shot.durationSeconds, and an appearancePrompt on each Character and environmentPrompt on each Location involved.',
+  'Continuity: keep one Series masterSeed, reuse existing Character/Location anchors instead of creating near-duplicates, and prefer node.lock true on identity anchors the user approves so later episodes inherit them.',
+  'Shot seeds are derived deterministically from the Series masterSeed and the Shot identity, so identical inputs reproduce identical frames. Only set Shot.seed explicitly when the user wants to pin one frame.',
+  'Generation flow: check generation_provider, then scene_generate for the Scene, then poll generation_job until it is completed or failed. Report the real job status. If the visual runtime is offline, say the workflow is ready but generation cannot run yet.',
+  'Timing: a Scene duration should equal the sum of its Shot durationSeconds. When the user asks for a target runtime, distribute Shot durations so they actually add up to it.',
+].join(' ');
+
 function boundedText(value, maximum) {
   const text = String(value ?? '').trim();
   return text.length <= maximum ? text : `${text.slice(0, Math.max(0, maximum - 1))}…`;
@@ -102,7 +115,7 @@ function makePrompt({ message, snapshot, selectedId, firstTurn, nodeLimit, depen
     dependencies,
   };
 
-  const sections = [CHAT_DIRECTIVE];
+  const sections = [CHAT_DIRECTIVE, PRODUCTION_DIRECTIVE];
   if (firstTurn) {
     sections.push('This is the first turn in this Director conversation. Use this bounded live project context as the shared starting point:');
     sections.push(stableStringify(liveContext));

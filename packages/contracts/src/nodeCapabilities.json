@@ -1,0 +1,1139 @@
+{
+  "series": {
+    "kind": "series",
+    "label": "Series Bible",
+    "role": "scope",
+    "purpose": "Canonical creative constitution shared by every episode: visual language, language, format, continuity policy and master production defaults.",
+    "primaryOutput": "A stable series-level production bible inherited by episodes, scenes and shots.",
+    "consumes": [],
+    "produces": [
+      "episode",
+      "character",
+      "location"
+    ],
+    "invariants": [
+      "One canonical Series should own an Episode.",
+      "Series-wide identity and visual-language changes may invalidate downstream production."
+    ],
+    "fields": [
+      {
+        "key": "genre",
+        "label": "Genre",
+        "type": "text",
+        "scope": "creative",
+        "description": "Primary dramatic genre.",
+        "defaultValue": "cinematic drama"
+      },
+      {
+        "key": "visualLanguage",
+        "label": "Visual language",
+        "type": "multiline",
+        "scope": "creative",
+        "description": "Canonical lighting, lens, palette, texture and realism rules.",
+        "requiredFor": "preview",
+        "defaultValue": "cinematic realism, coherent lighting, restrained filmic grade"
+      },
+      {
+        "key": "language",
+        "label": "Dialogue language",
+        "type": "language",
+        "scope": "creative",
+        "description": "BCP-47-ish project language used by dialogue and narration.",
+        "defaultValue": "tr"
+      },
+      {
+        "key": "targetEpisodeMinutes",
+        "label": "Target episode minutes",
+        "type": "number",
+        "scope": "production",
+        "description": "Default finished episode duration.",
+        "defaultValue": "20",
+        "requiredFor": "final"
+      },
+      {
+        "key": "aspectRatio",
+        "label": "Aspect ratio",
+        "type": "enum",
+        "scope": "production",
+        "description": "Master image aspect ratio.",
+        "options": [
+          "16:9",
+          "9:16",
+          "1:1",
+          "2.39:1"
+        ],
+        "defaultValue": "16:9"
+      },
+      {
+        "key": "fps",
+        "label": "Master FPS",
+        "type": "number",
+        "scope": "production",
+        "description": "Final composition frame rate.",
+        "defaultValue": "24",
+        "requiredFor": "final"
+      },
+      {
+        "key": "masterSeed",
+        "label": "Master seed",
+        "type": "seed",
+        "scope": "production",
+        "description": "Stable deterministic seed namespace for derived shot seeds.",
+        "defaultValue": "1337"
+      },
+      {
+        "key": "contentRating",
+        "label": "Content rating",
+        "type": "text",
+        "scope": "creative",
+        "description": "Creative safety/rating target used during planning.",
+        "defaultValue": "general"
+      },
+      {
+        "key": "audioStyle",
+        "label": "Audio style",
+        "type": "multiline",
+        "scope": "creative",
+        "description": "Global dialogue, music, ambience and loudness direction.",
+        "defaultValue": "cinematic dialogue, restrained score, natural ambience"
+      }
+    ]
+  },
+  "episode": {
+    "kind": "episode",
+    "label": "Episode Master",
+    "role": "scope",
+    "purpose": "One renderable story deliverable. Owns scene ordering, target runtime and the final composition/export contract.",
+    "primaryOutput": "One assembled episode master plus render manifest.",
+    "consumes": [
+      "series"
+    ],
+    "produces": [
+      "scene",
+      "generation",
+      "asset"
+    ],
+    "invariants": [
+      "An Episode belongs to exactly one Series.",
+      "Final duration is derived from scene/shot/audio timing rather than a single long model generation."
+    ],
+    "fields": [
+      {
+        "key": "episodeNumber",
+        "label": "Episode number",
+        "type": "number",
+        "scope": "creative",
+        "description": "Human ordering within the Series.",
+        "defaultValue": "1"
+      },
+      {
+        "key": "targetDurationSeconds",
+        "label": "Target duration",
+        "type": "duration",
+        "scope": "production",
+        "description": "Desired final runtime in seconds.",
+        "defaultValue": "1200",
+        "requiredFor": "final"
+      },
+      {
+        "key": "synopsis",
+        "label": "Synopsis",
+        "type": "multiline",
+        "scope": "creative",
+        "description": "Episode-level story summary."
+      },
+      {
+        "key": "dramaticArc",
+        "label": "Dramatic arc",
+        "type": "multiline",
+        "scope": "creative",
+        "description": "Setup, escalation, climax and resolution intent."
+      },
+      {
+        "key": "pace",
+        "label": "Pace",
+        "type": "enum",
+        "scope": "creative",
+        "description": "Global edit rhythm.",
+        "options": [
+          "slow",
+          "measured",
+          "balanced",
+          "fast",
+          "kinetic"
+        ],
+        "defaultValue": "balanced"
+      },
+      {
+        "key": "renderProfile",
+        "label": "Render profile",
+        "type": "enum",
+        "scope": "production",
+        "description": "Master delivery profile.",
+        "options": [
+          "preview-720p",
+          "master-1080p",
+          "master-1440p",
+          "master-4k"
+        ],
+        "defaultValue": "preview-720p"
+      },
+      {
+        "key": "soundtrackPolicy",
+        "label": "Soundtrack policy",
+        "type": "multiline",
+        "scope": "production",
+        "description": "How score, ambience and dialogue are balanced and reused."
+      },
+      {
+        "key": "subtitlePolicy",
+        "label": "Subtitle policy",
+        "type": "enum",
+        "scope": "production",
+        "description": "Subtitle output behavior.",
+        "options": [
+          "none",
+          "burn-in",
+          "sidecar",
+          "both"
+        ],
+        "defaultValue": "sidecar"
+      }
+    ]
+  },
+  "scene": {
+    "kind": "scene",
+    "label": "Scene",
+    "role": "production-unit",
+    "purpose": "Narrative and continuity block. Converts one dramatic beat into ordered shots plus dialogue, ambience and transition intent.",
+    "primaryOutput": "A scene package containing shot media, timed audio and scene-level continuity state.",
+    "consumes": [
+      "episode",
+      "character",
+      "location",
+      "audio",
+      "asset"
+    ],
+    "produces": [
+      "shot",
+      "audio",
+      "generation",
+      "asset"
+    ],
+    "invariants": [
+      "A final Scene has at least one Shot.",
+      "Scene ownership of Shots must be unambiguous.",
+      "Location and Character dependencies are semantic anchors, not copied prompt text."
+    ],
+    "fields": [
+      {
+        "key": "index",
+        "label": "Scene index",
+        "type": "number",
+        "scope": "creative",
+        "description": "Scene ordering inside the Episode.",
+        "defaultValue": "1"
+      },
+      {
+        "key": "durationSeconds",
+        "label": "Target duration",
+        "type": "duration",
+        "scope": "production",
+        "description": "Scene timing budget.",
+        "defaultValue": "45",
+        "requiredFor": "final"
+      },
+      {
+        "key": "summary",
+        "label": "Scene summary",
+        "type": "multiline",
+        "scope": "creative",
+        "description": "What visibly/narratively happens.",
+        "requiredFor": "preview"
+      },
+      {
+        "key": "dramaticGoal",
+        "label": "Dramatic goal",
+        "type": "multiline",
+        "scope": "creative",
+        "description": "What must change by the end of the Scene."
+      },
+      {
+        "key": "beat",
+        "label": "Story beat",
+        "type": "text",
+        "scope": "creative",
+        "description": "Compact beat label such as reveal, confrontation or release."
+      },
+      {
+        "key": "pace",
+        "label": "Scene pace",
+        "type": "enum",
+        "scope": "creative",
+        "description": "Scene-level edit tempo.",
+        "options": [
+          "slow",
+          "measured",
+          "balanced",
+          "fast",
+          "kinetic"
+        ],
+        "defaultValue": "balanced"
+      },
+      {
+        "key": "timeOfDay",
+        "label": "Time of day",
+        "type": "text",
+        "scope": "creative",
+        "description": "Scene-local time/lighting override."
+      },
+      {
+        "key": "weather",
+        "label": "Weather",
+        "type": "text",
+        "scope": "creative",
+        "description": "Scene-local environment condition."
+      },
+      {
+        "key": "transitionIn",
+        "label": "Transition in",
+        "type": "enum",
+        "scope": "production",
+        "description": "Composition transition entering the Scene.",
+        "options": [
+          "cut",
+          "fade",
+          "dip-black",
+          "dissolve",
+          "match-cut"
+        ],
+        "defaultValue": "cut"
+      },
+      {
+        "key": "transitionOut",
+        "label": "Transition out",
+        "type": "enum",
+        "scope": "production",
+        "description": "Composition transition leaving the Scene.",
+        "options": [
+          "cut",
+          "fade",
+          "dip-black",
+          "dissolve",
+          "match-cut"
+        ],
+        "defaultValue": "cut"
+      },
+      {
+        "key": "generationPolicy",
+        "label": "Generation policy",
+        "type": "enum",
+        "scope": "production",
+        "description": "Default strategy selector for child Shots.",
+        "options": [
+          "hybrid",
+          "mostly-stills",
+          "mostly-i2v",
+          "full-video"
+        ],
+        "defaultValue": "hybrid"
+      },
+      {
+        "key": "dialogueBudgetSeconds",
+        "label": "Dialogue budget",
+        "type": "duration",
+        "scope": "production",
+        "description": "Approximate spoken-content budget used for pacing."
+      }
+    ]
+  },
+  "shot": {
+    "kind": "shot",
+    "label": "Shot",
+    "role": "production-unit",
+    "purpose": "Smallest visual editorial unit. It is the contract sent to image/video generation and later placed on the episode timeline.",
+    "primaryOutput": "One time-bounded visual clip or animated still with deterministic provenance.",
+    "consumes": [
+      "scene",
+      "character",
+      "location",
+      "asset",
+      "audio"
+    ],
+    "produces": [
+      "generation",
+      "asset"
+    ],
+    "invariants": [
+      "A final Shot has a positive duration.",
+      "Generation strategy is explicit.",
+      "Character/location continuity is referenced through dependencies."
+    ],
+    "fields": [
+      {
+        "key": "index",
+        "label": "Shot index",
+        "type": "number",
+        "scope": "creative",
+        "description": "Ordering inside the owning Scene.",
+        "defaultValue": "1"
+      },
+      {
+        "key": "durationSeconds",
+        "label": "Duration",
+        "type": "duration",
+        "scope": "production",
+        "description": "Editorial duration in seconds.",
+        "defaultValue": "5",
+        "requiredFor": "final"
+      },
+      {
+        "key": "purpose",
+        "label": "Shot purpose",
+        "type": "text",
+        "scope": "creative",
+        "description": "Narrative reason the Shot exists: establish, reaction, reveal, action, insert, etc."
+      },
+      {
+        "key": "framing",
+        "label": "Framing",
+        "type": "enum",
+        "scope": "creative",
+        "description": "Camera framing.",
+        "options": [
+          "extreme-wide",
+          "wide",
+          "medium-wide",
+          "medium",
+          "medium-close",
+          "close-up",
+          "extreme-close-up",
+          "insert"
+        ],
+        "defaultValue": "medium"
+      },
+      {
+        "key": "camera",
+        "label": "Camera movement",
+        "type": "text",
+        "scope": "creative",
+        "description": "Static, handheld, dolly, pan, tilt, orbit, push-in, rack-focus, etc.",
+        "defaultValue": "static"
+      },
+      {
+        "key": "subjectAction",
+        "label": "Subject action",
+        "type": "multiline",
+        "scope": "creative",
+        "description": "Visible action that must occur during the Shot."
+      },
+      {
+        "key": "motionLevel",
+        "label": "Motion level",
+        "type": "enum",
+        "scope": "production",
+        "description": "Motion complexity used to choose still-motion vs I2V/video.",
+        "options": [
+          "none",
+          "low",
+          "medium",
+          "high"
+        ],
+        "defaultValue": "low"
+      },
+      {
+        "key": "generationStrategy",
+        "label": "Generation strategy",
+        "type": "enum",
+        "scope": "production",
+        "description": "Concrete media synthesis mode.",
+        "options": [
+          "STILL_MOTION",
+          "T2I",
+          "I2V",
+          "VIDEO",
+          "COMPOSITE"
+        ],
+        "defaultValue": "STILL_MOTION",
+        "requiredFor": "preview"
+      },
+      {
+        "key": "qualityTier",
+        "label": "Quality tier",
+        "type": "enum",
+        "scope": "production",
+        "description": "Controls steps/resolution/retries.",
+        "options": [
+          "draft",
+          "preview",
+          "final"
+        ],
+        "defaultValue": "preview"
+      },
+      {
+        "key": "continuityPriority",
+        "label": "Continuity priority",
+        "type": "enum",
+        "scope": "production",
+        "description": "How aggressively identity/location anchors constrain regeneration.",
+        "options": [
+          "low",
+          "medium",
+          "high",
+          "critical"
+        ],
+        "defaultValue": "high"
+      },
+      {
+        "key": "seed",
+        "label": "Shot seed",
+        "type": "seed",
+        "scope": "production",
+        "description": "Explicit deterministic seed. If empty it is derived from the Series master seed and Shot id."
+      },
+      {
+        "key": "promptOverride",
+        "label": "Prompt override",
+        "type": "multiline",
+        "scope": "creative",
+        "description": "Optional user-authored visual additions without replacing canonical anchors."
+      },
+      {
+        "key": "negativePrompt",
+        "label": "Negative prompt",
+        "type": "multiline",
+        "scope": "production",
+        "description": "Shot-specific exclusions."
+      },
+      {
+        "key": "transitionOut",
+        "label": "Transition out",
+        "type": "enum",
+        "scope": "production",
+        "description": "Editorial transition after this Shot.",
+        "options": [
+          "cut",
+          "fade",
+          "dissolve",
+          "match-cut"
+        ],
+        "defaultValue": "cut"
+      },
+      {
+        "key": "reusePolicy",
+        "label": "Reuse policy",
+        "type": "enum",
+        "scope": "production",
+        "description": "Whether a generated result may be reused as an establishing/loop asset.",
+        "options": [
+          "unique",
+          "allow-reuse",
+          "prefer-reuse"
+        ],
+        "defaultValue": "unique"
+      }
+    ]
+  },
+  "character": {
+    "kind": "character",
+    "label": "Character Anchor",
+    "role": "creative-anchor",
+    "purpose": "Canonical identity and performance anchor shared across every Scene and Shot where the Character appears.",
+    "primaryOutput": "Stable visual identity, voice identity and performance constraints.",
+    "consumes": [
+      "asset"
+    ],
+    "produces": [
+      "shot",
+      "audio",
+      "generation"
+    ],
+    "invariants": [
+      "Identity anchors are shared, not copied per episode.",
+      "Locked Character changes require explicit unlock and may invalidate every dependent Shot/Audio node."
+    ],
+    "fields": [
+      {
+        "key": "role",
+        "label": "Role",
+        "type": "text",
+        "scope": "creative",
+        "description": "Lead, supporting, antagonist, narrator, etc."
+      },
+      {
+        "key": "description",
+        "label": "Character description",
+        "type": "multiline",
+        "scope": "creative",
+        "description": "Canonical human-readable identity description."
+      },
+      {
+        "key": "appearancePrompt",
+        "label": "Appearance anchor",
+        "type": "multiline",
+        "scope": "creative",
+        "description": "Stable generation-facing appearance description.",
+        "requiredFor": "preview"
+      },
+      {
+        "key": "wardrobe",
+        "label": "Default wardrobe",
+        "type": "multiline",
+        "scope": "creative",
+        "description": "Canonical wardrobe and allowed variations."
+      },
+      {
+        "key": "agePresentation",
+        "label": "Age presentation",
+        "type": "text",
+        "scope": "creative",
+        "description": "Visual age range/presentation when relevant."
+      },
+      {
+        "key": "performanceStyle",
+        "label": "Performance style",
+        "type": "multiline",
+        "scope": "creative",
+        "description": "Gesture, expression and acting direction."
+      },
+      {
+        "key": "identitySeed",
+        "label": "Identity seed",
+        "type": "seed",
+        "scope": "production",
+        "description": "Stable seed namespace for identity references."
+      },
+      {
+        "key": "voiceProvider",
+        "label": "Voice provider",
+        "type": "enum",
+        "scope": "production",
+        "description": "Preferred voice synthesis provider.",
+        "options": [
+          "chatterbox",
+          "piper",
+          "external"
+        ],
+        "defaultValue": "chatterbox"
+      },
+      {
+        "key": "voiceLanguage",
+        "label": "Voice language",
+        "type": "language",
+        "scope": "production",
+        "description": "Character-specific voice language override."
+      },
+      {
+        "key": "voiceReferenceAsset",
+        "label": "Voice reference asset",
+        "type": "path",
+        "scope": "production",
+        "description": "Approved short reference audio asset for voice conditioning."
+      },
+      {
+        "key": "voiceExaggeration",
+        "label": "Voice expression",
+        "type": "number",
+        "scope": "production",
+        "description": "Provider-neutral expression intensity.",
+        "defaultValue": "0.5"
+      },
+      {
+        "key": "voiceCfg",
+        "label": "Voice CFG",
+        "type": "number",
+        "scope": "production",
+        "description": "Provider-neutral voice similarity/accent guidance.",
+        "defaultValue": "0.5"
+      }
+    ]
+  },
+  "location": {
+    "kind": "location",
+    "label": "Location Anchor",
+    "role": "creative-anchor",
+    "purpose": "Reusable environment continuity anchor: geography, layout, materials, palette, lighting and atmosphere.",
+    "primaryOutput": "Stable environment prompt/reference bundle reused by dependent Scenes and Shots.",
+    "consumes": [
+      "asset"
+    ],
+    "produces": [
+      "scene",
+      "shot",
+      "generation"
+    ],
+    "invariants": [
+      "Location continuity should survive camera changes and episode boundaries."
+    ],
+    "fields": [
+      {
+        "key": "description",
+        "label": "Location description",
+        "type": "multiline",
+        "scope": "creative",
+        "description": "Canonical spatial/environment description."
+      },
+      {
+        "key": "environmentPrompt",
+        "label": "Environment anchor",
+        "type": "multiline",
+        "scope": "creative",
+        "description": "Generation-facing stable environment description.",
+        "requiredFor": "preview"
+      },
+      {
+        "key": "city",
+        "label": "City / region",
+        "type": "text",
+        "scope": "creative",
+        "description": "Geographic context."
+      },
+      {
+        "key": "time",
+        "label": "Default time",
+        "type": "text",
+        "scope": "creative",
+        "description": "Default time-of-day lighting."
+      },
+      {
+        "key": "weather",
+        "label": "Default weather",
+        "type": "text",
+        "scope": "creative",
+        "description": "Canonical ambient weather."
+      },
+      {
+        "key": "lighting",
+        "label": "Lighting",
+        "type": "multiline",
+        "scope": "creative",
+        "description": "Key/fill/practical lighting and contrast rules."
+      },
+      {
+        "key": "palette",
+        "label": "Palette",
+        "type": "text",
+        "scope": "creative",
+        "description": "Dominant environment color palette."
+      },
+      {
+        "key": "lensLanguage",
+        "label": "Lens language",
+        "type": "text",
+        "scope": "creative",
+        "description": "Preferred lens/focal character for this location."
+      },
+      {
+        "key": "continuitySeed",
+        "label": "Continuity seed",
+        "type": "seed",
+        "scope": "production",
+        "description": "Stable seed namespace for environment references."
+      },
+      {
+        "key": "referencePolicy",
+        "label": "Reference policy",
+        "type": "enum",
+        "scope": "production",
+        "description": "How aggressively reference images are reused.",
+        "options": [
+          "prompt-only",
+          "prefer-reference",
+          "require-reference"
+        ],
+        "defaultValue": "prefer-reference"
+      }
+    ]
+  },
+  "asset": {
+    "kind": "asset",
+    "label": "Asset",
+    "role": "artifact",
+    "purpose": "Durable imported or generated media/reference artifact with integrity, provenance and reuse metadata.",
+    "primaryOutput": "Addressable media that other semantic/execution nodes can safely depend on.",
+    "consumes": [
+      "generation"
+    ],
+    "produces": [
+      "character",
+      "location",
+      "scene",
+      "shot",
+      "audio"
+    ],
+    "invariants": [
+      "Generated assets should carry provider/model/seed provenance and content integrity metadata."
+    ],
+    "fields": [
+      {
+        "key": "mediaType",
+        "label": "Media type",
+        "type": "enum",
+        "scope": "provenance",
+        "description": "Physical asset media type.",
+        "options": [
+          "image",
+          "video",
+          "audio",
+          "subtitle",
+          "json",
+          "other"
+        ],
+        "requiredFor": "final"
+      },
+      {
+        "key": "role",
+        "label": "Asset role",
+        "type": "text",
+        "scope": "creative",
+        "description": "character-reference, location-reference, shot-output, music-bed, etc."
+      },
+      {
+        "key": "relativePath",
+        "label": "Relative path",
+        "type": "path",
+        "scope": "provenance",
+        "description": "Project-managed artifact path."
+      },
+      {
+        "key": "sha256",
+        "label": "SHA-256",
+        "type": "text",
+        "scope": "provenance",
+        "description": "Content integrity hash."
+      },
+      {
+        "key": "mimeType",
+        "label": "MIME type",
+        "type": "text",
+        "scope": "provenance",
+        "description": "Detected media MIME type."
+      },
+      {
+        "key": "durationSeconds",
+        "label": "Duration",
+        "type": "duration",
+        "scope": "provenance",
+        "description": "Media duration if temporal."
+      },
+      {
+        "key": "width",
+        "label": "Width",
+        "type": "number",
+        "scope": "provenance",
+        "description": "Pixel width for visual media."
+      },
+      {
+        "key": "height",
+        "label": "Height",
+        "type": "number",
+        "scope": "provenance",
+        "description": "Pixel height for visual media."
+      },
+      {
+        "key": "source",
+        "label": "Source",
+        "type": "text",
+        "scope": "provenance",
+        "description": "imported, generated, recorded or derived."
+      },
+      {
+        "key": "license",
+        "label": "License / rights",
+        "type": "text",
+        "scope": "provenance",
+        "description": "Rights metadata for imported/reusable media."
+      },
+      {
+        "key": "generatedBy",
+        "label": "Generated by",
+        "type": "text",
+        "scope": "provenance",
+        "description": "Generation node id when produced by Make & Watch."
+      }
+    ]
+  },
+  "audio": {
+    "kind": "audio",
+    "label": "Audio Cue",
+    "role": "production-unit",
+    "purpose": "Semantic timed audio unit: dialogue, narration, ambience, music or SFX. Dialogue timing can drive Shot and Scene duration.",
+    "primaryOutput": "Timed WAV/media asset plus mix instructions and optional subtitle timing.",
+    "consumes": [
+      "character",
+      "scene",
+      "shot",
+      "asset"
+    ],
+    "produces": [
+      "generation",
+      "asset",
+      "shot"
+    ],
+    "invariants": [
+      "Dialogue speaker identity should be a Character dependency rather than free text only.",
+      "Final audio has an explicit kind and timeline ownership."
+    ],
+    "fields": [
+      {
+        "key": "kind",
+        "label": "Audio kind",
+        "type": "enum",
+        "scope": "creative",
+        "description": "Semantic role in the mix.",
+        "options": [
+          "dialogue",
+          "narration",
+          "ambience",
+          "music",
+          "sfx"
+        ],
+        "defaultValue": "dialogue",
+        "requiredFor": "preview"
+      },
+      {
+        "key": "text",
+        "label": "Spoken text / cue",
+        "type": "multiline",
+        "scope": "creative",
+        "description": "Dialogue/narration text or sound cue description."
+      },
+      {
+        "key": "language",
+        "label": "Language",
+        "type": "language",
+        "scope": "production",
+        "description": "Speech language.",
+        "defaultValue": "tr"
+      },
+      {
+        "key": "provider",
+        "label": "Provider",
+        "type": "enum",
+        "scope": "runtime",
+        "description": "TTS/audio provider.",
+        "options": [
+          "chatterbox",
+          "piper",
+          "imported",
+          "procedural"
+        ],
+        "defaultValue": "chatterbox"
+      },
+      {
+        "key": "voiceReferenceAsset",
+        "label": "Voice reference asset",
+        "type": "path",
+        "scope": "production",
+        "description": "Approved voice-conditioning reference."
+      },
+      {
+        "key": "startSeconds",
+        "label": "Timeline start",
+        "type": "duration",
+        "scope": "production",
+        "description": "Optional explicit start offset in owning Scene/Shot."
+      },
+      {
+        "key": "durationSeconds",
+        "label": "Measured duration",
+        "type": "duration",
+        "scope": "provenance",
+        "description": "Synthesized/imported duration used by timeline compilation."
+      },
+      {
+        "key": "volumeDb",
+        "label": "Volume dB",
+        "type": "number",
+        "scope": "production",
+        "description": "Mix gain before normalization.",
+        "defaultValue": "0"
+      },
+      {
+        "key": "duckingDb",
+        "label": "Ducking dB",
+        "type": "number",
+        "scope": "production",
+        "description": "How much competing beds should duck under this cue.",
+        "defaultValue": "-8"
+      },
+      {
+        "key": "exaggeration",
+        "label": "Expression",
+        "type": "number",
+        "scope": "production",
+        "description": "TTS expression intensity.",
+        "defaultValue": "0.5"
+      },
+      {
+        "key": "cfgWeight",
+        "label": "Voice guidance",
+        "type": "number",
+        "scope": "production",
+        "description": "TTS voice/accent guidance strength.",
+        "defaultValue": "0.5"
+      },
+      {
+        "key": "subtitle",
+        "label": "Subtitle enabled",
+        "type": "boolean",
+        "scope": "production",
+        "description": "Whether this spoken cue emits subtitle timing.",
+        "defaultValue": "true"
+      },
+      {
+        "key": "status",
+        "label": "Status",
+        "type": "enum",
+        "scope": "runtime",
+        "description": "Audio production state.",
+        "options": [
+          "draft",
+          "queued",
+          "generating",
+          "ready",
+          "failed"
+        ],
+        "defaultValue": "draft"
+      }
+    ]
+  },
+  "generation": {
+    "kind": "generation",
+    "label": "Generation Attempt",
+    "role": "execution",
+    "purpose": "Immutable-ish execution/provenance record for one concrete image, video, audio or composition attempt.",
+    "primaryOutput": "A traceable attempt linking provider/model/parameters to produced Assets.",
+    "consumes": [
+      "shot",
+      "scene",
+      "audio",
+      "character",
+      "location",
+      "asset"
+    ],
+    "produces": [
+      "asset"
+    ],
+    "invariants": [
+      "Semantic intent lives on Scene/Shot/Audio; Generation records execution state.",
+      "Successful attempts retain provider, model, seed/parameters and artifact linkage."
+    ],
+    "fields": [
+      {
+        "key": "targetKind",
+        "label": "Target kind",
+        "type": "text",
+        "scope": "provenance",
+        "description": "scene, shot, audio or episode."
+      },
+      {
+        "key": "targetId",
+        "label": "Target id",
+        "type": "text",
+        "scope": "provenance",
+        "description": "Semantic target id."
+      },
+      {
+        "key": "mediaType",
+        "label": "Media type",
+        "type": "enum",
+        "scope": "provenance",
+        "description": "Generated media class.",
+        "options": [
+          "image",
+          "video",
+          "audio",
+          "composition"
+        ],
+        "defaultValue": "image"
+      },
+      {
+        "key": "provider",
+        "label": "Provider",
+        "type": "text",
+        "scope": "runtime",
+        "description": "comfyui, chatterbox, remotion, ffmpeg, etc.",
+        "requiredFor": "preview"
+      },
+      {
+        "key": "model",
+        "label": "Model",
+        "type": "text",
+        "scope": "runtime",
+        "description": "Resolved model/checkpoint/version."
+      },
+      {
+        "key": "strategy",
+        "label": "Strategy",
+        "type": "text",
+        "scope": "runtime",
+        "description": "Resolved production strategy."
+      },
+      {
+        "key": "status",
+        "label": "Status",
+        "type": "enum",
+        "scope": "runtime",
+        "description": "Execution state.",
+        "options": [
+          "queued",
+          "running",
+          "ready",
+          "failed",
+          "cancelled"
+        ],
+        "defaultValue": "queued"
+      },
+      {
+        "key": "seed",
+        "label": "Seed",
+        "type": "seed",
+        "scope": "provenance",
+        "description": "Resolved deterministic generation seed."
+      },
+      {
+        "key": "promptHash",
+        "label": "Prompt hash",
+        "type": "text",
+        "scope": "provenance",
+        "description": "Hash of fully compiled prompt/inputs."
+      },
+      {
+        "key": "artifactPath",
+        "label": "Artifact path",
+        "type": "path",
+        "scope": "provenance",
+        "description": "Primary produced artifact."
+      },
+      {
+        "key": "artifactSha256",
+        "label": "Artifact SHA-256",
+        "type": "text",
+        "scope": "provenance",
+        "description": "Primary artifact integrity hash."
+      },
+      {
+        "key": "startedAt",
+        "label": "Started at",
+        "type": "text",
+        "scope": "provenance",
+        "description": "UTC execution start."
+      },
+      {
+        "key": "completedAt",
+        "label": "Completed at",
+        "type": "text",
+        "scope": "provenance",
+        "description": "UTC execution completion."
+      },
+      {
+        "key": "error",
+        "label": "Error",
+        "type": "multiline",
+        "scope": "runtime",
+        "description": "Bounded failure detail when status is failed."
+      }
+    ]
+  }
+}

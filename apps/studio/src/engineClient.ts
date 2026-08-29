@@ -28,7 +28,13 @@ import type {
 import { announceProjectChanged } from './projectEvents';
 
 const API_BASE = import.meta.env.VITE_ENGINE_BRIDGE_URL ?? 'http://127.0.0.1:4177/api';
+// Fast native/bridge calls. A Director chat turn is not one of these: it can
+// run a full Codex reasoning turn plus many authoritative project tool calls,
+// so it gets its own budget that stays strictly above the server-side turn
+// budget. If the client aborted first the user would see a misleading
+// "bridge is unavailable" error while the turn was still running natively.
 const REQUEST_TIMEOUT_MS = 20_000;
+const DIRECTOR_TURN_TIMEOUT_MS = 900_000;
 const TELEMETRY_BASE_BACKOFF_MS = 2_500;
 const TELEMETRY_MAX_BACKOFF_MS = 30_000;
 
@@ -62,8 +68,19 @@ export class EngineBridgeError extends Error {
   }
 }
 
-function bridgeUnavailable(reason: unknown) {
+function isTimeout(reason: unknown) {
+  return reason instanceof DOMException && reason.name === 'TimeoutError';
+}
+
+function bridgeUnavailable(reason: unknown, timeoutMs?: number) {
   if (reason instanceof EngineBridgeError) return reason;
+  if (isTimeout(reason)) {
+    return new EngineBridgeError(
+      'bridge_timeout',
+      `Local Make & Watch bridge did not respond within ${Math.round((timeoutMs ?? REQUEST_TIMEOUT_MS) / 1000)}s. `
+      + 'The operation may still be running locally; check the workflow before retrying.',
+    );
+  }
   const detail = reason instanceof Error ? reason.message : String(reason);
   return new EngineBridgeError(
     'bridge_unavailable',
@@ -71,16 +88,21 @@ function bridgeUnavailable(reason: unknown) {
   );
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+interface RequestOptions extends RequestInit {
+  timeoutMs?: number;
+}
+
+async function request<T>(path: string, init?: RequestOptions): Promise<T> {
+  const timeoutMs = init?.timeoutMs ?? REQUEST_TIMEOUT_MS;
   let response: Response;
   try {
     response = await fetch(`${API_BASE}${path}`, {
       ...init,
       headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
-      signal: init?.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal: init?.signal ?? AbortSignal.timeout(timeoutMs),
     });
   } catch (reason) {
-    throw bridgeUnavailable(reason);
+    throw bridgeUnavailable(reason, timeoutMs);
   }
 
   let payload: Envelope<T>;
@@ -163,6 +185,7 @@ async function directorChat(input: DirectorChatRequest) {
   const result = await request<DirectorChatResult>('/director/chat', {
     method: 'POST',
     body: JSON.stringify(input),
+    timeoutMs: DIRECTOR_TURN_TIMEOUT_MS,
   });
   if (result.projectChanged) {
     announceProjectChanged({ projectRevision: result.projectRevision, source: 'director-chat' });
@@ -190,10 +213,11 @@ export const engineClient = {
     method: 'POST',
     body: JSON.stringify({ workflowId }),
   }),
-  directorProviders: () => request<DirectorProvidersResult>('/director/providers'),
+  directorProviders: () => request<DirectorProvidersResult>('/director/providers', { timeoutMs: 60_000 }),
   connectDirector: (provider: DirectorProviderId) => request<DirectorConnectResult>('/director/connect', {
     method: 'POST',
     body: JSON.stringify({ provider }),
+    timeoutMs: 120_000,
   }),
   directorChat,
   closeDirectorChat: (provider: DirectorProviderId, conversationId: string) => request<DirectorChatCloseResult>('/director/chat/close', {
@@ -221,6 +245,7 @@ export const engineClient = {
   directorPlan: (input: DirectorPlanRequest) => request<DirectorPlanResult>('/director/plan', {
     method: 'POST',
     body: JSON.stringify(input),
+    timeoutMs: DIRECTOR_TURN_TIMEOUT_MS,
   }),
   impact: (source: string) => request<ImpactReport>('/project/impact', {
     method: 'POST',

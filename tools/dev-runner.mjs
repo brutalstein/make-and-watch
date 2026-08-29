@@ -225,9 +225,18 @@ async function warmGenerationRuntime() {
   }
 }
 
+// First-run ComfyUI bootstrap creates a venv, installs comfy-cli and downloads a
+// verified 2.13 GB checkpoint. Blocking Studio on that turned a first launch into
+// terminal babysitting, so the media runtime resolves in the background and the
+// generation gateway simply reports it as offline until it is ready.
+let comfyReadiness = Promise.resolve(null);
+
 try {
   await waitForUrl(`${bridgeBaseUrl}/api/health`, 'local native bridge');
-  await prepareComfyRuntime();
+  comfyReadiness = prepareComfyRuntime().catch((error) => {
+    console.warn(`  [media] ComfyUI preparation failed · ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  });
 
   const ffmpeg = discoverFfmpeg();
   console.log(`  [media] FFmpeg ${ffmpeg ? `ready · ${ffmpeg}` : 'not found yet · final assembly will self-heal when enabled'}`);
@@ -245,7 +254,10 @@ try {
     }
   });
   await waitForUrl(`${generationBaseUrl}/api/health`, 'scene generation gateway');
-  await Promise.all([warmGenerationRuntime(), warmDirectorRuntime()]);
+  await warmDirectorRuntime();
+  // Studio is not gated on this; it only reports visual-runtime status once the
+  // background ComfyUI preparation settles.
+  void comfyReadiness.then(() => warmGenerationRuntime());
 } catch (error) {
   console.error(`[dev] ${error instanceof Error ? error.message : String(error)}`);
   await shutdown(1);

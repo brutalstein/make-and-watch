@@ -145,11 +145,22 @@ export class ComfyUiClient {
   }
 
   async json(pathname, init = {}) {
-    const response = await fetch(this.url(pathname), {
-      ...init,
-      headers: { 'Content-Type': 'application/json', ...(init.headers ?? {}) },
-      signal: init.signal ?? AbortSignal.timeout(Math.min(this.timeoutMs, 15_000)),
-    });
+    let response;
+    try {
+      response = await fetch(this.url(pathname), {
+        ...init,
+        headers: { 'Content-Type': 'application/json', ...(init.headers ?? {}) },
+        signal: init.signal ?? AbortSignal.timeout(Math.min(this.timeoutMs, 15_000)),
+      });
+    } catch (error) {
+      // A bare "fetch failed" reaches the user and the Director as a generation
+      // job error, so name the runtime that is actually missing.
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `ComfyUI is not reachable at ${this.baseUrl.origin} (${reason}). `
+        + 'Start the local image runtime, or wait for Make & Watch to finish preparing it.',
+      );
+    }
     const bytes = await boundedResponse(response, MAX_JSON_BYTES);
     const text = bytes.toString('utf8');
     let payload = null;
