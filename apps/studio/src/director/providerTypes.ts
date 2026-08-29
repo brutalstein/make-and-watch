@@ -1,9 +1,14 @@
 import type { AutopilotMode, AutopilotPlan } from './autopilotTypes';
 
 export type DirectorProviderId = 'codex' | 'claude';
+export type DirectorProviderPolicy =
+  | 'supported_local_client'
+  | 'api_required'
+  | 'experimental_local_client';
 
 export interface DirectorProviderStatus {
   provider: DirectorProviderId;
+  policy: DirectorProviderPolicy;
   installed: boolean;
   authenticated: boolean;
   authMethod: string;
