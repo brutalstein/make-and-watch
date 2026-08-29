@@ -4,72 +4,82 @@ This file records what was actually executed, not what is merely expected to wor
 
 ## Foundation history
 
-The repository has progressively passed isolated native validation, strict GitHub Actions, and an earlier full Windows/NVIDIA quality gate. Existing validated areas include the transactional semantic graph, SQLite persistence and v1→v2 migration, ProjectSession persist-before-live-commit semantics, JSONL native IPC, process-boundary host smoke, native-driven Studio state, draggable presentation-only workflow layout, development-fixture migration, append-only journal, typed Autopilot, cinematic camera, and hardened ResourceManager.
+The repository has progressively passed isolated native validation, strict GitHub Actions, and an earlier full Windows/NVIDIA quality gate. Validated foundation areas include the transactional semantic graph, SQLite persistence/migration, ProjectSession commit semantics, JSONL IPC, process-boundary host smoke, native-driven Studio state, presentation-only layout, durable history, typed Autopilot, and native ResourceManager.
 
-The primary Windows development environment previously observed was Node v24.11.0, pnpm 10.15.0, CMake 4.1.2, Ninja 1.13.1, GNU C/C++ 15.2 via MSYS2 UCRT64, and an NVIDIA GeForce RTX 5070 Laptop GPU with 8151 MB reported by system doctor. The earlier full `./verify.ps1` gate passed with zero native test failures, and the live native Studio subsequently opened successfully.
+The primary Windows development environment previously observed was Node v24.11.0, pnpm 10.15.0, CMake 4.1.2, Ninja 1.13.1, GNU C/C++ 15.2 via MSYS2 UCRT64, and an NVIDIA GeForce RTX 5070 Laptop GPU with 8151 MB reported by system doctor. An earlier full `./verify.ps1` gate passed and live Studio opened successfully.
 
-## Defects caught rather than hidden
+CI/product testing has repeatedly found real defects; those defects were fixed without weakening warning, type, transaction, lock or persistence rules.
 
-CI and product-machine validation have caught legitimate defects during foundation work, including bootstrap/cache configuration, TypeScript emit configuration, missing explicit C++ includes, a locked-before-topology development seed, a SQLite overload ambiguity, stale test-double APIs, and Autopilot presentation defects. These were fixed without weakening warning, type, lock, persistence, or transaction invariants.
+## 2026-08-29 — Durable native history
 
-## 2026-08-29 — Deterministic Autopilot performance governor
+Protocol v1 supports bounded attributed `project.history`. `project.apply` validates actor/source/plan/reason context and bounded command batches. SQLite transaction provenance remains stored durably and is decoded in native C++ before reaching React.
 
-Hands-on use showed that the AI workspace pass could still move too quickly and temporarily freeze. Review identified three high-frequency presentation sources: cursor state lived in the root React application, controlled node drag mutated React Flow at display-refresh cadence, and camera observation/viewport writes could also run at display refresh rate.
+The real engine-host process smoke performs an attributed mutation and reads the resulting actor/source/reason back over stdin/stdout from SQLite-backed history.
 
-The implementation now provides:
+## 2026-08-29 — Exact pointer pick-and-place redesign
 
-- virtual cursor state isolated through a small external `useSyncExternalStore` presentation store;
-- fixed-frame **24 FPS** cursor and node animation rather than unrestricted display refresh rate;
-- frame-index progress so pause/background stalls slow motion instead of teleporting it forward;
-- distance-aware bounded cursor travel duration;
-- slower deterministic visible node-drag pacing;
-- at most five representative visible node drags before repetitive remainder settles in one dependency-aware presentation pass;
-- explicit breathing/reframe pauses;
-- stale edge animation suspended during Autopilot takeover;
-- camera DOM/React Flow observation capped at 24 FPS even on 144/165 Hz displays;
-- no more than one outstanding React Flow viewport write;
-- bounded/damped pan and zoom;
-- presentation-step liveness deadlines while semantic native commits remain owned by transport + `ProjectSession` transaction correlation.
+Hands-on testing rejected the earlier camera-follower implementation. The visible pointer could diverge from the logical pointer because the target node was measured before later camera motion, the rendered cursor was clamped to a safe frame, and active drag used approximate `delta * zoom` cursor integration.
 
-Strict Studio TypeScript and Vite production build passed after this refactor.
+The replacement removes `AutopilotCameraFollower.tsx` and introduces `workflowPointerInteraction.ts`.
 
-## 2026-08-29 — Bounded attributed native history and Activity
+Code-level behavior now enforced:
 
-The planned history milestone was implemented together with the performance work.
+- rendered pointer coordinates are the logical interaction coordinates; no safe-frame clamp;
+- an off-screen node is found through bounded visible workspace pan gestures;
+- every pan viewport write is awaited before the next deterministic frame;
+- target node anchor is freshly reprojected after viewport changes;
+- pointer settles on that exact projected anchor before press;
+- a small epsilon check verifies pre-grab alignment;
+- viewport stays fixed while the node is held;
+- each drag frame computes the node's exact flow-space position and projects the pointer from that same anchor;
+- no `delta * zoom` integration is used;
+- post-drop alignment is verified before the step completes;
+- pause preserves the held presentation state;
+- cancellation removes pan/drag presentation ownership;
+- every displaced node gets an individual drag step; the old five-node/bulk-settle behavior is removed;
+- deterministic 24 FPS presentation remains, with frame-index progress and awaited frame callbacks;
+- step-specific finite liveness budgets remain active.
 
-Protocol v1 now supports:
+Strict Studio TypeScript and Vite production build passed with the exact-pointer implementation.
 
-- `project.apply` command batches bounded to 1..128 items;
-- validated commit actor: `user`, `ai_director`, or `system`;
-- bounded source, plan ID, and reason context;
-- native parsing/persistence of commit context;
-- `project.history` bounded to 1..24 complete committed revision groups;
-- finite native event budget and grouping by project revision;
-- omission of a truncated group that lacks its `transaction.committed` marker;
-- native decoding of versioned `mwctx1` provenance so storage encoding never leaks into React/Node.
+## 2026-08-29 — BackgroundJobRuntime lifecycle gate
 
-Shared TypeScript contracts, localhost bridge, and Studio now expose a **Durable Activity** feed showing recent committed native revisions with You / AI Director / System attribution. Activity is revision-based; no timestamp or schema migration was invented.
+A native bounded background lifecycle layer was added above `ResourceManager`.
 
-The first native build of the history change caught a genuine C++ constness error in a local flush lambda. The code was corrected (`auto` callable closure rather than a const mutable closure), and test headers were made explicit instead of relying on transitive includes.
+Implemented and tested behavior:
 
-The subsequent native configure/build/CTest passed. The real `makewatch_engine_host` process smoke was expanded to perform an attributed SQLite mutation and read actor/source/reason back through `project.history` over stdin/stdout.
+- fixed capacity covers queued + running jobs;
+- duplicate jobs rejected;
+- resource-aware queue scan starts the first admissible job;
+- a blocked GPU job does not block later CPU-only work when CPU/RAM are safe;
+- every running job owns a scoped `ResourceLease`;
+- requesting cancellation of running work does **not** release its resources;
+- resources remain reserved until actual stop/completion confirmation;
+- shutdown stops new admission and cancels queued work immediately;
+- running shutdown is deterministic oldest-first;
+- exactly one shutdown target is exposed at a time;
+- repeated target reads return the same worker until it is confirmed stopped;
+- wrong-target confirmation fails closed and preserves accounting;
+- active resource count falls exactly one-by-one as workers are confirmed stopped;
+- final shutdown reaches zero running jobs and zero active resource leases.
 
-## 2026-08-29 — Current final CI result
+The current layer is lifecycle/admission ownership only. It does not launch model processes yet; WorkerSupervisor remains the next layer.
 
-Current branch HEAD passed GitHub Actions completely:
+## 2026-08-29 — Current CI result
 
-- bridge/fixture JavaScript checks: passed;
+The exact-pointer + BackgroundJobRuntime branch state passed GitHub Actions code gates:
+
+- bridge/fixture checks: passed;
 - strict shared/Studio TypeScript: passed;
 - Vite production build: passed;
 - native C/C++ configure: passed;
 - strict native build: passed;
-- complete CTest suite: passed;
-- attributed dispatcher/history tests: passed;
-- real engine-host + SQLite + history process smoke: passed.
+- complete CTest suite: passed, including `makewatch_background_job_runtime_tests`;
+- existing graph, SQLite, history, ResourceManager and process-smoke tests remained passing.
+
+This is code-level validation. The new pointer choreography is not yet claimed as hands-on Windows validated.
 
 ## Required product-machine gate
-
-The latest deterministic presentation governor and Durable Activity/history build is CI-green but still requires a fresh hands-on Windows/NVIDIA run before being called product-machine validated.
 
 From repository root:
 
@@ -79,24 +89,40 @@ git pull
 .\dev.ps1
 ```
 
+Scatter several workflow nodes far from their canonical positions, including nodes outside the current viewport, then run **Let AI drive this workflow**.
+
 Verify:
 
-1. scatter many workflow nodes far from organized positions;
-2. launch **Let AI drive this workflow**;
-3. cursor/node movement is visibly slower and readable;
-4. Inspector/topbar remain responsive during cursor travel;
-5. camera follows smoothly without high-refresh-rate oscillation/backlog;
-6. only a bounded representative set is individually dragged;
-7. the pass clearly completes and returns manual control;
-8. a long `Space` pause/resume does not teleport;
-9. `Esc` / **Take back control** cancels immediately;
-10. Assist layout does not advance native project revision;
-11. AI-arranged positions survive restart;
-12. Durable Activity displays persisted revisions;
-13. manually lock/unlock or approve and confirm a new **You** Activity entry appears with the new revision;
-14. restart and confirm Activity survives SQLite reopen;
-15. older pre-attribution history may appear as System, while new manual commits must be attributed;
-16. `./verify.ps1` passes the expanded IPC/history/ResourceManager suite under Windows GNU 15.2;
-17. native connection and real GPU telemetry remain healthy.
+1. cursor visibly pans workflow space to find an off-screen node;
+2. it arrives on the node body, not beside it;
+3. it visibly settles before press;
+4. press occurs while cursor is still exactly on the node;
+5. node and cursor stay locked together for the whole drag;
+6. release occurs at the final node position;
+7. all displaced nodes are handled individually in sequence;
+8. no hidden camera follow fights the pointer;
+9. `Space` pause during a grab freezes rather than releases/teleports;
+10. `Esc` / **Take back control** immediately cancels presentation ownership;
+11. Inspector/topbar remain responsive during motion;
+12. Assist layout does not advance native semantic revision;
+13. final layout survives restart;
+14. Durable Activity remains correct;
+15. `./verify.ps1` passes the new background lifecycle test under the Windows toolchain.
 
-After this gate, the next engineering sequence is checkpoint/recovery policy, content-addressed asset/provenance storage, bounded native pending-job queue, worker supervision with scoped `ResourceLease`, hardware profile/calibration, and first lightweight local media providers.
+Any pointer/node mismatch or freeze is a failed product gate and must be fixed before model/provider work.
+
+## Next gate after live pointer validation
+
+Build the concrete WorkerSupervisor on top of `BackgroundJobRuntime`:
+
+```text
+graceful stop request
+ -> bounded grace wait
+ -> terminate one stuck worker if necessary
+ -> wait for actual process exit
+ -> confirm stopped to BackgroundJobRuntime
+ -> release that worker's ResourceLease
+ -> advance to next worker
+```
+
+Then add typed worker health/capability handshake, bounded logging, checkpoint/recovery, content-addressed asset provenance, hardware probing/calibration, and lightweight local media providers.
