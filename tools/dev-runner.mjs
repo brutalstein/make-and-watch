@@ -79,15 +79,21 @@ async function warmDirectorRuntime() {
       : codex.runtimeMode === 'app_server'
         ? 'App Server'
         : 'unavailable';
+    const launcher = codex.executableName
+      ? `${codex.executableName}${codex.discovery ? ` · ${codex.discovery}` : ''}`
+      : 'no executable';
     if (codex.chatAvailable) {
       console.log(`  [dev] Codex Director ready · ${runtime}${codex.planType ? ` · ${codex.planType}` : ''}`);
+      console.log(`  [dev] Codex launcher: ${launcher}`);
       return;
     }
     if (codex.loginAvailable) {
       console.log(`  [dev] Codex ${runtime} ready · official ChatGPT sign-in starts automatically on first Send`);
+      console.log(`  [dev] Codex launcher: ${launcher}`);
       return;
     }
     console.log(`  [dev] Codex Director (${runtime}): ${codex.detail}`);
+    console.log(`  [dev] Codex launcher: ${launcher}`);
   } catch (error) {
     // Director is optional for project access. Studio still opens and explains the exact readiness issue.
     console.warn(`  [dev] Director warm-up deferred: ${error instanceof Error ? error.message : String(error)}`);
