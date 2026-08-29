@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
@@ -6,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import { CodexAppServerClient } from './codex-app-server.mjs';
 import { CodexChatSession } from './codex-chat-session.mjs';
+import { ConversationStore, deriveTitle } from './conversation-store.mjs';
 import {
   appendCompatibilityTranscript,
   CodexExecRuntime,
@@ -18,6 +18,7 @@ import { discoverProviderExecutable, spawnProviderExecutable } from './provider-
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const directorRuntimeRoot = resolve(root, 'tools', 'director', 'runtime');
 const planSchemaPath = resolve(root, 'schemas', 'v1', 'director-autopilot-plan.schema.json');
+const conversationDirectory = resolve(root, process.env.MAKEWATCH_CONVERSATION_DIR ?? '.makewatch/conversations');
 
 const STATUS_TIMEOUT_MS = 5_000;
 const PLAN_TIMEOUT_MS = 120_000;
@@ -25,7 +26,6 @@ const PROVIDER_SHUTDOWN_WAIT_MS = 2_000;
 const MAX_STATUS_BYTES = 256 * 1024;
 const MAX_PLAN_PROCESS_BYTES = 2 * 1024 * 1024;
 const MAX_CHAT_REPLY_CHARS = 32_000;
-const MAX_DIRECTOR_CONVERSATIONS = 4;
 const EXPERIMENTAL_CLAUDE_CODE = process.env.MAKEWATCH_ENABLE_EXPERIMENTAL_CLAUDE_CODE === '1';
 
 let activeRun = null;
@@ -37,10 +37,10 @@ let codexChat = null;
 let codexExecRuntime = null;
 let codexExecRuntimePath = '';
 let claudeSchemaPromise = null;
-const conversations = new Map();
 const codexStaticProbeCache = new Map();
 const claudeStaticProbeCache = new Map();
 const codexAppServerFailures = new Map();
+const conversationStore = new ConversationStore({ rootDirectory: conversationDirectory });
 
 function boundedText(value, maximum = 500) {
   const text = String(value ?? '').replace(/[\r\n\t]+/g, ' ').trim();
@@ -180,11 +180,6 @@ function unavailableStatus(provider, policy, integration, detail) {
   };
 }
 
-function resetCodexConversationState() {
-  conversations.clear();
-  codexChat = null;
-}
-
 async function resetCodexClient() {
   const client = codexClient;
   codexClient = null;
@@ -196,7 +191,6 @@ async function resetCodexClient() {
 async function clientForCodex(executable) {
   if (codexClient && codexClientPath === executable.path) return codexClient;
   await resetCodexClient();
-  resetCodexConversationState();
   codexClient = new CodexAppServerClient({ executable });
   codexClientPath = executable.path;
   return codexClient;
@@ -662,23 +656,43 @@ export async function invokeDirectorPlan(provider, prompt) {
   }
 }
 
-async function disposeConversation(conversation) {
-  if (!conversation?.threadId || conversation.mode !== 'app_server') return;
+function compatibilityTranscript(document) {
+  let transcript = [];
+  for (const message of document.messages) {
+    if (message.delivery === 'failed') continue;
+    if (message.role !== 'user' && message.role !== 'assistant') continue;
+    transcript = appendCompatibilityTranscript(transcript, message.role, message.text);
+  }
+  return transcript;
+}
+
+async function codexConversationTools() {
   const executable = discoverProviderExecutable('codex');
-  if (!executable) return;
-  const chat = await chatForCodex(executable);
-  await chat.deleteThread(conversation.threadId).catch(() => undefined);
+  if (!executable) return { executable: null, chat: null };
+  return { executable, chat: await chatForCodex(executable) };
 }
 
-async function evictOldestConversation() {
-  if (conversations.size < MAX_DIRECTOR_CONVERSATIONS) return;
-  const oldest = [...conversations.values()].sort((left, right) => left.lastUsedAt - right.lastUsedAt)[0];
-  if (!oldest) return;
-  conversations.delete(oldest.id);
-  await disposeConversation(oldest);
+async function ensureProviderThreadAvailable(document) {
+  if (document.runtimeMode !== 'app_server' || !document.providerThreadId) return document;
+  const { chat } = await codexConversationTools();
+  if (!chat) return document;
+  if (document.providerThreadArchived) {
+    try {
+      await chat.unarchiveThread(document.providerThreadId);
+      await conversationStore.setProviderState(document.id, {
+        runtimeMode: document.runtimeMode,
+        providerThreadId: document.providerThreadId,
+        providerThreadArchived: false,
+      });
+      return { ...document, providerThreadArchived: false };
+    } catch {
+      return document;
+    }
+  }
+  return document;
 }
 
-export async function invokeDirectorChat(provider, prompt, conversationId = null) {
+export async function invokeDirectorChat(provider, prompt, conversationId = null, options = {}) {
   if (provider !== 'codex') {
     enforceProviderPolicy(provider);
     throw new Error('Director chat is currently implemented for the supported Codex local-client path; Claude chat will use the future supported Anthropic API provider');
@@ -694,92 +708,199 @@ export async function invokeDirectorChat(provider, prompt, conversationId = null
   const executable = discoverProviderExecutable('codex');
   if (!executable) throw new Error('Codex official client is no longer available');
 
-  let conversation = conversationId ? conversations.get(conversationId) : null;
-  if (conversationId && !conversation) throw new Error('Director conversation is no longer active; start a new chat');
-  if (conversation && conversation.provider !== provider) throw new Error('Director conversation provider mismatch');
+  const userMessage = boundedText(options.userMessage ?? extractUserMessage(prompt), 6_000);
+  const projectRevision = Number.isSafeInteger(options.projectRevision) && options.projectRevision >= 0
+    ? options.projectRevision
+    : null;
 
+  let conversation;
   let created = false;
-  if (!conversation) {
-    await evictOldestConversation();
-    conversation = {
-      id: randomUUID(),
+  if (conversationId) {
+    conversation = await conversationStore.read(conversationId);
+    if (conversation.archivedAt) throw new Error('Director conversation is archived; restore it before sending a new message');
+    if (conversation.provider !== provider) throw new Error('Director conversation provider mismatch');
+    conversation = await ensureProviderThreadAvailable(conversation);
+  } else {
+    const summary = await conversationStore.create({
       provider,
-      mode: status.runtimeMode,
-      threadId: null,
-      transcript: [],
-      turnCount: 0,
-      createdAt: Date.now(),
-      lastUsedAt: Date.now(),
-    };
-    if (conversation.mode === 'app_server') {
-      const chat = await chatForCodex(executable);
-      conversation.threadId = await chat.createThread();
-    }
-    conversations.set(conversation.id, conversation);
+      runtimeMode: status.runtimeMode,
+      title: deriveTitle(userMessage),
+      projectRevision,
+    });
+    conversation = await conversationStore.read(summary.id);
     created = true;
+    if (conversation.runtimeMode === 'app_server') {
+      const chat = await chatForCodex(executable);
+      const providerThreadId = await chat.createThread();
+      await conversationStore.setProviderState(conversation.id, {
+        runtimeMode: 'app_server',
+        providerThreadId,
+        providerThreadArchived: false,
+      });
+      conversation = await conversationStore.read(conversation.id);
+    }
   }
 
-  const run = { provider, kind: 'chat', startedAt: Date.now() };
+  const run = { provider, kind: 'chat', conversationId: conversation.id, startedAt: Date.now() };
   activeRun = run;
   try {
     let rawReply;
-    if (conversation.mode === 'app_server') {
+    let runtimeMode = conversation.runtimeMode;
+    let providerThreadId = conversation.providerThreadId;
+
+    if (runtimeMode === 'app_server' && providerThreadId) {
       try {
         const chat = await chatForCodex(executable);
-        rawReply = await chat.send(conversation.threadId, prompt);
+        rawReply = await chat.send(providerThreadId, prompt);
       } catch (error) {
         const probe = await codexStaticProbe(executable);
         if (!probe.exec.chatAvailable) throw error;
-        conversation.mode = 'exec_fallback';
-        conversation.threadId = null;
+        runtimeMode = 'exec_fallback';
+        providerThreadId = null;
         codexAppServerFailures.set(executable.path, boundedText(error instanceof Error ? error.message : error, 240));
         await resetCodexClient();
-        rawReply = await execRuntimeForCodex(executable).chat(prompt, conversation.transcript);
+        rawReply = await execRuntimeForCodex(executable).chat(prompt, compatibilityTranscript(conversation));
       }
     } else {
-      rawReply = await execRuntimeForCodex(executable).chat(prompt, conversation.transcript);
+      runtimeMode = 'exec_fallback';
+      providerThreadId = null;
+      rawReply = await execRuntimeForCodex(executable).chat(prompt, compatibilityTranscript(conversation));
     }
 
     const reply = rawReply.length <= MAX_CHAT_REPLY_CHARS
       ? rawReply
       : `${rawReply.slice(0, MAX_CHAT_REPLY_CHARS - 1)}…`;
-    conversation.transcript = appendCompatibilityTranscript(conversation.transcript, 'user', extractUserMessage(prompt));
-    conversation.transcript = appendCompatibilityTranscript(conversation.transcript, 'assistant', reply);
-    conversation.turnCount += 1;
-    conversation.lastUsedAt = Date.now();
-    return { conversationId: conversation.id, provider, reply, turnCount: conversation.turnCount };
-  } catch (error) {
-    if (created) {
-      conversations.delete(conversation.id);
-      await disposeConversation(conversation);
+    const summary = await conversationStore.appendTurn(conversation.id, {
+      userText: userMessage,
+      assistantText: reply,
+      projectRevision,
+      runtimeMode,
+      providerThreadId,
+    });
+
+    if (created && runtimeMode === 'app_server' && providerThreadId) {
+      const chat = await chatForCodex(executable);
+      await chat.nameThread(providerThreadId, summary.title).catch(() => undefined);
     }
+
+    return {
+      conversationId: conversation.id,
+      provider,
+      reply,
+      turnCount: summary.turnCount,
+      title: summary.title,
+      updatedAt: summary.updatedAt,
+      runtimeMode: summary.runtimeMode,
+    };
+  } catch (error) {
+    await conversationStore.appendFailure(conversation.id, {
+      userText: userMessage || 'Director request',
+      message: error instanceof Error ? error.message : String(error),
+      projectRevision,
+    }).catch(() => undefined);
     throw error;
   } finally {
     if (activeRun === run) activeRun = null;
   }
 }
 
+export async function listDirectorConversations({ archived = false, limit = 100 } = {}) {
+  return { conversations: await conversationStore.list({ archived, limit }) };
+}
+
+export async function readDirectorConversation(conversationId) {
+  return { conversation: await conversationStore.read(conversationId) };
+}
+
+export async function renameDirectorConversation(conversationId, title) {
+  if (activeRun?.conversationId === conversationId) throw new Error('Director conversation is busy');
+  const summary = await conversationStore.rename(conversationId, title);
+  let providerWarning = '';
+  if (summary.runtimeMode === 'app_server' && summary.providerThreadId) {
+    try {
+      const { chat } = await codexConversationTools();
+      await chat?.nameThread(summary.providerThreadId, summary.title);
+    } catch (error) {
+      providerWarning = boundedText(error instanceof Error ? error.message : error, 240);
+    }
+  }
+  return { conversation: summary, providerWarning };
+}
+
+export async function archiveDirectorConversation(conversationId) {
+  if (activeRun?.conversationId === conversationId) throw new Error('Director conversation is busy');
+  const document = await conversationStore.read(conversationId);
+  let providerArchived = document.providerThreadArchived;
+  let providerWarning = '';
+  if (document.runtimeMode === 'app_server' && document.providerThreadId && !providerArchived) {
+    try {
+      const { chat } = await codexConversationTools();
+      if (chat) {
+        await chat.archiveThread(document.providerThreadId);
+        providerArchived = true;
+      }
+    } catch (error) {
+      providerWarning = boundedText(error instanceof Error ? error.message : error, 240);
+    }
+  }
+  const summary = await conversationStore.archive(conversationId, providerArchived);
+  return { conversation: summary, providerWarning };
+}
+
+export async function unarchiveDirectorConversation(conversationId) {
+  if (activeRun?.conversationId === conversationId) throw new Error('Director conversation is busy');
+  const document = await conversationStore.read(conversationId);
+  let providerArchived = document.providerThreadArchived;
+  let providerWarning = '';
+  if (document.runtimeMode === 'app_server' && document.providerThreadId && providerArchived) {
+    try {
+      const { chat } = await codexConversationTools();
+      if (chat) {
+        await chat.unarchiveThread(document.providerThreadId);
+        providerArchived = false;
+      }
+    } catch (error) {
+      providerWarning = boundedText(error instanceof Error ? error.message : error, 240);
+    }
+  }
+  const summary = await conversationStore.unarchive(conversationId, providerArchived);
+  return { conversation: summary, providerWarning };
+}
+
+export async function deleteDirectorConversation(conversationId) {
+  if (activeRun?.conversationId === conversationId) throw new Error('Director conversation is busy');
+  const document = await conversationStore.read(conversationId);
+  let providerWarning = '';
+  if (document.runtimeMode === 'app_server' && document.providerThreadId) {
+    try {
+      const { chat } = await codexConversationTools();
+      await chat?.deleteThread(document.providerThreadId);
+    } catch (error) {
+      providerWarning = boundedText(error instanceof Error ? error.message : error, 240);
+    }
+  }
+  const deleted = await conversationStore.delete(conversationId);
+  return { deleted: true, conversation: deleted, providerWarning };
+}
+
 export async function closeDirectorConversation(provider, conversationId) {
   if (typeof conversationId !== 'string' || !conversationId) return { closed: false };
-  const conversation = conversations.get(conversationId);
+  const conversation = await conversationStore.read(conversationId).catch(() => null);
   if (!conversation) return { closed: false };
   if (conversation.provider !== provider) throw new Error('Director conversation provider mismatch');
-  conversations.delete(conversationId);
-  await disposeConversation(conversation);
+  if (conversation.runtimeMode === 'app_server' && conversation.providerThreadId) {
+    const executable = discoverProviderExecutable('codex');
+    if (executable) {
+      const chat = await chatForCodex(executable);
+      await chat.unsubscribeThread(conversation.providerThreadId).catch(() => undefined);
+    }
+  }
   return { closed: true };
 }
 
 export async function shutdownDirectorProviders() {
   const chat = codexChat;
-  if (chat) {
-    await chat.shutdown().catch(() => undefined);
-    for (const conversation of conversations.values()) {
-      if (conversation.mode === 'app_server' && conversation.threadId) {
-        await chat.deleteThread(conversation.threadId).catch(() => undefined);
-      }
-    }
-  }
-  conversations.clear();
+  if (chat) await chat.shutdown().catch(() => undefined);
   codexChat = null;
 
   await resetCodexClient();
