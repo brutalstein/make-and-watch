@@ -155,7 +155,8 @@ const initializeRequest = fake.requests.find((request) => request.method === 'in
 assert.equal(initializeRequest?.params?.capabilities?.experimentalApi, true, 'permission profiles require experimentalApi capability opt-in');
 const profileRequest = fake.requests.find((request) => request.method === 'permissionProfile/list');
 assert.ok(profileRequest, 'App Server startup must discover permission profiles');
-assert.equal(profileRequest.params.cwd.endsWith('tools/director/runtime'), true);
+const normalizedRuntimeCwd = profileRequest.params.cwd.replaceAll('\\', '/');
+assert.equal(normalizedRuntimeCwd.endsWith('tools/director/runtime'), true, 'permission profile discovery must use the Director runtime cwd on every platform');
 
 const alreadyConnected = await client.startChatGptLogin();
 assert.equal(alreadyConnected.alreadyConnected, true, 'existing ChatGPT account should not start duplicate OAuth');
