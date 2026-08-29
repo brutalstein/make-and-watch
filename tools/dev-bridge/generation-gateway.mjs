@@ -76,6 +76,14 @@ export class GenerationGatewayClient {
     return this.request('/audio/provider');
   }
 
+  temporalShotPlan(shotId, { totalVramMb, maxSegmentSeconds } = {}) {
+    const query = new URLSearchParams();
+    if (Number.isFinite(Number(totalVramMb))) query.set('vramMb', String(Number(totalVramMb)));
+    if (Number.isFinite(Number(maxSegmentSeconds))) query.set('maxSegmentSeconds', String(Number(maxSegmentSeconds)));
+    const suffix = query.size ? `?${query.toString()}` : '';
+    return this.request(`/temporal/shots/${encodeURIComponent(shotId)}/plan${suffix}`);
+  }
+
   startScene(sceneId) {
     return this.request('/scenes', { method: 'POST', body: JSON.stringify({ sceneId }) });
   }
