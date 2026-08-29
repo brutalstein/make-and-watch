@@ -30,6 +30,9 @@ const nativeHost = resolve(
   process.platform === 'win32' ? 'makewatch_engine_host.exe' : 'makewatch_engine_host',
 );
 const databasePath = resolve(root, process.env.MAKEWATCH_PROJECT_DB ?? '.makewatch/dev-project.sqlite3');
+const MAX_NATIVE_LINE_BUFFER_BYTES = 8 * 1024 * 1024;
+const NATIVE_SHUTDOWN_GRACE_MS = 1_500;
+const TELEMETRY_CACHE_MS = 1_500;
 
 if (!Number.isInteger(bridgePort) || bridgePort < 1024 || bridgePort > 65535) {
   console.error(`[bridge] invalid MAKEWATCH_BRIDGE_PORT: ${process.env.MAKEWATCH_BRIDGE_PORT ?? bridgePort}`);
@@ -45,6 +48,9 @@ if (!existsSync(nativeHost)) {
 let stdoutBuffer = '';
 let shuttingDown = false;
 let shutdownPromise = null;
+let telemetryCache = null;
+let telemetryCacheAt = 0;
+let telemetryInFlight = null;
 const pending = new Map();
 
 const native = spawn(nativeHost, ['--db', databasePath], {
@@ -53,11 +59,40 @@ const native = spawn(nativeHost, ['--db', databasePath], {
   windowsHide: true,
 });
 
+function failPending(reason) {
+  const error = reason instanceof Error ? reason : new Error(String(reason));
+  for (const waiter of pending.values()) {
+    clearTimeout(waiter.timer);
+    waiter.reject(error);
+  }
+  pending.clear();
+}
+
+function recordNativeTransportError(stream, error) {
+  const detail = error instanceof Error ? error.message : String(error);
+  if (!shuttingDown) console.error(`[bridge] native ${stream} error: ${detail}`);
+  if (stream === 'process' || stream === 'stdin') {
+    failPending(new Error(`native engine transport failed: ${detail}`));
+  }
+}
+
+native.on('error', (error) => recordNativeTransportError('process', error));
+native.stdin.on('error', (error) => recordNativeTransportError('stdin', error));
+native.stdout.on('error', (error) => recordNativeTransportError('stdout', error));
+native.stderr.on('error', (error) => recordNativeTransportError('stderr', error));
+
 native.stdout.setEncoding('utf8');
 native.stderr.setEncoding('utf8');
 native.stderr.on('data', (chunk) => process.stderr.write(`[engine] ${chunk}`));
 native.stdout.on('data', (chunk) => {
   stdoutBuffer += chunk;
+  if (stdoutBuffer.length > MAX_NATIVE_LINE_BUFFER_BYTES && !stdoutBuffer.includes('\n')) {
+    console.error('[bridge] native host exceeded the bounded JSONL line buffer');
+    failPending(new Error('native host emitted an oversized JSONL response'));
+    native.kill();
+    return;
+  }
+
   while (true) {
     const newline = stdoutBuffer.indexOf('\n');
     if (newline < 0) break;
@@ -81,11 +116,7 @@ native.stdout.on('data', (chunk) => {
 
 native.on('exit', (code, signal) => {
   const message = `native engine exited (${code ?? 'null'} / ${signal ?? 'no-signal'})`;
-  for (const waiter of pending.values()) {
-    clearTimeout(waiter.timer);
-    waiter.reject(new Error(message));
-  }
-  pending.clear();
+  failPending(new Error(message));
   if (!shuttingDown) {
     console.error(`[bridge] ${message}`);
     process.exit(3);
@@ -93,7 +124,9 @@ native.on('exit', (code, signal) => {
 });
 
 function rpc(method, params = {}) {
-  if (native.exitCode !== null || native.killed) return Promise.reject(new Error('native engine is not running'));
+  if (native.exitCode !== null || native.killed || native.stdin.destroyed) {
+    return Promise.reject(new Error('native engine is not running'));
+  }
   const id = randomUUID();
   return new Promise((resolvePromise, rejectPromise) => {
     const timer = setTimeout(() => {
@@ -101,7 +134,15 @@ function rpc(method, params = {}) {
       rejectPromise(new Error(`native RPC timeout: ${method}`));
     }, 10_000);
     pending.set(id, { resolve: resolvePromise, reject: rejectPromise, timer });
-    native.stdin.write(`${JSON.stringify({ protocol: 1, id, method, params })}\n`);
+    const payload = `${JSON.stringify({ protocol: 1, id, method, params })}\n`;
+    native.stdin.write(payload, (error) => {
+      if (!error) return;
+      const waiter = pending.get(id);
+      if (!waiter) return;
+      clearTimeout(waiter.timer);
+      pending.delete(id);
+      waiter.reject(error);
+    });
   });
 }
 
@@ -174,7 +215,7 @@ function optionalConversationId(value) {
   return value;
 }
 
-async function systemTelemetry() {
+async function collectSystemTelemetry() {
   const telemetry = {
     platform: platform(),
     cpu: {
@@ -206,6 +247,21 @@ async function systemTelemetry() {
     // GPU telemetry is optional. Native resource admission remains authoritative.
   }
   return telemetry;
+}
+
+async function systemTelemetry() {
+  const now = Date.now();
+  if (telemetryCache && now - telemetryCacheAt < TELEMETRY_CACHE_MS) return telemetryCache;
+  if (telemetryInFlight) return telemetryInFlight;
+
+  telemetryInFlight = collectSystemTelemetry()
+    .then((value) => {
+      telemetryCache = value;
+      telemetryCacheAt = Date.now();
+      return value;
+    })
+    .finally(() => { telemetryInFlight = null; });
+  return telemetryInFlight;
 }
 
 async function ensureDevelopmentFixture(initialHealth) {
@@ -362,8 +418,13 @@ const server = createServer(async (request, response) => {
       return;
     }
     if (request.method === 'POST' && url.pathname === '/api/project/replace') {
-      const body = await readJsonBody(request);
-      sendJson(request, response, 200, await rpc('project.replace', { snapshot: body.snapshot }));
+      sendJson(request, response, 409, {
+        ok: false,
+        error: {
+          code: 'recovery_replace_unavailable',
+          message: 'Snapshot replacement is reserved for the future journal-aware recovery flow.',
+        },
+      });
       return;
     }
     sendJson(request, response, 404, { ok: false, error: { code: 'not_found', message: 'route not found' } });
@@ -385,14 +446,46 @@ server.listen(bridgePort, '127.0.0.1', () => {
   console.log(`[bridge] project database: ${databasePath}`);
 });
 
+function waitForNativeExit(timeoutMs) {
+  if (native.exitCode !== null || native.signalCode !== null) return Promise.resolve(true);
+  return new Promise((resolvePromise) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      native.off('exit', onExit);
+      resolvePromise(value);
+    };
+    const onExit = () => finish(true);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    native.once('exit', onExit);
+  });
+}
+
+function closeServer() {
+  return new Promise((resolvePromise) => {
+    server.close(() => resolvePromise());
+  });
+}
+
 async function shutdown() {
   if (shutdownPromise) return shutdownPromise;
   shuttingDown = true;
   shutdownPromise = (async () => {
-    server.close();
+    await closeServer();
     await shutdownDirectorProviders();
-    native.stdin.end();
-    if (native.exitCode === null) native.kill();
+
+    if (native.exitCode === null && !native.stdin.destroyed) native.stdin.end();
+    if (await waitForNativeExit(NATIVE_SHUTDOWN_GRACE_MS)) return;
+
+    console.warn('[bridge] native engine exceeded graceful shutdown; terminating owned host process');
+    native.kill('SIGTERM');
+    if (await waitForNativeExit(NATIVE_SHUTDOWN_GRACE_MS)) return;
+
+    console.warn('[bridge] native engine did not stop after terminate request; forcing final kill');
+    native.kill('SIGKILL');
+    await waitForNativeExit(NATIVE_SHUTDOWN_GRACE_MS);
   })();
   return shutdownPromise;
 }
