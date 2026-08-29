@@ -8,7 +8,8 @@ const CHAT_TURN_TIMEOUT_MS = 120_000;
 const TURN_START_TIMEOUT_MS = 20_000;
 const INTERRUPT_TIMEOUT_MS = 2_500;
 const THREAD_TIMEOUT_MS = 10_000;
-const READ_ONLY_SANDBOX = 'read-only';
+const THREAD_READ_ONLY_SANDBOX = 'read-only';
+const TURN_READ_ONLY_SANDBOX = 'readOnly';
 
 function safeText(value, fallback = 'Codex Director chat failed') {
   const text = String(value ?? '').trim();
@@ -27,7 +28,7 @@ export class CodexChatSession {
     const result = await this.client.request('thread/start', {
       cwd: directorRuntimeRoot,
       approvalPolicy: 'never',
-      sandbox: READ_ONLY_SANDBOX,
+      sandbox: THREAD_READ_ONLY_SANDBOX,
       ephemeral: true,
       serviceName: 'make_and_watch_director_chat',
     }, 15_000);
@@ -100,7 +101,7 @@ export class CodexChatSession {
         cwd: directorRuntimeRoot,
         approvalPolicy: 'never',
         sandboxPolicy: {
-          type: READ_ONLY_SANDBOX,
+          type: TURN_READ_ONLY_SANDBOX,
           access: {
             type: 'restricted',
             includePlatformDefaults: true,
