@@ -136,12 +136,12 @@ assert.equal(plan.expectedProjectRevision, 7);
 const threadRequest = fake.requests.find((request) => request.method === 'thread/start');
 assert.ok(threadRequest, 'Director planning must create a thread');
 assert.equal(threadRequest.params.approvalPolicy, 'never');
-assert.equal(threadRequest.params.sandbox, 'read-only', 'thread sandbox enum must use the documented wire value');
+assert.equal(threadRequest.params.sandbox, 'read-only', 'thread/start sandbox uses the CLI-style kebab-case enum');
 
 const turnRequest = fake.requests.find((request) => request.method === 'turn/start');
 assert.ok(turnRequest, 'Director planning must use turn/start');
 assert.equal(turnRequest.params.approvalPolicy, 'never');
-assert.equal(turnRequest.params.sandboxPolicy.type, 'read-only', 'turn sandbox enum must use the documented wire value');
+assert.equal(turnRequest.params.sandboxPolicy.type, 'readOnly', 'turn/start sandboxPolicy uses the App Server camelCase policy enum');
 assert.equal(turnRequest.params.sandboxPolicy.access.type, 'restricted');
 assert.ok(turnRequest.params.outputSchema, 'Director planning must send the schema through app-server');
 assert.ok(fake.requests.some((request) => request.method === 'thread/delete'), 'completed Director threads must be deleted');
