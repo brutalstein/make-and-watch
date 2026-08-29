@@ -32,6 +32,7 @@ const nativeHost = resolve(
 const databasePath = resolve(root, process.env.MAKEWATCH_PROJECT_DB ?? '.makewatch/dev-project.sqlite3');
 const MAX_NATIVE_LINE_BUFFER_BYTES = 8 * 1024 * 1024;
 const NATIVE_SHUTDOWN_GRACE_MS = 1_500;
+const SERVER_SHUTDOWN_GRACE_MS = 1_000;
 const TELEMETRY_CACHE_MS = 1_500;
 
 if (!Number.isInteger(bridgePort) || bridgePort < 1024 || bridgePort > 65535) {
@@ -463,29 +464,44 @@ function waitForNativeExit(timeoutMs) {
   });
 }
 
-function closeServer() {
+function beginServerClose() {
+  if (typeof server.closeIdleConnections === 'function') server.closeIdleConnections();
   return new Promise((resolvePromise) => {
     server.close(() => resolvePromise());
   });
+}
+
+async function boundedServerClose(serverClosed) {
+  await Promise.race([
+    serverClosed,
+    new Promise((resolvePromise) => setTimeout(resolvePromise, SERVER_SHUTDOWN_GRACE_MS)),
+  ]);
 }
 
 async function shutdown() {
   if (shutdownPromise) return shutdownPromise;
   shuttingDown = true;
   shutdownPromise = (async () => {
-    await closeServer();
+    // Stop accepting new HTTP work immediately, but do not wait for active
+    // Director requests before asking provider runtimes to stop. Waiting here
+    // would deadlock shutdown on the very turn that provider shutdown must cancel.
+    const serverClosed = beginServerClose();
     await shutdownDirectorProviders();
 
     if (native.exitCode === null && !native.stdin.destroyed) native.stdin.end();
-    if (await waitForNativeExit(NATIVE_SHUTDOWN_GRACE_MS)) return;
+    let nativeStopped = await waitForNativeExit(NATIVE_SHUTDOWN_GRACE_MS);
+    if (!nativeStopped) {
+      console.warn('[bridge] native engine exceeded graceful shutdown; terminating owned host process');
+      native.kill('SIGTERM');
+      nativeStopped = await waitForNativeExit(NATIVE_SHUTDOWN_GRACE_MS);
+    }
+    if (!nativeStopped) {
+      console.warn('[bridge] native engine did not stop after terminate request; forcing final kill');
+      native.kill('SIGKILL');
+      await waitForNativeExit(NATIVE_SHUTDOWN_GRACE_MS);
+    }
 
-    console.warn('[bridge] native engine exceeded graceful shutdown; terminating owned host process');
-    native.kill('SIGTERM');
-    if (await waitForNativeExit(NATIVE_SHUTDOWN_GRACE_MS)) return;
-
-    console.warn('[bridge] native engine did not stop after terminate request; forcing final kill');
-    native.kill('SIGKILL');
-    await waitForNativeExit(NATIVE_SHUTDOWN_GRACE_MS);
+    await boundedServerClose(serverClosed);
   })();
   return shutdownPromise;
 }
