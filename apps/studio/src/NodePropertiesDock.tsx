@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AudioLines, Braces, Film, LoaderCircle, Lock, RefreshCw, Save, ShieldCheck, Unlock, X } from 'lucide-react';
+import { AudioLines, Braces, Film, LoaderCircle, Lock, Play, RefreshCw, Save, ShieldCheck, Unlock, X } from 'lucide-react';
 import {
   defaultMetadataForKind,
   nodeCapability,
@@ -13,6 +13,7 @@ import {
   generationClient,
   type AudioGenerationJob,
   type EpisodeCompositionManifest,
+  type EpisodeRenderJob,
 } from './generationClient';
 import { EDIT_NODE_PROPERTIES_EVENT, type EditNodePropertiesDetail } from './nodePropertiesEvents';
 import { announceProjectChanged, PROJECT_CHANGED_EVENT } from './projectEvents';
@@ -96,6 +97,7 @@ export function NodePropertiesDock() {
   const [notice, setNotice] = useState('');
   const [audioJob, setAudioJob] = useState<AudioGenerationJob | null>(null);
   const [composition, setComposition] = useState<EpisodeCompositionManifest | null>(null);
+  const [renderJob, setRenderJob] = useState<EpisodeRenderJob | null>(null);
 
   const refresh = useCallback(async () => {
     const live = await engineClient.snapshot();
@@ -130,6 +132,7 @@ export function NodePropertiesDock() {
       setNotice('');
       setAudioJob(null);
       setComposition(null);
+      setRenderJob(null);
       void refresh().catch((error) => setNotice(error instanceof Error ? error.message : String(error)));
     };
     const onProjectChanged = () => {
@@ -185,6 +188,40 @@ export function NodePropertiesDock() {
     void poll();
     return () => { cancelled = true; };
   }, [audioJob?.id, audioJob?.status, refresh]);
+
+  useEffect(() => {
+    if (!renderJob || (renderJob.status !== 'queued' && renderJob.status !== 'running')) return;
+    let cancelled = false;
+    const poll = async () => {
+      while (!cancelled) {
+        await new Promise((resolvePromise) => window.setTimeout(resolvePromise, 1000));
+        if (cancelled) return;
+        try {
+          const next = (await generationClient.renderJob(renderJob.id)).job;
+          if (cancelled) return;
+          setRenderJob(next);
+          if (next.status === 'completed' || next.status === 'failed') {
+            setMediaBusy(false);
+            const live = await refresh().catch(() => null);
+            if (live) announceProjectChanged({ projectRevision: live.projectRevision, source: 'external' });
+            if (next.status === 'completed') {
+              setNotice(`Episode preview rendered. ${next.cachedScenes}/${next.sceneCount} Scene masters came from cache.`);
+              if (selected?.kind === 'episode') void refreshComposition(selected.id);
+            } else setNotice(next.error || 'Episode render failed.');
+            return;
+          }
+        } catch (error) {
+          if (!cancelled) {
+            setMediaBusy(false);
+            setNotice(error instanceof Error ? error.message : String(error));
+          }
+          return;
+        }
+      }
+    };
+    void poll();
+    return () => { cancelled = true; };
+  }, [refresh, refreshComposition, renderJob?.id, renderJob?.status, selected?.id, selected?.kind]);
 
   const patchMetadata = useCallback((key: string, value: string) => {
     setForm((current) => current ? { ...current, metadata: { ...current.metadata, [key]: value } } : current);
@@ -267,6 +304,21 @@ export function NodePropertiesDock() {
     }
   }, [selected]);
 
+  const renderEpisode = useCallback(async () => {
+    if (!selected || selected.kind !== 'episode') return;
+    setMediaBusy(true);
+    setRenderJob(null);
+    setNotice('Preparing scene-cached FFmpeg renderer…');
+    try {
+      const started = await generationClient.startEpisodeRender(selected.id);
+      setRenderJob(started.job);
+      setNotice('Episode render accepted. FFmpeg runtime and Scene cache are managed automatically.');
+    } catch (error) {
+      setMediaBusy(false);
+      setNotice(error instanceof Error ? error.message : String(error));
+    }
+  }, [selected]);
+
   if (!selected || !capability || !form) return null;
 
   const audioKind = selected.kind === 'audio' ? (form.metadata.kind || 'dialogue') : '';
@@ -314,6 +366,25 @@ export function NodePropertiesDock() {
           {composition.issues.slice(0, 4).map((issue) => <small className="issue" key={issue}>{issue}</small>)}
           {composition.warnings.slice(0, 3).map((warning) => <small className="warning" key={warning}>{warning}</small>)}
           <p>{composition.ready ? 'All required media is present. The episode manifest is renderer-ready.' : 'Generate the missing Shot/Audio assets; only affected units need regeneration.'}</p>
+          <button
+            className="node-production-readiness__render"
+            onClick={() => void renderEpisode()}
+            disabled={!composition.ready || mediaBusy}
+          >
+            {renderJob?.status === 'running' || renderJob?.status === 'queued'
+              ? <LoaderCircle size={13} className="spin" />
+              : <Play size={13} />}
+            {renderJob?.status === 'running'
+              ? `Rendering ${renderJob.progress}% · ${renderJob.completedScenes}/${renderJob.sceneCount} scenes`
+              : 'Render Episode Preview'}
+          </button>
+          {renderJob?.status === 'running' ? (
+            <div className="node-production-readiness__bar"><i style={{ width: `${Math.max(0, Math.min(100, renderJob.progress))}%` }} /></div>
+          ) : null}
+          {renderJob?.artifact ? (
+            <video controls preload="metadata" src={generationClient.renderArtifactUrl(renderJob.id)} />
+          ) : null}
+          {renderJob?.error ? <small className="issue">{renderJob.error}</small> : null}
         </section>
       ) : null}
 
