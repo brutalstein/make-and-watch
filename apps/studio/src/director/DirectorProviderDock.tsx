@@ -2,15 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Bot, Check, ExternalLink, KeyRound, RefreshCw, Send, ShieldCheck, Sparkles } from 'lucide-react';
 
 import { engineClient } from '../engineClient';
-import type { WorkflowPositions } from '../workflowLayout';
+import { resolveWorkflowPositions, workflowProjectKey } from '../workflowLayout';
 import { validateAutopilotPlan } from './autopilotValidation';
 import type { DirectorContextStats, DirectorProviderId, DirectorProviderStatus } from './providerTypes';
-
-interface DirectorProviderDockProps {
-  selectedId: string | null;
-  workspacePositions: WorkflowPositions;
-  blocked: boolean;
-}
 
 function providerLabel(provider: DirectorProviderId) {
   return provider === 'codex' ? 'Codex' : 'Claude';
@@ -23,7 +17,7 @@ function statusClass(status: DirectorProviderStatus) {
   return 'director-link__provider--ready';
 }
 
-export function DirectorProviderDock({ selectedId, workspacePositions, blocked }: DirectorProviderDockProps) {
+export function DirectorProviderDock() {
   const [providers, setProviders] = useState<DirectorProviderStatus[]>([]);
   const [selectedProvider, setSelectedProvider] = useState<DirectorProviderId>('codex');
   const [objective, setObjective] = useState('Review the current workflow and propose the smallest useful visual organization pass.');
@@ -71,15 +65,22 @@ export function DirectorProviderDock({ selectedId, workspacePositions, blocked }
 
   const plan = useCallback(async () => {
     if (!selectedStatus?.authenticated || !selectedStatus.capable || !objective.trim()) return;
+    if (document.querySelector('.studio-shell--autopilot')) {
+      setMessage('Return control from the current Autopilot pass before asking a provider for a new plan.');
+      return;
+    }
+
     setLoading(true);
     setContextStats(null);
     setPlanSummary(null);
     try {
+      const before = await engineClient.snapshot();
+      const workspacePositions = resolveWorkflowPositions(before, workflowProjectKey(before));
       const result = await engineClient.directorPlan({
         provider: selectedProvider,
         objective: objective.trim(),
         mode: 'assist',
-        selectedId,
+        selectedId: null,
         workspacePositions,
       });
       const liveSnapshot = await engineClient.snapshot();
@@ -95,7 +96,7 @@ export function DirectorProviderDock({ selectedId, workspacePositions, blocked }
     } finally {
       setLoading(false);
     }
-  }, [objective, selectedId, selectedProvider, selectedStatus, workspacePositions]);
+  }, [objective, selectedProvider, selectedStatus]);
 
   return (
     <section className="director-link" aria-label="AI Director provider connection">
@@ -146,12 +147,12 @@ export function DirectorProviderDock({ selectedId, workspacePositions, blocked }
           value={objective}
           onChange={(event) => setObjective(event.target.value.slice(0, 4000))}
           rows={3}
-          disabled={loading || blocked}
+          disabled={loading}
           aria-label="AI Director objective"
         />
         <button
           onClick={() => void plan()}
-          disabled={loading || blocked || !selectedStatus?.authenticated || !selectedStatus.capable || !objective.trim()}
+          disabled={loading || !selectedStatus?.authenticated || !selectedStatus.capable || !objective.trim()}
           title="Generate a validated Assist-mode plan"
         >
           {loading ? <RefreshCw size={13} className="spin" /> : <Send size={13} />}
