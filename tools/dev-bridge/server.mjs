@@ -470,7 +470,14 @@ const server = createServer(async (request, response) => {
         throw new Error(`native snapshot failed before Director chat: ${snapshotResponse.error?.message ?? 'unknown error'}`);
       }
       const beforeRevision = snapshotResponse.result.projectRevision;
-      const firstTurn = conversationId === null;
+      let firstTurn = conversationId === null;
+      if (conversationId) {
+        const savedConversation = await readDirectorConversation(conversationId);
+        if (savedConversation.conversation.provider !== provider) {
+          throw new Error('Director conversation provider mismatch');
+        }
+        firstTurn = savedConversation.conversation.turnCount === 0;
+      }
       const context = buildDirectorChatTurn({
         message,
         snapshot: snapshotResponse.result,
