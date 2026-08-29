@@ -13,10 +13,12 @@ import './premium-ui.css';
 import './panel-controller.css';
 import './react-flow-attribution.css';
 import './workflow-manager.css';
+import './workflow-context-menu.css';
 import { App } from './App';
 import { DirectorProviderDock } from './director/DirectorProviderDock';
 import { ReactFlowAttribution } from './ReactFlowAttribution';
 import { StudioPanelController } from './StudioPanelController';
+import { WorkflowContextMenuDock } from './WorkflowContextMenuDock';
 import { WorkflowManagerDock } from './WorkflowManagerDock';
 
 const REACT_FLOW_ATTRIBUTION_WARNING = 'React Flow: It seems like you are hiding the attribution.';
@@ -37,6 +39,7 @@ createRoot(root).render(
       <ReactFlowAttribution />
       <DirectorProviderDock />
       <WorkflowManagerDock />
+      <WorkflowContextMenuDock />
       <StudioPanelController />
     </ReactFlowProvider>
   </StrictMode>,
