@@ -31,9 +31,24 @@ function numericMetadata(node, key, fallback) {
   return Number.isFinite(value) ? value : fallback;
 }
 
+function sha256Text(value) {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function sha256Bytes(value) {
+  return createHash('sha256').update(value).digest('hex');
+}
+
 function deterministicSeed(parts) {
   const digest = createHash('sha256').update(parts.join('|')).digest();
   return digest.readUInt32BE(0);
+}
+
+function explicitSeed(node) {
+  const raw = node?.metadata?.seed;
+  if (raw === undefined || raw === null || raw === '') return null;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
 function nodeById(snapshot, id) {
@@ -72,35 +87,82 @@ function seriesForEpisode(snapshot, episode) {
   return episode ? dependenciesOf(snapshot, episode.id).find((node) => node.kind === 'series') ?? null : null;
 }
 
-function promptForShot(snapshot, scene, shot) {
+function uniqueKindDependencies(snapshot, scene, shot, kind) {
+  return [...dependenciesOf(snapshot, shot.id), ...dependenciesOf(snapshot, scene.id)]
+    .filter((node) => node.kind === kind)
+    .filter((node, index, list) => list.findIndex((candidate) => candidate.id === node.id) === index);
+}
+
+function characterPrompt(node) {
+  return [
+    safeTitle(node.title),
+    metadataText(node, 'description'),
+    metadataText(node, 'appearancePrompt'),
+    metadataText(node, 'wardrobe') ? `wardrobe ${metadataText(node, 'wardrobe')}` : '',
+    metadataText(node, 'performanceStyle') ? `performance ${metadataText(node, 'performanceStyle')}` : '',
+  ].filter(Boolean).join(' — ');
+}
+
+function locationPrompt(node) {
+  return [
+    safeTitle(node.title),
+    metadataText(node, 'description'),
+    metadataText(node, 'environmentPrompt'),
+    metadataText(node, 'city'),
+    metadataText(node, 'time'),
+    metadataText(node, 'weather'),
+    metadataText(node, 'lighting') ? `lighting ${metadataText(node, 'lighting')}` : '',
+    metadataText(node, 'palette') ? `palette ${metadataText(node, 'palette')}` : '',
+  ].filter(Boolean).join(' — ');
+}
+
+function compiledShotPrompt(snapshot, scene, shot) {
   const episode = episodeForScene(snapshot, scene);
   const series = seriesForEpisode(snapshot, episode);
-  const shotDependencies = dependenciesOf(snapshot, shot.id);
-  const sceneDependencies = dependenciesOf(snapshot, scene.id);
-  const characters = [...shotDependencies, ...sceneDependencies]
-    .filter((node) => node.kind === 'character')
-    .filter((node, index, list) => list.findIndex((candidate) => candidate.id === node.id) === index);
-  const locations = [...shotDependencies, ...sceneDependencies]
-    .filter((node) => node.kind === 'location')
-    .filter((node, index, list) => list.findIndex((candidate) => candidate.id === node.id) === index);
-
+  const characters = uniqueKindDependencies(snapshot, scene, shot, 'character');
+  const locations = uniqueKindDependencies(snapshot, scene, shot, 'location');
   const pieces = [
-    'cinematic storyboard frame, photorealistic film still, coherent production design',
+    'cinematic storyboard frame, coherent production design, physically plausible materials',
     series ? `series ${safeTitle(series.title)}` : '',
     metadataText(series, 'genre') ? `genre ${metadataText(series, 'genre')}` : '',
-    metadataText(series, 'visualLanguage') ? `visual language ${metadataText(series, 'visualLanguage')}` : '',
+    metadataText(series, 'visualLanguage') ? `visual bible ${metadataText(series, 'visualLanguage')}` : '',
     episode ? `episode ${safeTitle(episode.title)}` : '',
     `scene ${safeTitle(scene.title)}`,
     metadataText(scene, 'summary'),
+    metadataText(scene, 'dramaticGoal') ? `dramatic goal ${metadataText(scene, 'dramaticGoal')}` : '',
+    metadataText(scene, 'timeOfDay') ? `time of day ${metadataText(scene, 'timeOfDay')}` : '',
+    metadataText(scene, 'weather') ? `weather ${metadataText(scene, 'weather')}` : '',
     `shot ${safeTitle(shot.title)}`,
+    metadataText(shot, 'purpose') ? `shot purpose ${metadataText(shot, 'purpose')}` : '',
     metadataText(shot, 'framing') ? `${metadataText(shot, 'framing')} framing` : '',
     metadataText(shot, 'camera') ? `camera ${metadataText(shot, 'camera')}` : '',
-    characters.length ? `characters: ${characters.map((node) => safeTitle(node.title)).join(', ')}` : '',
-    locations.length ? `location: ${locations.map((node) => `${safeTitle(node.title)} ${metadataText(node, 'city')} ${metadataText(node, 'time')} ${metadataText(node, 'atmosphere')}`.trim()).join(', ')}` : '',
-    'cinematic lighting, physically plausible materials, consistent faces, restrained color grading, no typography',
+    metadataText(shot, 'subjectAction') ? `action ${metadataText(shot, 'subjectAction')}` : '',
+    characters.length ? `canonical characters: ${characters.map(characterPrompt).join(' | ')}` : '',
+    locations.length ? `canonical location: ${locations.map(locationPrompt).join(' | ')}` : '',
+    metadataText(shot, 'promptOverride'),
+    'cinematic lighting, consistent identity, coherent environment geometry, restrained filmic color grade, no typography',
   ].filter(Boolean);
+  return {
+    prompt: pieces.join(', ').slice(0, 12_000),
+    series,
+    episode,
+    characters,
+    locations,
+  };
+}
 
-  return pieces.join(', ').slice(0, 10_000);
+function resolvedShotSeed(compiled, scene, shot) {
+  const override = explicitSeed(shot);
+  if (override !== null) return override;
+  const masterSeed = metadataText(compiled.series, 'masterSeed') || '1337';
+  return deterministicSeed([
+    masterSeed,
+    scene.id,
+    String(scene.revision),
+    shot.id,
+    String(shot.revision),
+    sha256Text(compiled.prompt),
+  ]);
 }
 
 function publicJob(job) {
@@ -263,23 +325,38 @@ export class SceneGenerationService {
       job.currentShotId = shot.id;
       job.progress = Math.floor((index / shots.length) * 100);
       const generationNodeId = `generation.preview.${safeFilePart(shot.id)}`;
+      const compiled = compiledShotPrompt(snapshot, liveScene, shot);
+      const promptHash = sha256Text(compiled.prompt);
+      const seed = resolvedShotSeed(compiled, liveScene, shot);
+      const negativePrompt = [NEGATIVE_PROMPT, metadataText(shot, 'negativePrompt')].filter(Boolean).join(', ');
+      const startedAt = new Date().toISOString();
+
       await this.#setGenerationState(snapshot, generationNodeId, liveScene, shot, {
-        status: 'generating',
+        targetKind: 'shot',
+        targetId: shot.id,
+        mediaType: 'image',
+        strategy: 'STORYBOARD_PREVIEW',
+        status: 'running',
+        seed,
+        promptHash,
         artifactPath: '',
+        artifactSha256: '',
         promptId: '',
+        startedAt,
+        completedAt: '',
         error: '',
       });
 
       try {
-        const prompt = promptForShot(snapshot, liveScene, shot);
-        const seed = deterministicSeed([snapshot.projectRevision, liveScene.id, shot.id, shot.revision, prompt]);
         const filenamePrefix = `MakeWatch/${safeFilePart(liveScene.id)}/${safeFilePart(shot.id)}`;
+        const width = Number(process.env.MAKEWATCH_PREVIEW_WIDTH ?? 768);
+        const height = Number(process.env.MAKEWATCH_PREVIEW_HEIGHT ?? 432);
         const generated = await this.comfy.generateStoryboardFrame({
-          prompt,
-          negativePrompt: NEGATIVE_PROMPT,
+          prompt: compiled.prompt,
+          negativePrompt,
           seed,
-          width: Number(process.env.MAKEWATCH_PREVIEW_WIDTH ?? 768),
-          height: Number(process.env.MAKEWATCH_PREVIEW_HEIGHT ?? 432),
+          width,
+          height,
           filenamePrefix,
         });
 
@@ -290,33 +367,63 @@ export class SceneGenerationService {
         const absolutePath = join(jobDirectory, outputName);
         await writeFile(absolutePath, generated.bytes);
         const relativePath = relative(resolve(this.artifactRoot, '..', '..'), absolutePath).replaceAll('\\', '/');
+        const artifactSha256 = sha256Bytes(generated.bytes);
+        const assetNodeId = `asset.${artifactSha256.slice(0, 24)}`;
+        const completedAt = new Date().toISOString();
         const artifact = {
           shotId: shot.id,
           generationNodeId,
+          assetNodeId,
           filename: outputName,
           relativePath,
           absolutePath,
           contentType: generated.contentType,
+          sha256: artifactSha256,
           promptId: generated.promptId,
           checkpoint: generated.checkpoint,
+          seed,
+          promptHash,
         };
         job.artifacts.push(artifact);
 
-        const fresh = await this.bridge.snapshot();
+        let fresh = await this.bridge.snapshot();
         await this.#setGenerationState(fresh, generationNodeId, liveScene, shot, {
+          targetKind: 'shot',
+          targetId: shot.id,
+          mediaType: 'image',
+          strategy: 'STORYBOARD_PREVIEW',
           status: 'ready',
+          seed,
+          promptHash,
           artifactPath: relativePath,
+          artifactSha256,
           promptId: generated.promptId,
+          model: generated.checkpoint,
           checkpoint: generated.checkpoint,
           sampler: generated.sampler,
           scheduler: generated.scheduler,
-          generatedAt: new Date().toISOString(),
+          startedAt,
+          completedAt,
           error: '',
+        });
+        fresh = await this.bridge.snapshot();
+        await this.#registerAsset(fresh, {
+          assetNodeId,
+          generationNodeId,
+          shot,
+          relativePath,
+          artifactSha256,
+          contentType: generated.contentType,
+          width,
+          height,
         });
       } catch (error) {
         const fresh = await this.bridge.snapshot().catch(() => snapshot);
         await this.#setGenerationState(fresh, generationNodeId, liveScene, shot, {
           status: 'failed',
+          seed,
+          promptHash,
+          completedAt: new Date().toISOString(),
           error: (error instanceof Error ? error.message : String(error)).slice(0, 600),
         }).catch(() => undefined);
         throw error;
@@ -329,7 +436,7 @@ export class SceneGenerationService {
     const manifestDirectory = join(this.artifactRoot, safeFilePart(scene.id), safeFilePart(job.id));
     await mkdir(manifestDirectory, { recursive: true });
     await writeFile(join(manifestDirectory, 'manifest.json'), JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
       job: publicJob(job),
       completedAt: new Date().toISOString(),
     }, null, 2), 'utf8');
@@ -380,6 +487,54 @@ export class SceneGenerationService {
       actor: 'system',
       source: 'scene-storyboard-generation',
       reason: `update storyboard preview for ${shot.id}`,
+    }, snapshot.projectRevision);
+  }
+
+  async #registerAsset(snapshot, {
+    assetNodeId,
+    generationNodeId,
+    shot,
+    relativePath,
+    artifactSha256,
+    contentType,
+    width,
+    height,
+  }) {
+    const existing = nodeById(snapshot, assetNodeId);
+    const metadata = {
+      mediaType: 'image',
+      role: 'shot-preview',
+      relativePath,
+      sha256: artifactSha256,
+      mimeType: contentType,
+      width: String(Math.max(0, Math.round(Number(width) || 0))),
+      height: String(Math.max(0, Math.round(Number(height) || 0))),
+      source: 'generated',
+      generatedBy: generationNodeId,
+    };
+    if (existing) {
+      if (existing.kind !== 'asset') throw new Error(`asset node ID collision: ${assetNodeId}`);
+      return;
+    }
+    await this.bridge.apply([
+      {
+        type: 'node.create',
+        node: {
+          id: assetNodeId,
+          kind: 'asset',
+          title: `${safeTitle(shot.title)} · Preview Asset`,
+          approval: 'draft',
+          locked: false,
+          stale: false,
+          metadata,
+        },
+      },
+      { type: 'dependency.add', dependent: assetNodeId, dependency: generationNodeId },
+      { type: 'node.markFresh', id: assetNodeId },
+    ], {
+      actor: 'system',
+      source: 'scene-storyboard-generation',
+      reason: `register generated preview asset for ${shot.id}`,
     }, snapshot.projectRevision);
   }
 }
