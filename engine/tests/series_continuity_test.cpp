@@ -76,5 +76,23 @@ int main() {
   assert(!manifest.ready_for_final_synthesis);
   assert(manifest.characters.front().revision == 8U);
   assert(!manifest.issues.empty());
+  snapshot.graph.nodes.back().locked = true;
+
+  snapshot.graph.nodes.front().stale = true;
+  const auto stale_series_status = compiler.compile(snapshot, EntityId{"series.one"}, manifest);
+  assert(stale_series_status.ok());
+  assert(!manifest.ready_for_final_synthesis);
+  snapshot.graph.nodes.front().stale = false;
+
+  edge(snapshot, "shot.1", "scene.2");
+  const auto duplicate_owner_status = compiler.compile(snapshot, EntityId{"series.one"}, manifest);
+  assert(duplicate_owner_status.ok());
+  assert(!manifest.ready_for_final_synthesis);
+  assert(manifest.shots.size() == 2U);
+  snapshot.graph.dependencies.pop_back();
+
+  const auto restored_status = compiler.compile(snapshot, EntityId{"series.one"}, manifest);
+  assert(restored_status.ok());
+  assert(manifest.ready_for_final_synthesis);
   return 0;
 }
