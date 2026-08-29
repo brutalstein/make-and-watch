@@ -96,6 +96,13 @@ body { font-size: 13px; }
 .autopilot-banner small,
 .autopilot-banner button { font-size: 10px !important; }
 
+/* Autopilot owns workflow geometry, not conversation. Keep the Director sidecar
+   fully interactive so the user can continue directing or cancel/change intent. */
+.studio-shell--autopilot .director-chat {
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+
 .error-banner { font-size: 11px; }
 
 @media (prefers-reduced-motion: reduce) {
