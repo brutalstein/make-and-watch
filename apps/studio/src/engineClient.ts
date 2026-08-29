@@ -8,6 +8,14 @@ import type {
   SystemTelemetry,
 } from '@makewatch/contracts';
 
+import type {
+  DirectorConnectResult,
+  DirectorPlanRequest,
+  DirectorPlanResult,
+  DirectorProviderId,
+  DirectorProvidersResult,
+} from './director/providerTypes';
+
 const API_BASE = import.meta.env.VITE_ENGINE_BRIDGE_URL ?? 'http://127.0.0.1:4177/api';
 
 interface SuccessEnvelope<T> {
@@ -55,6 +63,15 @@ export const engineClient = {
   snapshot: () => request<ProjectGraphSnapshot>('/project'),
   history: (limit = 10) => request<ProjectHistoryResult>(`/project/history?limit=${encodeURIComponent(String(limit))}`),
   system: () => request<SystemTelemetry>('/system'),
+  directorProviders: () => request<DirectorProvidersResult>('/director/providers'),
+  connectDirector: (provider: DirectorProviderId) => request<DirectorConnectResult>('/director/connect', {
+    method: 'POST',
+    body: JSON.stringify({ provider }),
+  }),
+  directorPlan: (input: DirectorPlanRequest) => request<DirectorPlanResult>('/director/plan', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  }),
   impact: (source: string) => request<ImpactReport>('/project/impact', {
     method: 'POST',
     body: JSON.stringify({ source }),
