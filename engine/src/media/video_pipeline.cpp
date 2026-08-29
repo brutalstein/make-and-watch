@@ -8,6 +8,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -165,7 +166,7 @@ core::Status VideoPipelineCompiler::compile(
     if (shots.empty()) output.issues.push_back("scene " + scene->id.value() + " has no shot dependencies");
 
     for (const auto* shot : shots) {
-      const auto [_, inserted] = seen_shots.insert(shot->id.value());
+      const auto inserted = seen_shots.insert(shot->id.value()).second;
       if (!inserted) {
         output.issues.push_back("shot " + shot->id.value() + " belongs to multiple scenes in the compiled episode");
         continue;
