@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,6 +7,7 @@ import { join } from 'node:path';
 import {
   buildWindowsCmdCommand,
   discoverProviderExecutable,
+  guardProviderStdio,
   providerLaunchSummary,
 } from './provider-executable.mjs';
 
@@ -58,6 +60,20 @@ try {
   });
   assert.equal(overridden?.discovery, 'override');
   assert.equal(overridden?.path, overridePath);
+
+  const fakeChild = {
+    stdin: new EventEmitter(),
+    stdout: new EventEmitter(),
+    stderr: new EventEmitter(),
+  };
+  guardProviderStdio(fakeChild);
+  const epipe = Object.assign(new Error('broken pipe'), { code: 'EPIPE' });
+  assert.doesNotThrow(() => fakeChild.stdin.emit('error', epipe), 'provider EPIPE must not terminate the owning bridge process');
+  assert.deepEqual(fakeChild.makewatchLastPipeError, {
+    stream: 'stdin',
+    code: 'EPIPE',
+    message: 'broken pipe',
+  });
 
   console.log('director provider-executable check: passed');
 } finally {
