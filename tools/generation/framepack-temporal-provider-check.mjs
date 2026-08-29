@@ -30,12 +30,18 @@ try {
     return { payload: { teacache: true, steps: 25 } };
   };
   const videoProbe = async () => ({ durationSeconds: 5.02, width: 640, height: 360, fps: 30 });
+  let releases = 0;
+  const gpuReleaser = async () => {
+    releases += 1;
+    return { requested: true, released: true, detail: 'fixture released' };
+  };
   const provider = new FramePackTemporalProvider({
     projectRoot: root,
     workerPath: join(root, 'worker.py'),
     runtimeResolver,
     workerRunner,
     videoProbe,
+    gpuReleaser,
   });
 
   const status = await provider.status({ hardware: { totalVramMb: 8192 } });
@@ -59,6 +65,7 @@ try {
     },
   }, { hardware: { totalVramMb: 8192 } });
 
+  assert.equal(releases, 1, 'FramePack must release resident ComfyUI models before launching');
   assert.equal(artifact.mediaType, 'video');
   assert.equal(artifact.durationSeconds, 5.02);
   assert.equal(artifact.width, 640);
@@ -67,6 +74,7 @@ try {
   assert.equal(artifact.sha256.length, 64);
   assert.match(artifact.relativePath, /^artifacts\/video\/shot.1\//);
   assert.equal(artifact.providerMetadata.teacache, true);
+  assert.equal(artifact.providerMetadata.comfyMemoryReleased, true);
 
   await assert.rejects(() => provider.generate({
     shot: { id: 'shot.long', strategy: 'I2V', durationSeconds: 9, temporalPrompt: 'move' },
@@ -76,6 +84,19 @@ try {
     shot: { id: 'shot.video', strategy: 'VIDEO', durationSeconds: 5, temporalPrompt: 'move' },
     inputs: { startFrame: { relativePath: 'artifacts/hero.png' } },
   }), /supports I2V only/);
+
+  const blocked = new FramePackTemporalProvider({
+    projectRoot: root,
+    workerPath: join(root, 'worker.py'),
+    runtimeResolver,
+    workerRunner: async () => { throw new Error('worker must not launch when ComfyUI release fails'); },
+    videoProbe,
+    gpuReleaser: async () => ({ requested: true, released: false, detail: 'HTTP 500' }),
+  });
+  await assert.rejects(() => blocked.generate({
+    shot: { id: 'shot.2', revision: 1, strategy: 'I2V', durationSeconds: 5, temporalPrompt: 'move', qualityTier: 'preview' },
+    inputs: { startFrame: { relativePath: 'artifacts/hero.png', sha256: 'hero' } },
+  }, { hardware: { totalVramMb: 8192 } }), /could not release resident GPU models/);
 } finally {
   await rm(root, { recursive: true, force: true });
 }
