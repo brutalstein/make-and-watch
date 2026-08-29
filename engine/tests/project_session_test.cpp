@@ -140,6 +140,60 @@ void test_commit_context_is_durable_event_provenance() {
           "transaction event should encode durable AI provenance");
 }
 
+void test_restore_is_monotonic_atomic_and_revision_safe() {
+  FakeStore store;
+  ProjectSession session{store};
+  require(session.load().ok(), "session should load before restore test");
+  require(session.apply(Command{CreateNode{make_node("scene.old", NodeKind::kScene, "Old Scene")}}).ok(),
+          "restore fixture should commit");
+
+  ProjectSnapshot saved;
+  saved.project_revision = 99;  // Saved revision must never replace the live revision counter.
+  auto replacement = make_node("scene.new", NodeKind::kScene, "Loaded Scene");
+  replacement.revision = 1;
+  saved.graph.nodes.push_back(replacement);
+
+  CommitContext context;
+  context.actor = CommitActor::kAiDirector;
+  context.source = "director-workflow-load";
+  context.plan_id = "tool-call-1";
+  context.reason = "load saved workflow";
+
+  const auto restored = session.restore(saved, 1, context);
+  require(restored.ok() && restored.project_revision == 2,
+          "restore must advance exactly one revision from live state");
+  require(session.snapshot().project_revision == 2 && store.persisted.project_revision == 2,
+          "saved snapshot revision must not move authoritative revision backwards or forwards arbitrarily");
+  require(session.snapshot().graph.nodes.size() == 1 &&
+              session.snapshot().graph.nodes.front().id == EntityId{"scene.new"},
+          "restore must atomically replace the active graph");
+  require(store.last_events.size() == 1 &&
+              store.last_events.front().type == EventType::kTransactionCommitted,
+          "restore should journal one compact semantic transaction marker");
+  require(store.last_events.front().detail.find("actor=ai_director") != std::string::npos &&
+              store.last_events.front().detail.find("reason=load saved workflow") != std::string::npos &&
+              store.last_events.front().detail.find("1 nodes / 0 dependencies -> 1 nodes / 0 dependencies") != std::string::npos,
+          "restore transaction must retain provenance and bounded graph summary");
+
+  const auto attempts_before_conflict = store.save_attempts;
+  const auto conflict = session.restore(saved, 1, context);
+  require(!conflict.ok() && conflict.status.code == ErrorCode::kRevisionConflict,
+          "stale project revision must reject restore");
+  require(store.save_attempts == attempts_before_conflict && session.snapshot().project_revision == 2,
+          "revision conflict must not touch persistence or live state");
+
+  ProjectSnapshot empty;
+  empty.project_revision = 0;
+  store.fail_save = true;
+  const auto before_failure = session.snapshot();
+  const auto failed = session.restore(empty, 2, context);
+  require(!failed.ok() && failed.status.code == ErrorCode::kIoError,
+          "restore persistence failure must be surfaced");
+  require(session.snapshot().project_revision == before_failure.project_revision &&
+              session.snapshot().graph.nodes.size() == before_failure.graph.nodes.size(),
+          "failed restore must preserve live project state exactly");
+}
+
 void test_replace_validates_before_persisting() {
   FakeStore store;
   ProjectSession session{store};
@@ -175,6 +229,7 @@ void test_load_failure_does_not_destroy_live_state() {
 int main() {
   test_persist_before_live_commit();
   test_commit_context_is_durable_event_provenance();
+  test_restore_is_monotonic_atomic_and_revision_safe();
   test_replace_validates_before_persisting();
   test_load_failure_does_not_destroy_live_state();
   std::cout << "project_session_test: all checks passed\n";
