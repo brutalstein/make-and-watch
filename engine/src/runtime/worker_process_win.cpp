@@ -375,6 +375,18 @@ ProcessObservation NativeProcess::observe() noexcept {
       tree_exited = false;
     }
   }
+
+  // Job accounting can report zero active processes before the asynchronous
+  // stdout/stderr reader threads have consumed the final bytes already buffered
+  // in the anonymous pipes. Once the owned process tree is confirmed exited,
+  // every inherited write handle is closed, so joining here deterministically
+  // drains EOF without waiting on a live worker. This guarantees that a valid
+  // MW_READY_V1 line from a very short-lived worker is visible before the
+  // supervisor classifies its exit.
+  if (tree_exited) {
+    if (impl_->stdout_reader.joinable()) impl_->stdout_reader.join();
+    if (impl_->stderr_reader.joinable()) impl_->stderr_reader.join();
+  }
   return {impl_->leader_exited, tree_exited, impl_->exit_code};
 }
 
