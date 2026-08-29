@@ -46,11 +46,14 @@ const second = await buildDirectorContextPack({
 });
 
 assert.equal(first.hash, second.hash, 'identical live context must produce a deterministic hash');
-assert.ok(first.chars <= 24_000, `context pack exceeded bound: ${first.chars}`);
-assert.ok(first.estimatedTokens <= 6_000, `estimated token budget exceeded: ${first.estimatedTokens}`);
-assert.equal(first.nodeCountIncluded, 96, 'node context must be capped');
+assert.ok(first.chars <= 16_000, `context pack exceeded bound: ${first.chars}`);
+assert.ok(first.estimatedTokens <= 4_000, `estimated token budget exceeded: ${first.estimatedTokens}`);
+assert.equal(first.nodeCountIncluded, 72, 'node context must be capped');
+assert.ok(first.dependencyCountIncluded <= 120, 'dependency context must be capped');
 assert.ok(!first.prompt.includes('ignoredLargeField'), 'irrelevant metadata must not leak into compact context');
 assert.ok(first.prompt.includes('MAKEWATCH DIRECTOR MODE'), 'Director mode marker must be present');
 assert.ok(first.prompt.includes('scene.001'), 'selected/live project context must be present');
+assert.ok(first.prompt.includes('policyHash'), 'canonical Director policy version must be observable without resending full policy');
+assert.ok(!first.prompt.includes('# Make & Watch — AI Director Compact Context'), 'stable policy must not be duplicated in each request');
 
 console.log('director context-pack check: passed');
