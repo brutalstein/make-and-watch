@@ -82,6 +82,73 @@ export interface AudioGenerationJob {
   artifact: AudioGenerationArtifact | null;
 }
 
+export interface CompositionMedia {
+  assetId: string;
+  mediaType: 'image' | 'video' | 'audio' | string;
+  relativePath: string;
+  mimeType: string;
+  sha256: string;
+  width: number;
+  height: number;
+  durationSeconds: number;
+}
+
+export interface EpisodeCompositionManifest {
+  schemaVersion: 1;
+  projectRevision: number;
+  episode: {
+    id: string;
+    title: string;
+    seriesId: string | null;
+    seriesTitle: string;
+    targetDurationSeconds: number;
+    durationSeconds: number;
+    durationInFrames: number;
+  };
+  profile: { name: string; width: number; height: number; fps: number };
+  scenes: Array<{
+    id: string;
+    title: string;
+    index: number;
+    summary: string;
+    transitionIn: string;
+    transitionOut: string;
+    startSeconds: number;
+    durationSeconds: number;
+    startFrame: number;
+    durationInFrames: number;
+    shots: Array<{
+      id: string;
+      title: string;
+      strategy: string;
+      startSeconds: number;
+      durationSeconds: number;
+      media: CompositionMedia | null;
+    }>;
+    audio: Array<{
+      id: string;
+      title: string;
+      kind: string;
+      text: string;
+      language: string;
+      startSeconds: number;
+      durationSeconds: number;
+      subtitle: boolean;
+      media: CompositionMedia | null;
+    }>;
+  }>;
+  stats: {
+    sceneCount: number;
+    shotCount: number;
+    audioCueCount: number;
+    generatedVisualCount: number;
+    generatedAudioCount: number;
+  };
+  issues: string[];
+  warnings: string[];
+  ready: boolean;
+}
+
 interface Envelope<T> {
   ok: boolean;
   result?: T;
@@ -129,6 +196,7 @@ export const generationClient = {
   }),
   job: (jobId: string) => request<{ job: SceneGenerationJob }>(`/jobs/${encodeURIComponent(jobId)}`),
   audioJob: (jobId: string) => request<{ job: AudioGenerationJob }>(`/audio/jobs/${encodeURIComponent(jobId)}`),
+  composition: (episodeId: string) => request<{ manifest: EpisodeCompositionManifest }>(`/composition/episodes/${encodeURIComponent(episodeId)}`),
   artifactUrl: (jobId: string, shotId: string) => `${GENERATION_BASE}/artifacts/${encodeURIComponent(jobId)}/${encodeURIComponent(shotId)}`,
   audioArtifactUrl: (jobId: string) => `${GENERATION_BASE}/audio/artifacts/${encodeURIComponent(jobId)}`,
 };
