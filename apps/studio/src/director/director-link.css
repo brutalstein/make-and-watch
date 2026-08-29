@@ -45,12 +45,19 @@
 .director-link__provider--selected { border-color: #7467c7; box-shadow: inset 0 0 0 1px rgba(116,103,199,.13); }
 .director-link__provider--ready > span { color: #86dfbd; background: rgba(52,117,91,.20); }
 .director-link__provider--auth > span { color: #d9b77b; background: rgba(121,88,42,.20); }
+.director-link__provider--policy { border-color: rgba(145,112,73,.38); }
+.director-link__provider--policy > span { color: #d7af70; background: rgba(121,88,42,.16); }
 .director-link__provider--update > span,
 .director-link__provider--missing > span { color: #a97e88; }
 .director-link__connect {
   display: flex; align-items: center; justify-content: center; gap: 6px;
   padding: 7px 8px; border: 1px solid #55498e; border-radius: 8px;
   color: #cbc3f4; background: rgba(47,39,86,.58); cursor: pointer; font-size: 7.5px;
+}
+.director-link__policy {
+  display: flex; gap: 6px; align-items: flex-start; padding: 7px 8px;
+  border: 1px solid rgba(145,112,73,.34); border-radius: 8px;
+  color: #c8ab80; background: rgba(81,59,30,.13); font-size: 6.8px; line-height: 1.45;
 }
 .director-link__objective { display: grid; grid-template-columns: 1fr 31px; gap: 6px; align-items: stretch; }
 .director-link__objective textarea {
