@@ -4,10 +4,11 @@ import { resolve } from 'node:path';
 const root = process.cwd();
 const isWindows = process.platform === 'win32';
 const bridgeBaseUrl = `http://127.0.0.1:${process.env.MAKEWATCH_BRIDGE_PORT ?? 4177}`;
+const generationBaseUrl = `http://127.0.0.1:${process.env.MAKEWATCH_GENERATION_PORT ?? 4178}`;
 const CHILD_GRACE_MS = 4_000;
 
 console.log('\n  MAKE & WATCH  /  STUDIO RUNTIME');
-console.log('  Native engine + local bridge + Director + Studio\n');
+console.log('  Native engine + local bridge + generation + Director + Studio\n');
 
 const nativeBuild = spawnSync(
   'cmake',
@@ -91,9 +92,6 @@ function shutdown(exitCode = 0) {
   }
   shuttingDown = true;
   process.exitCode = exitCode;
-
-  // Studio is presentation-only; stop it first. The bridge then receives a
-  // normal termination signal and owns its Codex/native shutdown sequence.
   shutdownPromise = (async () => {
     const ordered = [...children].reverse();
     for (const entry of ordered) await stopEntry(entry);
@@ -114,19 +112,17 @@ bridge.on('exit', (code) => {
   }
 });
 
-async function waitForBridge() {
-  for (let attempt = 0; attempt < 80; attempt += 1) {
+async function waitForUrl(url, label, attempts = 80) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
-      const response = await fetch(`${bridgeBaseUrl}/api/health`, {
-        signal: AbortSignal.timeout(1_000),
-      });
+      const response = await fetch(url, { signal: AbortSignal.timeout(1_000) });
       if (response.ok) return;
     } catch {
-      // Startup race: bridge is still opening the native project database.
+      // Owned local service is still starting.
     }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
   }
-  throw new Error('local native bridge did not become ready');
+  throw new Error(`${label} did not become ready`);
 }
 
 async function warmDirectorRuntime() {
@@ -163,14 +159,45 @@ async function warmDirectorRuntime() {
     console.log(`  [dev] Codex Director (${runtime}): ${codex.detail}`);
     console.log(`  [dev] Codex launcher: ${launcher}`);
   } catch (error) {
-    // Director is optional for project access. Studio still opens and explains the exact readiness issue.
     console.warn(`  [dev] Director warm-up deferred: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
+async function warmGenerationRuntime() {
+  try {
+    const response = await fetch(`${generationBaseUrl}/api/provider`, {
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) throw new Error(`generation provider returned HTTP ${response.status}`);
+    const payload = await response.json();
+    const provider = payload?.result;
+    if (provider?.online) {
+      console.log(`  [dev] Scene preview ready · ComfyUI · ${provider.checkpoint}`);
+    } else {
+      console.log(`  [dev] Scene preview gateway ready · ComfyUI offline${provider?.detail ? ` · ${provider.detail}` : ''}`);
+    }
+  } catch (error) {
+    console.warn(`  [dev] Scene preview status unavailable: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 try {
-  await waitForBridge();
-  await warmDirectorRuntime();
+  await waitForUrl(`${bridgeBaseUrl}/api/health`, 'local native bridge');
+
+  const generation = start(
+    process.execPath,
+    [resolve(root, 'tools/generation/server.mjs')],
+    {},
+    'scene generation gateway',
+  );
+  generation.on('exit', (code) => {
+    if (!shuttingDown) {
+      console.error(`[dev] scene generation gateway exited with code ${code ?? 'unknown'}`);
+      void shutdown(code ?? 1);
+    }
+  });
+  await waitForUrl(`${generationBaseUrl}/api/health`, 'scene generation gateway');
+  await Promise.all([warmGenerationRuntime(), warmDirectorRuntime()]);
 } catch (error) {
   console.error(`[dev] ${error instanceof Error ? error.message : String(error)}`);
   await shutdown(1);
