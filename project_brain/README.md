@@ -11,15 +11,16 @@ This folder is the canonical context handoff for **Make & Watch**. A new enginee
 5. `JOURNAL_AND_RECOVERY.md` — append-only native history and future recovery constraints.
 6. `IPC_AND_SESSION.md` — native application transaction boundary and Studio IPC.
 7. `WORKSPACE_LAYOUT.md` — draggable workflow presentation-state boundary.
-8. `AUTOPILOT.md` — typed AI takeover, virtual cursor, interaction ownership, and safety boundaries.
-9. `RUNTIME_FOUNDATION.md` — public resource-safety layer.
-10. `AUTH_AND_AI_DIRECTOR.md` — supported Claude/Codex integration boundary.
-11. `INVARIANTS.md` — rules that must remain true as the repository grows.
-12. `DECISIONS.md` — architecture decisions already made.
-13. `QUALITY_GATES.md` — objective standards behind the quality target.
-14. `ROADMAP.md` — milestone sequence.
-15. `VALIDATION.md` — tests and environments that were actually executed.
-16. `HANDOFF.md` — current continuation point.
+8. `AUTOPILOT.md` — exact virtual-pointer pick-and-place protocol, typed takeover, interaction ownership, and safety boundaries.
+9. `RUNTIME_FOUNDATION.md` — native resource admission and lifecycle safety layer.
+10. `BACKGROUND_JOBS.md` — bounded job ownership, cancellation, and deterministic one-at-a-time shutdown contract.
+11. `AUTH_AND_AI_DIRECTOR.md` — supported Claude/Codex integration boundary.
+12. `INVARIANTS.md` — rules that must remain true as the repository grows.
+13. `DECISIONS.md` — architecture decisions already made.
+14. `QUALITY_GATES.md` — objective standards behind the quality target.
+15. `ROADMAP.md` — milestone sequence.
+16. `VALIDATION.md` — tests and environments that were actually executed.
+17. `HANDOFF.md` — current continuation point.
 
 ## One-sentence product definition
 
@@ -27,9 +28,11 @@ Make & Watch is a local-first desktop series-production studio where a user dire
 
 ## Current stage
 
-**Foundation v1 / Interactive Native Studio + Autopilot execution harness.** The repository now has a transactional C++ project graph, SQLite schema-v2 snapshot+journal persistence, guarded local resource admission, a versioned native IPC host, a persist-before-live-commit application session, an interactive draggable Studio, and a typed Autopilot executor with a cinematic virtual cursor and emergency user takeover.
+**Foundation v1 / Interactive Native Studio + exact Autopilot pointer + bounded background lifecycle.** The repository has a transactional C++ project graph, SQLite schema-v2 snapshot/journal persistence, guarded resource admission, bounded background-job ownership, versioned native IPC, a persist-before-live-commit application session, interactive Studio, and a typed Autopilot executor whose visible pointer finds, grabs and places displaced workflow nodes one-by-one.
 
-The current AI Workspace Drive is deliberately deterministic and Assist-only; it proves the execution/interaction system without pretending Claude/Codex authentication is already connected. No heavyweight image/video/voice model is a hard dependency yet. Provider authentication and plan generation must build on the validated Autopilot/native boundaries rather than bypassing them.
+The current AI Workspace Drive is deliberately deterministic and Assist-only; it proves the execution/interaction system without pretending Claude/Codex authentication is already connected. No heavyweight image/video/voice model is a hard dependency yet. The background runtime owns lifecycle/resource accounting but does not launch provider workers yet; concrete WorkerSupervisor is the next native runtime layer.
+
+Provider authentication, worker processes and model execution must build on these validated boundaries rather than bypassing them.
 
 ## Public-repository warning
 
