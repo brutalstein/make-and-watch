@@ -2,7 +2,7 @@ import type { ProjectGraphSnapshot, ProjectCommand } from '@makewatch/contracts'
 
 import type { AutopilotPlan, AutopilotStep } from './autopilotTypes';
 
-const MAX_STEPS = 128;
+const MAX_STEPS = 512;
 const MAX_COMMANDS_PER_STEP = 48;
 const MAX_COORDINATE = 100_000;
 const MAX_WAIT_MS = 15_000;
