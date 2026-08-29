@@ -69,6 +69,7 @@ const completeRuntime = Object.fromEntries([
   'snapshot', 'history', 'impact', 'apply',
   'newWorkflow', 'saveWorkflow', 'listWorkflows', 'loadWorkflow', 'deleteWorkflow',
   'generationProvider', 'startSceneGeneration', 'startAudioGeneration',
+  'episodeComposition', 'startEpisodeRender',
   'generationJob', 'generationJobs',
 ].map((name) => [name, async () => ({})]));
 
@@ -81,7 +82,7 @@ assert.throws(
 
 configureMakeWatchToolRuntime(completeRuntime);
 const tools = configuredMakeWatchDynamicToolSpecs()[0].tools.map((tool) => tool.name);
-for (const required of ['project_apply', 'production_schema', 'scene_generate', 'generation_job']) {
+for (const required of ['project_apply', 'production_schema', 'scene_generate', 'episode_compose', 'episode_render', 'generation_job']) {
   assert.ok(tools.includes(required), `configured Director surface is missing ${required}`);
 }
 clearMakeWatchToolRuntime();
@@ -92,5 +93,9 @@ assert.deepEqual(configuredMakeWatchDynamicToolSpecs(), [], 'tools must disappea
 // answering generation tool calls itself.
 assert.match(bridgeServer, /GenerationGatewayClient/, 'bridge must own a generation gateway client');
 assert.match(bridgeServer, /startSceneGeneration:\s*\(\{ sceneId \}\) => generationGateway\.startScene/);
+assert.match(bridgeServer, /episodeComposition:\s*\(\{ episodeId \}\) => generationGateway\.episodeComposition/);
+assert.match(bridgeServer, /startEpisodeRender:\s*\(\{ episodeId \}\) => generationGateway\.startEpisodeRender/);
+assert.match(bridgeServer, /kind === 'render'[\s\S]*generationGateway\.renderJob/);
+assert.match(bridgeServer, /kind === 'render'[\s\S]*generationGateway\.renderJobs/);
 
 console.log('director critical path check: passed');

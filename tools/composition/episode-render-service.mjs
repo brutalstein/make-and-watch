@@ -6,6 +6,7 @@ import { cpus } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 
 import { ensureFfmpegRuntime } from '../runtime/ffmpeg-runtime-manager.mjs';
+import { buildCameraMotionFilter } from './camera-motion.mjs';
 import { compileEpisodeComposition } from './episode-composition.mjs';
 
 const MAX_PENDING_RENDERS = 3;
@@ -90,9 +91,10 @@ function scaleFilter(profile) {
   return `scale=${profile.width}:${profile.height}:force_original_aspect_ratio=decrease,pad=${profile.width}:${profile.height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1`;
 }
 
-function sceneCacheKey(manifest, scene) {
+export function sceneCacheKey(manifest, scene) {
   return sha256Text(JSON.stringify({
-    renderer: 'ffmpeg-scene-v1',
+    renderer: 'ffmpeg-scene-v2',
+    encoding: { crf: VIDEO_CRF, preset: VIDEO_PRESET, transitionSeconds: DEFAULT_TRANSITION_SECONDS },
     profile: manifest.profile,
     durationSeconds: scene.durationSeconds,
     transitionIn: scene.transitionIn,
@@ -101,6 +103,9 @@ function sceneCacheKey(manifest, scene) {
       id: shot.id,
       durationSeconds: shot.durationSeconds,
       strategy: shot.strategy,
+      camera: shot.camera,
+      motionLevel: shot.motionLevel,
+      transitionOut: shot.transitionOut,
       sha256: shot.media?.sha256 ?? '',
       mediaType: shot.media?.mediaType ?? '',
     })),
@@ -131,6 +136,86 @@ function publicJob(job) {
     error: job.error,
     artifact: job.artifact ? { ...job.artifact, absolutePath: undefined } : null,
   };
+}
+
+// Editorial transition -> ffmpeg xfade. `match-cut` is an editorial idea rather
+// than an optical effect, so it renders as a hard cut like `cut` does.
+const XFADE_TRANSITIONS = {
+  fade: 'fade',
+  dissolve: 'fade',
+  'dip-black': 'fadeblack',
+};
+const configuredTransitionSeconds = Number(process.env.MAKEWATCH_TRANSITION_SECONDS ?? 0.5);
+const DEFAULT_TRANSITION_SECONDS = Number.isFinite(configuredTransitionSeconds)
+  ? Math.max(0, Math.min(2, configuredTransitionSeconds))
+  : 0.5;
+
+/**
+ * Plan the transitions between the shots of one scene.
+ *
+ * An xfade consumes time from both sides, so a scene built from N shots joined
+ * by overlaps would finish short and every later scene would drift against the
+ * episode timeline. Each shot is therefore rendered longer than its editorial
+ * duration by exactly the overlap it gives away, which makes the assembled
+ * scene land back on the sum of the authored durations.
+ *
+ * Returns `null` when every join is a hard cut, so the caller keeps its cheaper
+ * stream-copy concat instead of re-encoding for no visible gain.
+ */
+export function planSceneTransitions(shots, fps) {
+  const frameSeconds = 1 / Math.max(1, Number(fps) || 24);
+  const plans = shots.map((shot, index) => {
+    const duration = Math.max(0.04, Number(shot.durationSeconds));
+    const isLast = index === shots.length - 1;
+    const kind = XFADE_TRANSITIONS[String(shot.transitionOut ?? 'cut')] ?? null;
+    if (isLast || !kind) return { transition: null, overlap: 0, duration, renderDuration: duration };
+
+    // An overlap may never eat more than half of either side, and must stay at
+    // least a frame long or xfade has nothing to interpolate across.
+    const next = Math.max(0.04, Number(shots[index + 1].durationSeconds));
+    const overlap = Math.min(DEFAULT_TRANSITION_SECONDS, duration / 2, next / 2);
+    if (!(overlap >= frameSeconds)) {
+      return { transition: null, overlap: 0, duration, renderDuration: duration };
+    }
+    return { transition: kind, overlap, duration, renderDuration: duration + overlap };
+  });
+
+  if (!plans.some((plan) => plan.transition)) return null;
+  return plans;
+}
+
+/**
+ * Build the xfade filter graph that joins pre-rendered shot segments.
+ *
+ * Each xfade offset is measured against the running length of everything
+ * already chained, which is what keeps a scene of many transitions in sync
+ * rather than accumulating drift.
+ */
+export function buildTransitionGraph(plans) {
+  const steps = [];
+  let label = '0:v';
+  let running = plans[0].renderDuration;
+
+  for (let index = 1; index < plans.length; index += 1) {
+    const previous = plans[index - 1];
+    const output = index === plans.length - 1 ? 'vout' : `vx${index}`;
+    if (previous.transition) {
+      const offset = Math.max(0, running - previous.overlap);
+      steps.push(
+        `[${label}][${index}:v]xfade=transition=${previous.transition}`
+        + `:duration=${previous.overlap.toFixed(6)}:offset=${offset.toFixed(6)}[${output}]`,
+      );
+      running = running + plans[index].renderDuration - previous.overlap;
+    } else {
+      // A hard cut inside an otherwise dissolved scene still has to go through
+      // the graph, so it is expressed as a zero-length concat of the two legs.
+      steps.push(`[${label}][${index}:v]concat=n=2:v=1:a=0[${output}]`);
+      running += plans[index].renderDuration;
+    }
+    label = output;
+  }
+
+  return { filter: steps.join(';'), outputLabel: label, totalSeconds: running };
 }
 
 export class EpisodeRenderService {
@@ -300,6 +385,11 @@ export class EpisodeRenderService {
   }
 
   async #renderScene(ffmpeg, manifest, scene, workDirectory, outputPath) {
+    // Authored transitions decide how the shots are joined. When every join is
+    // a hard cut the segments are stream-copied together, which is both faster
+    // and lossless; a scene that actually dissolves has to be re-encoded.
+    const transitions = planSceneTransitions(scene.shots, manifest.profile.fps);
+
     const shotSegments = [];
     for (let index = 0; index < scene.shots.length; index += 1) {
       const shot = scene.shots[index];
@@ -307,18 +397,31 @@ export class EpisodeRenderService {
       const input = projectAssetPath(this.projectRoot, shot.media);
       if (!await exists(input)) throw new Error(`Shot media file is missing: ${shot.media.relativePath}`);
       const segment = join(workDirectory, `shot-${String(index + 1).padStart(4, '0')}.mp4`);
-      await this.#renderShotSegment(ffmpeg, manifest, shot, input, segment);
+      const renderSeconds = transitions ? transitions[index].renderDuration : Number(shot.durationSeconds);
+      await this.#renderShotSegment(ffmpeg, manifest, shot, input, segment, renderSeconds);
       shotSegments.push(segment);
     }
 
-    const shotList = join(workDirectory, 'shots.ffconcat');
-    await writeFile(shotList, ['ffconcat version 1.0', ...shotSegments.map((path) => concatLine(path))].join('\n'), 'utf8');
     const visual = join(workDirectory, 'visual.mp4');
-    await runProcess(ffmpeg, [
-      '-y', '-hide_banner', '-loglevel', 'error',
-      '-f', 'concat', '-safe', '0', '-i', shotList,
-      '-c', 'copy', visual,
-    ]);
+    if (transitions) {
+      const graph = buildTransitionGraph(transitions);
+      await runProcess(ffmpeg, [
+        '-y', '-hide_banner', '-loglevel', 'error',
+        ...shotSegments.flatMap((path) => ['-i', path]),
+        '-filter_complex', graph.filter,
+        '-map', `[${graph.outputLabel}]`,
+        '-an', '-c:v', 'libx264', '-preset', VIDEO_PRESET, '-crf', VIDEO_CRF,
+        '-pix_fmt', 'yuv420p', '-movflags', '+faststart', visual,
+      ]);
+    } else {
+      const shotList = join(workDirectory, 'shots.ffconcat');
+      await writeFile(shotList, ['ffconcat version 1.0', ...shotSegments.map((path) => concatLine(path))].join('\n'), 'utf8');
+      await runProcess(ffmpeg, [
+        '-y', '-hide_banner', '-loglevel', 'error',
+        '-f', 'concat', '-safe', '0', '-i', shotList,
+        '-c', 'copy', visual,
+      ]);
+    }
 
     const audio = join(workDirectory, 'audio.m4a');
     await this.#renderSceneAudio(ffmpeg, scene, audio);
@@ -335,18 +438,28 @@ export class EpisodeRenderService {
     await rm(temporaryOutput, { force: true });
   }
 
-  async #renderShotSegment(ffmpeg, manifest, shot, input, output) {
-    const duration = Math.max(0.04, Number(shot.durationSeconds));
+  async #renderShotSegment(ffmpeg, manifest, shot, input, output, renderSeconds) {
+    const duration = Math.max(0.04, Number(renderSeconds ?? shot.durationSeconds));
     const fps = String(manifest.profile.fps);
     const threads = String(Math.max(2, Math.min(8, Math.ceil(cpus().length / 2))));
     const base = ['-y', '-hide_banner', '-loglevel', 'error'];
     const visual = `${scaleFilter(manifest.profile)},fps=${fps},format=yuv420p`;
     if (shot.media.mediaType === 'image') {
+      // The Shot's authored camera move is rendered here rather than discarded.
+      // A locked-off shot keeps the cheaper static path.
+      const move = buildCameraMotionFilter({
+        camera: shot.camera,
+        motionLevel: shot.motionLevel,
+        durationSeconds: duration,
+        fps: manifest.profile.fps,
+        width: manifest.profile.width,
+        height: manifest.profile.height,
+      });
       await runProcess(ffmpeg, [
         ...base,
         '-loop', '1', '-framerate', fps, '-i', input,
         '-t', duration.toFixed(6),
-        '-vf', visual,
+        '-vf', move ? move.filter : visual,
         '-an', '-c:v', 'libx264', '-preset', VIDEO_PRESET, '-crf', VIDEO_CRF,
         '-threads', threads, '-pix_fmt', 'yuv420p', '-movflags', '+faststart', output,
       ]);

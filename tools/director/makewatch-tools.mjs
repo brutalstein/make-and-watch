@@ -256,15 +256,36 @@ export function makeWatchDynamicToolSpecs() {
         },
       ),
       functionTool(
+        'episode_compose',
+        'Compile the render manifest for one Episode without rendering anything: the ordered Scenes and Shots, which visuals and voice lines are actually generated, the resolved timeline, and every issue that still blocks a render. Read-only. Call this before episode_render and report its issues instead of starting a render that cannot succeed.',
+        {
+          type: 'object',
+          additionalProperties: false,
+          required: ['episodeId'],
+          properties: { episodeId: { type: 'string', minLength: 1, maxLength: 160 } },
+        },
+        true,
+      ),
+      functionTool(
+        'episode_render',
+        'Assemble one Episode into a real video file from its already generated Shot visuals and audio, applying each Shot camera move and the authored transitions between Shots. Returns a queued job immediately; poll generation_job with kind render. Requires the Shots to be generated first, so check episode_compose is ready before calling this.',
+        {
+          type: 'object',
+          additionalProperties: false,
+          required: ['episodeId'],
+          properties: { episodeId: { type: 'string', minLength: 1, maxLength: 160 } },
+        },
+      ),
+      functionTool(
         'generation_job',
-        'Read one media generation job by id, including status, progress, produced artifacts and any failure reason.',
+        'Read one media generation job by id, including status, progress, produced artifacts and any failure reason. Use kind render for an episode assembly job.',
         {
           type: 'object',
           additionalProperties: false,
           required: ['jobId'],
           properties: {
             jobId: { type: 'string', minLength: 8, maxLength: 80 },
-            kind: { type: 'string', enum: ['visual', 'audio'] },
+            kind: { type: 'string', enum: ['visual', 'audio', 'render'] },
           },
         },
       ),
@@ -275,7 +296,7 @@ export function makeWatchDynamicToolSpecs() {
           type: 'object',
           additionalProperties: false,
           properties: {
-            kind: { type: 'string', enum: ['visual', 'audio'] },
+            kind: { type: 'string', enum: ['visual', 'audio', 'render'] },
             limit: { type: 'integer', minimum: 1, maximum: 50 },
           },
         },
@@ -301,6 +322,15 @@ function objectArguments(value) {
   if (value === undefined || value === null) return {};
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('tool arguments must be an object');
   return value;
+}
+
+// Job queues are kept separate per media kind, so an unrecognised kind must
+// fall back to the visual queue rather than reaching a queue that has no such id.
+const JOB_KINDS = new Set(['visual', 'audio', 'render']);
+
+function jobKind(value) {
+  const kind = String(value ?? '').trim();
+  return JOB_KINDS.has(kind) ? kind : 'visual';
 }
 
 function safeInteger(value, label, { minimum = 0, maximum = Number.MAX_SAFE_INTEGER, fallback = null } = {}) {
@@ -421,15 +451,25 @@ export async function handleMakeWatchToolCall(call, runtime) {
         audioId: boundedString(input.audioId, 'audioId', 160, { required: true }),
       });
       break;
+    case 'episode_compose':
+      result = await runtime.episodeComposition({
+        episodeId: boundedString(input.episodeId, 'episodeId', 160, { required: true }),
+      });
+      break;
+    case 'episode_render':
+      result = await runtime.startEpisodeRender({
+        episodeId: boundedString(input.episodeId, 'episodeId', 160, { required: true }),
+      });
+      break;
     case 'generation_job':
       result = await runtime.generationJob({
         jobId: boundedString(input.jobId, 'jobId', 80, { required: true }),
-        kind: input.kind === 'audio' ? 'audio' : 'visual',
+        kind: jobKind(input.kind),
       });
       break;
     case 'generation_jobs':
       result = await runtime.generationJobs({
-        kind: input.kind === 'audio' ? 'audio' : 'visual',
+        kind: jobKind(input.kind),
         limit: safeInteger(input.limit, 'limit', { minimum: 1, maximum: 50, fallback: 20 }),
       });
       break;

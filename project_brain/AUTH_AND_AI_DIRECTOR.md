@@ -128,7 +128,7 @@ Important rules:
 - a tool failure or revision conflict must be surfaced; Codex must never claim a change succeeded without a successful tool result;
 - ordinary brainstorming/discussion must not mutate the project merely because tools exist.
 
-Current project/workflow capabilities include bounded project read/query/history/impact/apply plus workflow new/save/list/load/delete. Future media capabilities must follow the same host-tool/native-authority pattern.
+Current capabilities include bounded project read/query/history/impact/apply; workflow new/save/list/load/delete; media provider inspection; Scene visual and Audio generation; Episode composition inspection/render start; and visual/audio/render job polling. Every media operation follows the same host-tool/native-authority pattern.
 
 ## Planning versus chat
 

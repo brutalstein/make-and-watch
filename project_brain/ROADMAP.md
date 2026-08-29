@@ -1,5 +1,9 @@
 # Roadmap
 
+## Status snapshot — 2026-08-30
+
+Foundation v0/v1, the core Studio workflow, WorkerSupervisor/resource admission, local image preview, local voice generation, deterministic composition and FFmpeg preview assembly are implemented. A verified 60-second four-Shot preview now exercises eased camera motion and authored transitions at 24 fps. Media v1 remains incomplete until a licensed video/I2V provider, persistent job recovery and reproducible quality benchmark harness are shipped.
+
 ## Foundation v0 — repository and contracts
 
 Exit criteria:

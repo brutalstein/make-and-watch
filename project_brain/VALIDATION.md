@@ -8,6 +8,29 @@ The repository has progressively passed isolated native validation, strict GitHu
 
 CI/product testing has repeatedly found real defects; fixes have been made without weakening strict type, warning, transaction, lock, persistence or resource invariants.
 
+## 2026-08-30 — one-minute motion composition and Director render authority
+
+The Windows/NVIDIA product machine completed a real 60-second four-Shot preview from four GPU-generated SDXL images.
+
+Measured output:
+
+- exact probed duration: `60.000000` seconds;
+- H.264 video, 1280x720, 24/1 fps;
+- AAC stereo audio stream (silence bed because the fixture had no generated Audio Assets);
+- frames at 1 s and 13 s inside the same authored moving Shot had different SHA-256 hashes;
+- visual inspection of 14.90 s / 15.25 s / 15.60 s proved distinct pre-transition, blended and post-transition frames;
+- no black frame or hard discontinuity was observed at the tested dissolve.
+
+The repository quality gate then passed at the same working head:
+
+- all bridge/Director checks, including camera motion, transition duration, cache invalidation and render-tool routing;
+- strict TypeScript contracts;
+- Studio production build (with the existing non-fatal >500 kB Vite chunk warning);
+- native configure/build;
+- 11/11 CTest tests.
+
+This proves deterministic preview motion/timing and the local assembly path. It does not claim final I2V motion synthesis or soundtrack quality; those remain later Media v1 milestones.
+
 ## 2026-08-29 — Director composer + provider lifecycle corrections
 
 Previously identified Director defects included readiness-gated typing, a full-viewport Autopilot veil stealing chat input, Windows CLI executable discovery gaps, App Server notification races and startup/process ownership issues.

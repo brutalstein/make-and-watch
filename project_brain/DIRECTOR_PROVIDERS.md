@@ -162,6 +162,8 @@ A crucial lifecycle invariant is that a rejected `turn/start` may occur before t
 
 Chat is creative context only; it cannot mutate SQLite/native project state.
 
+Configured `makewatch.*` tools also expose bounded local media operations: Scene visual generation, Audio generation, Episode composition inspection, Episode render start, and typed visual/audio/render job polling. Codex never shells out to media providers directly; the bridge delegates to the local generation gateway and native project transaction boundary.
+
 ## Planning path
 
 A provider plan must be schema-constrained and pass:

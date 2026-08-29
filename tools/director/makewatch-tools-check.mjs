@@ -34,6 +34,8 @@ const runtime = {
   generationProvider: async () => ({ visual: { provider: 'comfyui', online: true }, voice: { provider: 'chatterbox', ready: false } }),
   startSceneGeneration: async (input) => { calls.push(['scene-generate', input]); return { job: { id: 'job-abcdefgh', sceneId: input.sceneId, status: 'queued' } }; },
   startAudioGeneration: async (input) => { calls.push(['audio-generate', input]); return { job: { id: 'job-audio01', audioId: input.audioId, status: 'queued' } }; },
+  episodeComposition: async (input) => { calls.push(['episode-compose', input]); return { manifest: { episode: { id: input.episodeId }, ready: true } }; },
+  startEpisodeRender: async (input) => { calls.push(['episode-render', input]); return { job: { id: 'job-render01', episodeId: input.episodeId, status: 'queued' } }; },
   generationJob: async (input) => { calls.push(['job', input]); return { job: { id: input.jobId, status: 'running', progress: 42 } }; },
   generationJobs: async (input) => { calls.push(['jobs', input]); return { jobs: [] }; },
 };
@@ -47,7 +49,7 @@ for (const required of [
   'project_snapshot', 'project_query', 'project_history', 'project_impact', 'project_apply',
   'workflow_new', 'workflow_save', 'workflow_list', 'workflow_load', 'workflow_delete',
   'production_schema', 'generation_provider', 'scene_generate', 'audio_generate',
-  'generation_job', 'generation_jobs',
+  'episode_compose', 'episode_render', 'generation_job', 'generation_jobs',
 ]) {
   assert.equal(names.has(required), true, `missing tool ${required}`);
 }
@@ -143,6 +145,8 @@ const fullSchema = JSON.parse(await handleMakeWatchToolCall({
   namespace: 'makewatch', tool: 'production_schema', callId: 'schema-2', arguments: {},
 }, runtime));
 assert.equal(fullSchema.kinds.length, 9);
+const generationSchema = fullSchema.kinds.find((entry) => entry.kind === 'generation');
+assert.ok(generationSchema.consumes.includes('episode'), 'episode render generations must match the capability hierarchy');
 
 // Generation must be delegated, never simulated: the tool has to hand the real
 // gateway job straight back so the Director cannot invent a success.
@@ -154,6 +158,24 @@ const started = JSON.parse(await handleMakeWatchToolCall({
 }, runtime));
 assert.equal(started.job.status, 'queued');
 assert.deepEqual(calls.at(-1), ['scene-generate', { sceneId: 'scene.one' }]);
+
+const composition = JSON.parse(await handleMakeWatchToolCall({
+  namespace: 'makewatch',
+  tool: 'episode_compose',
+  callId: 'compose-1',
+  arguments: { episodeId: 'episode.one' },
+}, runtime));
+assert.equal(composition.manifest.ready, true);
+assert.deepEqual(calls.at(-1), ['episode-compose', { episodeId: 'episode.one' }]);
+
+const render = JSON.parse(await handleMakeWatchToolCall({
+  namespace: 'makewatch',
+  tool: 'episode_render',
+  callId: 'render-1',
+  arguments: { episodeId: 'episode.one' },
+}, runtime));
+assert.equal(render.job.status, 'queued');
+assert.deepEqual(calls.at(-1), ['episode-render', { episodeId: 'episode.one' }]);
 
 const polled = JSON.parse(await handleMakeWatchToolCall({
   namespace: 'makewatch',
@@ -171,6 +193,22 @@ await handleMakeWatchToolCall({
   arguments: { kind: 'audio' },
 }, runtime);
 assert.deepEqual(calls.at(-1), ['jobs', { kind: 'audio', limit: 20 }]);
+
+await handleMakeWatchToolCall({
+  namespace: 'makewatch',
+  tool: 'generation_job',
+  callId: 'render-2',
+  arguments: { jobId: 'job-render01', kind: 'render' },
+}, runtime);
+assert.deepEqual(calls.at(-1), ['job', { jobId: 'job-render01', kind: 'render' }]);
+
+await handleMakeWatchToolCall({
+  namespace: 'makewatch',
+  tool: 'generation_jobs',
+  callId: 'render-3',
+  arguments: { kind: 'render', limit: 5 },
+}, runtime);
+assert.deepEqual(calls.at(-1), ['jobs', { kind: 'render', limit: 5 }]);
 
 await assert.rejects(
   handleMakeWatchToolCall({

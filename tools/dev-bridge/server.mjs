@@ -193,12 +193,14 @@ configureMakeWatchToolRuntime({
   },
   startSceneGeneration: ({ sceneId }) => generationGateway.startScene(sceneId),
   startAudioGeneration: ({ audioId }) => generationGateway.startAudio(audioId),
-  generationJob: ({ jobId, kind }) => (kind === 'audio'
-    ? generationGateway.audioJob(jobId)
-    : generationGateway.job(jobId)),
-  generationJobs: ({ kind, limit }) => (kind === 'audio'
-    ? generationGateway.audioJobs(limit)
-    : generationGateway.jobs(limit)),
+  episodeComposition: ({ episodeId }) => generationGateway.episodeComposition(episodeId),
+  startEpisodeRender: ({ episodeId }) => generationGateway.startEpisodeRender(episodeId),
+  generationJob: ({ jobId, kind }) => (kind === 'render'
+    ? generationGateway.renderJob(jobId)
+    : kind === 'audio' ? generationGateway.audioJob(jobId) : generationGateway.job(jobId)),
+  generationJobs: ({ kind, limit }) => (kind === 'render'
+    ? generationGateway.renderJobs(limit)
+    : kind === 'audio' ? generationGateway.audioJobs(limit) : generationGateway.jobs(limit)),
 });
 
 function allowOrigin(request, response) {

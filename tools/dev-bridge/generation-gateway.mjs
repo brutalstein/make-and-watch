@@ -99,4 +99,20 @@ export class GenerationGatewayClient {
   audioJobs(limit = 20) {
     return this.request(`/audio/jobs?limit=${encodeURIComponent(String(limit))}`);
   }
+
+  episodeComposition(episodeId) {
+    return this.request(`/composition/episodes/${encodeURIComponent(episodeId)}`);
+  }
+
+  startEpisodeRender(episodeId) {
+    return this.request(`/render/episodes/${encodeURIComponent(episodeId)}`, { method: 'POST' });
+  }
+
+  renderJob(jobId) {
+    return this.request(`/render/jobs/${encodeURIComponent(jobId)}`);
+  }
+
+  renderJobs(limit = 20) {
+    return this.request(`/render/jobs?limit=${encodeURIComponent(String(limit))}`);
+  }
 }

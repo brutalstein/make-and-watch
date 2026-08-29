@@ -10,6 +10,7 @@ export function configureMakeWatchToolRuntime(nextRuntime) {
     'snapshot', 'history', 'impact', 'apply',
     'newWorkflow', 'saveWorkflow', 'listWorkflows', 'loadWorkflow', 'deleteWorkflow',
     'generationProvider', 'startSceneGeneration', 'startAudioGeneration',
+    'episodeComposition', 'startEpisodeRender',
     'generationJob', 'generationJobs',
   ];
   for (const name of required) {

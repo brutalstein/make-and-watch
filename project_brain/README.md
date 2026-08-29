@@ -31,7 +31,7 @@ Make & Watch is a local-first desktop series-production studio where a user dire
 
 ## Current stage
 
-**Runtime v1 foundation / concrete WorkerSupervisor + Director and media hardening.**
+**Media v1 preview path / Director-operated local generation and one-minute episode assembly.**
 
 Current code foundation includes:
 
@@ -51,6 +51,10 @@ Current code foundation includes:
 - POSIX provider process-group ownership and guarded provider/native bridge pipes;
 - cross-episode canonical Character continuity projection;
 - deterministic native Episode video render-plan compilation with explicit shot strategy metadata;
+- local ComfyUI storyboard generation, local Chatterbox voice generation and shared GPU admission;
+- deterministic Episode composition manifests and bounded FFmpeg preview jobs;
+- eased camera motion for generated stills, authored Shot transitions and scene-master caching;
+- typed Director tools for composition inspection, render start and visual/audio/render job polling;
 - final-readiness checks for Series/Episode/Scene/Shot hierarchy and continuity anchors;
 - Linux + Windows native CI and Studio/Director build checks.
 
@@ -58,7 +62,7 @@ Director conversation remains **non-authoritative**. Natural-language discussion
 
 Claude Code may be detected, but public-product Claude subscription routing remains disabled. Shipping Claude chat requires a supported Anthropic API/Console/cloud-provider path.
 
-No heavyweight image/video/voice model is a hard dependency yet. The next major runtime milestone is provenance-backed/resumable generated-asset storage, followed by the first lightweight image worker over `WorkerSupervisor`.
+Heavy media providers remain replaceable local adapters. The current preview path can use ComfyUI and Chatterbox when installed, while Studio and project editing remain usable without them. The next major media milestone is a licensed I2V/video worker plus persistent resume/checkpoint behavior for active media jobs.
 
 ## UX startup principle
 
@@ -74,9 +78,9 @@ start Make & Watch
 
 Provider diagnostics and manual Connect actions are recovery/control surfaces, not the happy-path workflow.
 
-## Current branch warning
+## Current release line
 
-The current implementation lives on `runtime/worker-supervisor-v1`, based on `foundation/series-engine-v0`. Read `HANDOFF.md` before pulling/testing so the correct branch is used.
+The complete product hierarchy and media-preview implementation is promoted through `main`. The latest media work was developed on `product/scene-generation-v1`; read `HANDOFF.md` and `VALIDATION.md` before extending it.
 
 ## Public-repository warning
 

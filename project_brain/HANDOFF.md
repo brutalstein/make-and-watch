@@ -2,15 +2,13 @@
 
 ## Current branch
 
-Active implementation work is on:
+The current release line is:
 
 ```text
-runtime/worker-supervisor-v1
+main
 ```
 
-It is based on `foundation/series-engine-v0`.
-
-Do not test `main` for the current product implementation; `main` is not the active application branch yet.
+The one-minute scene-generation milestone was developed on `product/scene-generation-v1` and is promoted to `main` only after the local Windows/NVIDIA and repository quality gates pass.
 
 ## Current state
 
@@ -29,6 +27,12 @@ The foundation now includes:
 - independent premium side-panel rails for Creative Control, Director Chat and Inspector;
 - cross-episode canonical character continuity compiler;
 - deterministic native episode video render-plan compiler;
+- canonical Series -> Episode -> Scene -> Shot/Audio -> Generation -> Asset capability hierarchy;
+- local ComfyUI storyboard generation with stable prompt/style/seed provenance;
+- local Chatterbox dialogue generation behind shared GPU scheduling;
+- deterministic Episode composition manifests and bounded FFmpeg preview rendering;
+- eased still-image camera moves, authored Shot dissolves/fades and cache-safe scene masters;
+- Director tools that inspect composition readiness, start Episode renders and poll render jobs;
 - public IP boundary excluding patent-sensitive adaptive synthesis selection/scheduling.
 
 ## WorkerSupervisor — current runtime behavior
@@ -168,7 +172,7 @@ Workflow is the persistent central canvas. Creative Control, Director Chat and I
 - semantic mutations still cross typed validation and native transactions;
 - built-in workspace organization is now bounded to a safe per-pass step count.
 
-## Media compiler
+## Media pipeline
 
 `SeriesContinuityCompiler` preserves canonical Character identity across episodes.
 
@@ -186,6 +190,22 @@ Workflow is the persistent central canvas. Creative Control, Director Chat and I
 
 The public compiler still requires explicit `generationStrategy`; patent-sensitive adaptive strategy selection is not in this repository.
 
+The concrete preview path now continues beyond compilation:
+
+```text
+generated Shot image/video Assets + generated Audio Assets
+ -> compileEpisodeComposition
+ -> per-Shot FFmpeg segment
+      -> authored camera intent becomes eased zoom/pan/tilt/orbit/handheld motion
+ -> per-Scene assembly
+      -> hard-cut stream copy or bounded xfade graph
+      -> timed AAC mix / silence bed
+ -> cached Scene master
+ -> Episode preview MP4 + Generation/Asset provenance nodes
+```
+
+Scene cache identity includes profile, encoder settings, source hashes, camera, motion level, Shot transition and audio timing. A creative motion/transition edit therefore cannot silently reuse an older frozen scene master.
+
 ## CI state
 
 The new CI topology is:
@@ -198,13 +218,13 @@ Studio contracts and build
 
 A post-WorkerSupervisor audit head has already completed all three jobs successfully, including Windows/MSVC native tests. Continue checking the final branch head after every remaining commit; do not infer success from an older SHA.
 
-## Next required gate — user's Windows/NVIDIA machine
+## Required release gate — user's Windows/NVIDIA machine
 
-After the final GitHub head is green, validate on the actual product machine from the repository root.
+Before promoting a media head, validate on the actual product machine from the repository root.
 
 First make sure no old Make & Watch/Vite/bridge/native process is still running. Then update the branch and run the local quality gate. Do not merge to `main` before this product-machine gate.
 
-Expected live checks:
+Expected live checks include the existing runtime/Director checks plus:
 
 1. local `verify.ps1` passes strict TypeScript, Studio build, native compile and complete CTest suite;
 2. `dev.ps1` starts the native engine, bridge, Director and Studio without orphan terminals/processes;
@@ -218,16 +238,17 @@ Expected live checks:
 10. Autopilot Esc/pause takeover remains immediate;
 11. real WorkerSupervisor CTest passes on Windows;
 12. final resource snapshot after worker shutdown has zero active workloads.
+13. a four-Shot 60-second composition probes as exactly 60 seconds at the requested FPS/resolution;
+14. frames inside a moving still Shot differ and a dissolve has distinct pre/mid/post frames;
+15. `episode_compose`, `episode_render` and render-job polling work through the configured Director runtime.
 
 ## Next engineering sequence after the Windows gate
 
-1. content-addressed generated-asset/provenance store;
-2. checkpoint/recovery policy;
-3. first lightweight local storyboard/image worker over `WorkerSupervisor`;
-4. first local voice worker;
-5. FFmpeg/native composite + episode assembly execution;
-6. one licensed local video/I2V worker behind the explicit native render plan;
-7. benchmark harness and scale gates: 30 s -> 2 min -> 5 min -> 10 min -> 20 min.
+1. persistent checkpoint/recovery for active media jobs;
+2. one licensed local video/I2V worker behind the explicit native render plan;
+3. content-addressed deduplication and garbage collection across accepted media Assets;
+4. subtitle sidecar/burn-in execution and richer music/ambience ducking;
+5. benchmark harness and scale gates: 2 min -> 5 min -> 10 min -> 20 min.
 
 ## Quality bar
 

@@ -1020,6 +1020,7 @@
     "purpose": "Immutable-ish execution/provenance record for one concrete image, video, audio or composition attempt.",
     "primaryOutput": "A traceable attempt linking provider/model/parameters to produced Assets.",
     "consumes": [
+      "episode",
       "shot",
       "scene",
       "audio",

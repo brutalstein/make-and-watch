@@ -56,6 +56,21 @@ For every valid uniquely-owned Shot it creates:
 
 The plan records project revision, output profile, duration, explicit generation strategy, continuity Character IDs, task dependencies and readiness issues.
 
+## Concrete Episode preview renderer
+
+The local generation gateway now executes a bounded FFmpeg preview path after manifest compilation:
+
+1. resolve ready Shot visual Assets and Audio Assets from native project truth;
+2. render every Shot to the Episode profile and authored duration;
+3. convert still-image `camera` + `motionLevel` intent into eased, oversampled FFmpeg motion;
+4. assemble Shot segments with hard cuts or bounded fades/dissolves while preserving authored total duration;
+5. mix timed audio cues (or a silence bed), cache each Scene master, and concatenate the Episode;
+6. hash the final MP4 and register Episode `generation` + `asset` nodes through revision-checked native commands.
+
+Render queues and retained job history are bounded. Cache keys include every render-affecting motion, transition, source, audio, profile and encoding field so edited camera intent cannot reuse a stale master.
+
+Codex can operate this path only through typed host tools: `episode_compose`, `episode_render`, `generation_job(kind=render)` and `generation_jobs(kind=render)`. Composition inspection is read-only; render and provenance writes remain inside the local gateway/native transaction boundary.
+
 ## First concrete generation path: scene storyboard preview
 
 The first real media execution path is deliberately smaller than final video synthesis. It generates one storyboard/reference frame per Shot in a Scene through a local ComfyUI server and persists the result back into the authoritative project graph as downstream `generation` nodes.
@@ -160,16 +175,19 @@ Native tests cover continuity, deterministic video planning, malformed duration/
 - generation-node provenance and Shot dependency creation;
 - artifact manifest creation;
 - no-Shot Scene rejection;
+- camera intent classification, eased oversampled motion filters and static fallbacks;
+- mixed hard-cut/xfade transition graphs with exact authored-duration compensation;
+- motion/transition-aware Scene cache invalidation;
+- Director composition/render tool schemas, runtime wiring and render-job routing;
 - syntax/type/build gates for the Studio generation UI.
 
 ## Next media-runtime milestone
 
-Storyboard generation is not yet the final movie renderer. Remaining work for full video output includes:
+The current output is a real deterministic preview/animatic renderer, not final generative video synthesis. Remaining work includes:
 
 - typed I2V/video model worker integration for `kSynthesizeShot`;
 - explicit use of `WorkerSupervisor` resource leases for final media workers;
-- video compositing/FFmpeg execution for `kCompositeShot`;
-- Episode assembly execution for `kAssembleEpisode`;
 - persistent checkpoint/resume for active media jobs;
 - richer content-addressed artifact provenance and garbage collection;
+- subtitle burn-in/sidecars and richer music/ambience mixing;
 - only after IP strategy allows it, any adaptive strategy-selection layer.
