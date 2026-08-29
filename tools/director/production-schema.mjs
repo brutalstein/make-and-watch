@@ -1,18 +1,47 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-// Single source of truth shared with packages/contracts/src/nodeCapabilities.ts.
-// The Studio properties editor and the Director tool surface must agree on the
-// semantic node model, so both read this same JSON rather than each carrying a
-// private copy that would silently drift.
+// Stable/base production semantics and additive temporal-video semantics are
+// separate files but are merged identically here and in packages/contracts.
+// This keeps Studio and Director on one effective schema without rewriting the
+// historical base table every time the temporal runtime evolves.
 const capabilitiesPath = fileURLToPath(
   new URL('../../packages/contracts/src/nodeCapabilities.json', import.meta.url),
+);
+const temporalOverlayPath = fileURLToPath(
+  new URL('../../packages/contracts/src/temporalNodeCapabilities.json', import.meta.url),
 );
 
 let cached = null;
 
+function mergeFields(baseFields, overlayFields = []) {
+  const overlays = new Map(overlayFields.map((field) => [field.key, field]));
+  const merged = baseFields.map((field) => ({ ...field, ...(overlays.get(field.key) ?? {}) }));
+  const existing = new Set(baseFields.map((field) => field.key));
+  for (const field of overlayFields) {
+    if (!existing.has(field.key)) merged.push(field);
+  }
+  return merged;
+}
+
+function mergeCapabilities(base, overlay) {
+  return Object.fromEntries(Object.entries(base).map(([kind, capability]) => {
+    const patch = overlay[kind];
+    if (!patch) return [kind, capability];
+    return [kind, {
+      ...capability,
+      invariants: [...capability.invariants, ...(patch.invariants ?? [])],
+      fields: mergeFields(capability.fields, patch.fields),
+    }];
+  }));
+}
+
 export function productionNodeCapabilities() {
-  if (!cached) cached = JSON.parse(readFileSync(capabilitiesPath, 'utf8'));
+  if (!cached) {
+    const base = JSON.parse(readFileSync(capabilitiesPath, 'utf8'));
+    const temporal = JSON.parse(readFileSync(temporalOverlayPath, 'utf8'));
+    cached = mergeCapabilities(base, temporal);
+  }
   return cached;
 }
 
@@ -47,8 +76,8 @@ export function productionSchemaDigest(kinds = null) {
     : Object.keys(capabilities);
 
   return {
-    schemaVersion: 1,
-    note: 'Metadata keys outside this schema are stored verbatim but are ignored by prompt compilation, timing and rendering.',
+    schemaVersion: 2,
+    note: 'Use only metadata keys present in this effective base+temporal schema for authored production behavior. Runtime/provenance services may attach additional system-owned metadata.',
     kinds: selected.map((kind) => {
       const capability = capabilities[kind];
       return {
