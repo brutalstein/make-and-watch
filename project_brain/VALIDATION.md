@@ -4,141 +4,91 @@ This file records what was actually executed, not what is merely expected to wor
 
 ## Foundation history
 
-The repository has progressively passed isolated native validation, strict GitHub Actions, and an earlier Windows/NVIDIA foundation gate. Validated areas include the transactional semantic graph, SQLite persistence/migration, ProjectSession commit semantics, JSONL IPC, process-boundary host smoke, native-driven Studio state, presentation-only workflow layout, durable history, exact-pointer Autopilot, ResourceManager and BackgroundJobRuntime.
-
-The earlier Windows environment observed Node v24.11.0, pnpm 10.15.0, CMake 4.1.2, Ninja 1.13.1, GNU C/C++ 15.2 through MSYS2 UCRT64, and an NVIDIA GeForce RTX 5070 Laptop GPU with 8151 MB reported by system doctor.
+The repository has progressively passed isolated native validation, strict GitHub Actions, and an earlier Windows/NVIDIA foundation gate. Validated areas include the transactional semantic graph, SQLite persistence/migration, `ProjectSession`, JSONL IPC/process smoke, native-driven Studio, durable history, exact-pointer Autopilot, ResourceManager, BackgroundJobRuntime, cross-episode continuity and deterministic video-plan compilation.
 
 CI/product testing has repeatedly found real defects; fixes have been made without weakening strict type, warning, transaction, lock, persistence or resource invariants.
 
-## 2026-08-29 — Codex App Server and multi-turn Director Chat
+## 2026-08-29 — Director composer + provider lifecycle corrections
 
-The old ad-hoc Codex execution concept is superseded by the official **Codex App Server** product-embedding path.
+Previously identified Director defects included readiness-gated typing, a full-viewport Autopilot veil stealing chat input, Windows CLI executable discovery gaps, App Server notification races and startup/process ownership issues.
 
-Code-level validated behavior includes:
+Current code-level behavior:
 
-- bridge-owned App Server process;
-- initialize/initialized handshake;
-- sanitized `account/read` state with account email stripped;
-- ChatGPT-managed login initiation without token custody;
-- read-only/no-approval Director turns;
-- schema-constrained planning;
-- bounded multi-turn chat threads;
-- explicit thread deletion;
-- finite protocol/output/turn/shutdown bounds;
-- rejection of unexpected interactive server tool requests;
-- bounded context compiler tests;
-- provider policy/status sanitization tests.
+- Director textarea remains writable before provider readiness;
+- first Send may retain a visible queued message while official authentication completes;
+- Autopilot owns only workflow geometry, not Director Chat input;
+- Windows `.exe/.cmd/.bat` provider discovery is explicit and tested;
+- Codex App Server initialization follows `initialize -> initialized` and supports bounded multi-turn chat/planning when available;
+- provider processes are bridge-owned and bounded on shutdown.
 
-The fake-process App Server regression test verifies protocol sequencing without requiring a real user account.
+## 2026-08-29 — Resilient Codex local runtime
 
-## 2026-08-29 — Disabled-composer root-cause correction
+Hands-on Windows testing showed a real Codex state where the CLI was installed/authenticated but `codex app-server` exited immediately with code 1. Blocking the whole product behind `Update required` was therefore rejected.
 
-A concrete UI defect was identified: Director Chat textarea/send readiness was gated by `chatAvailable`, so the browser disabled typing while Codex was still initializing or waiting for ChatGPT authentication.
+The supported Codex local-client runtime is now:
 
-The code path was redesigned:
+```text
+App Server available -> app_server
+App Server unavailable/broken + bounded official codex exec available -> exec_fallback
+neither safe path available -> none
+```
 
-- textarea is no longer disabled by provider readiness;
-- user may type immediately;
-- first Send can initiate the official ChatGPT flow if required;
-- unsent text remains locally queued while authentication completes;
-- queued text is submitted only after sanitized status reports chat readiness;
-- failure before submission restores text to the composer;
-- possible failure after provider submission is not blindly auto-replayed.
+Code-level checks cover:
 
-A second interaction defect was found: Autopilot's full-viewport veil and Director CSS could steal pointer input from chat. The effective lock is now scoped to workflow-canvas geometry while Director Chat stays interactive.
+- cached static Codex version/help capability probing;
+- bounded App Server failure diagnostics;
+- ChatGPT-only subscription readiness in compatibility mode;
+- API-key/other login does not masquerade as ChatGPT subscription access;
+- read-only `codex exec` compatibility turns;
+- bounded temporary final-message files removed after every run;
+- typed planning additionally requiring output-schema capability;
+- bounded in-memory compatibility transcript rather than fake provider-native thread ownership;
+- App Server mid-conversation failure may fail over to compatibility mode if the safe exec capability exists;
+- active exec/login child ownership during shutdown.
 
-## 2026-08-29 — Automatic Codex warm-up
+CI helper `codex-exec-runtime-check.mjs` validates login parsing, capability detection and transcript bounds without requiring a real user credential.
 
-`tools/dev-runner.mjs` now prepares the Director service before Studio startup:
+## 2026-08-29 — Premium toggleable Studio sidecars
 
-1. native host build;
-2. bridge/native session start;
-3. bridge health wait;
-4. `/api/director/providers` warm-up, which initializes owned Codex App Server when available;
-5. Vite Studio start.
+Code-level Studio behavior now includes independent persisted presentation states for:
 
-Warm-up failure remains non-fatal because local project operation must work without AI.
+- Creative Control;
+- Director Chat;
+- Inspector.
 
-The authenticated/non-authenticated branches still require the real Windows product-machine gate because CI cannot contain the user's ChatGPT session or validate browser popup behavior.
+Collapsed panels become narrow cinematic rails and return width to the workflow. The Autopilot interaction veil follows the active sidecar widths.
 
-## 2026-08-29 — Cinematic toggleable chat UI
+A screenshot audit found a second outer `.director-panel` scroll container that caused native Windows white scrollbar chrome/arrows. The final CSS forces Creative Control outer overflow hidden and leaves only the inner `chat-history` scroll container. WebKit scrollbar buttons are suppressed and side-panel thumbs use the Studio visual language.
 
-Code-level Studio validation now includes a separate Director Chat sidecar with:
+The legacy decorative Inspector chevron is hidden so the real toggle is the sole control.
 
-- persisted open/closed preference;
-- narrow collapsed rail;
-- animated grid-width transition;
-- connection diagnostics in a collapsible drawer;
-- readable message/composer typography;
-- queued-message state;
-- reduced-motion handling.
+## 2026-08-29 — Native media/runtime hardening
 
-Strict TypeScript and Vite production build pass with this component.
+`SeriesContinuityCompiler` validation includes one canonical Character across Episodes, revision propagation, cross-episode anchors and ambiguous Scene/Shot ownership detection.
 
-Visual quality, popup behavior and exact desktop sizing still require live screenshot/product testing.
+`VideoPipelineCompiler` tests include finite dimensions/FPS/duration handling, NaN rejection, duplicate Shot ownership, zero-shot/empty-scene readiness, approval/stale checks and finite accumulated duration. The public compiler still requires explicit `generationStrategy`; patent-sensitive adaptive strategy selection remains excluded.
 
-## 2026-08-29 — Cross-episode continuity compiler
-
-Native `SeriesContinuityCompiler` validation covers:
-
-- one canonical Character reused across multiple Episodes;
-- Character revision propagation;
-- cross-episode identity anchor detection;
-- lock/freshness/final-approval readiness;
-- stale Series readiness;
-- duplicate Shot ownership under multiple Scenes reported without duplicate continuity binding.
-
-The compiler also detects Scene ownership ambiguity across Episodes.
-
-## 2026-08-29 — Video render-plan hardening
-
-Native `VideoPipelineCompiler` has deterministic per-Shot synthesis/composite tasks plus Episode assembly.
-
-Tests now exercise hostile/malformed media inputs:
-
-- NaN FPS rejected;
-- dimensions/FPS bounded in native code;
-- `durationSeconds="nan"` is not accepted as usable duration;
-- Scene stale state blocks final readiness;
-- Episode draft state blocks final readiness;
-- missing explicit generation strategy blocks final readiness;
-- duplicate Shot ownership does not create duplicate synthesis tasks;
-- Episode with no usable Shots is not final-ready;
-- accumulated duration remains finite.
-
-The compiler still intentionally requires an explicit `generationStrategy`; patent-sensitive automatic strategy selection is not public.
-
-## 2026-08-29 — Runtime exception-safety hardening
-
-A code audit found allocation-failure windows around resource/job state transitions.
-
-Corrections:
-
-- `ResourceManager::try_acquire_scoped` stages lease identity before mutating active resource accounting;
-- `BackgroundJobRuntime::start_one_ready` stages queued request data before resource admission;
-- running-map commit happens before the queued source is erased;
-- if running-map/value construction fails, RAII lease ownership releases reserved resources while the original queued job remains available.
-
-Normal cancellation/shutdown semantics remain unchanged: a running worker's resource lease is not released until actual stop/completion confirmation.
+Resource/runtime audit also hardened allocation-failure windows around scoped resource acquisition and queued-to-running job transitions. Running resources still release only after actual stop/completion confirmation.
 
 ## Latest code-level CI
 
-GitHub Actions for code head `578c46e3fc2c226085a43977d4ced79dc8ee9125` completed successfully before the subsequent documentation-only synchronization commits.
+GitHub Actions for code head `4952b1e677ff3354ee950b87943a76dd66729a44` completed successfully.
 
-Passed jobs/steps:
+Passed:
 
-- Bridge and Director checks;
+- Bridge and Director checks, including Codex exec compatibility regression;
 - strict TypeScript;
-- Vite production build;
-- native configure;
-- warning-policy native build;
+- Studio production build;
+- native configure/build;
 - complete CTest suite.
 
-A newer final documentation head should also be checked before handoff, but documentation-only changes do not replace the required Windows live gate.
+Subsequent commits before this record are documentation-only.
+
+This proves code-level gates, not the real authenticated Windows product path.
 
 ## Required Windows product-machine gate
 
-From repository root:
+Fully stop the old runtime, then from repo root:
 
 ```powershell
 git pull
@@ -146,33 +96,30 @@ git pull
 .\dev.ps1
 ```
 
-### Startup / Director Chat
+### Codex
 
-1. terminal prints `Preparing Codex Director service…` before Studio starts;
-2. if already authenticated, it reports Codex Director ready;
-3. if auth is required, App Server is prepared without requiring the user to manually run a CLI service;
-4. collapse Chat to the narrow rail and reopen it; workflow resizes cleanly;
-5. before pressing manual Connect, click the composer and type — it must accept text immediately;
-6. press Send;
-7. if already authenticated, message sends directly;
-8. if auth is required, official ChatGPT sign-in opens from the Send gesture and the unsent message remains visibly queued;
-9. after sign-in, queued message sends automatically;
-10. send a second message and confirm same conversation continuity;
-11. Connections drawer opens/closes without displacing conversation incorrectly;
-12. start Autopilot and confirm Chat remains interactive while manual workflow geometry input remains blocked;
-13. stop dev runtime during an active turn and verify no orphan `codex app-server` process remains;
-14. restart and confirm Chat open/closed presentation preference is restored;
-15. Claude remains API-required for product by default.
+1. startup must print the real runtime: `App Server`, `CLI compatibility`, or precise unavailable/auth-required state;
+2. if the existing official Codex login is ChatGPT-based and App Server still exits, Studio must use **CLI compatibility** rather than a blocking `Update required` state;
+3. type and Send without manual service management;
+4. if authentication is required, first Send must preserve the message while official Codex login completes;
+5. a second message must preserve bounded conversation continuity;
+6. chat/planning alone must not advance native semantic project revision;
+7. stopping dev runtime during a turn must leave no owned Codex process orphaned.
 
-### Exact pointer
+### Side panels
 
-Retest node acquisition, exact hover, held node/cursor alignment, camera follow, pause and Esc takeover. Chat sidecar layout must not change pointer geometry.
+1. Creative Control, Director Chat and Inspector each collapse/reopen independently;
+2. collapsed width must return smoothly to Workflow;
+3. no panel may overlay the workflow;
+4. Creative Control must not show the old white native outer scrollbar/arrows;
+5. open/closed preferences must survive restart;
+6. Autopilot must still protect workflow geometry while Chat remains interactive.
 
-### Native media/runtime
+### Exact pointer / native runtime
 
-`verify.ps1` must keep all continuity, video compiler, resource manager and background lifecycle tests green on the Windows compiler/toolchain.
+Retest exact cursor/node alignment, focal camera follow, pause and Esc takeover after side-panel width changes. `verify.ps1` must also keep all native continuity/video/resource/background tests green on Windows.
 
-Any disabled composer, login dead-end, duplicate queued message, orphan App Server, workflow interaction leak during Autopilot, cursor drift, resource-accounting regression, media NaN acceptance or duplicate render-task identity is a failed gate.
+Any blocking `Update required` despite a safe authenticated fallback, duplicate queued message, credential leakage, orphan process, panel overlap, nested native scrollbar, pointer drift, resource-accounting regression or malformed media acceptance is a failed gate.
 
 ## Next after the live gate
 
