@@ -20,14 +20,24 @@ function statusClass(status: DirectorProviderStatus) {
 
 function statusLabel(status: DirectorProviderStatus | undefined) {
   if (!status) return 'checking…';
-  if (status.policy === 'api_required') return 'API required for product';
+  if (status.policy === 'api_required') return status.installed ? 'detected · API required' : 'API required for product';
   if (status.policy === 'experimental_local_client') {
     return status.authenticated ? 'developer preview · authenticated' : 'developer preview';
   }
-  if (!status.installed) return 'not installed';
-  if (!status.capable) return 'update required';
-  if (!status.authenticated) return 'sign-in needed';
+  if (!status.installed) return 'not detected';
+  if (!status.capable) return 'detected · update required';
+  if (!status.authenticated) return 'detected · sign-in needed';
   return status.authMethod || 'authenticated';
+}
+
+function discoveryLabel(status: DirectorProviderStatus) {
+  if (!status.executableName) return 'No executable resolved';
+  const source = status.discovery === 'known-user-bin'
+    ? 'user CLI directory'
+    : status.discovery === 'override'
+      ? 'explicit override'
+      : 'PATH';
+  return `${status.executableName} · ${source}${status.version ? ` · ${status.version}` : ''}`;
 }
 
 export function DirectorProviderDock() {
@@ -45,13 +55,14 @@ export function DirectorProviderDock() {
       setProviders(result.providers);
       const ready = result.providers.find((provider) => provider.authenticated && provider.capable);
       if (ready) setSelectedProvider(ready.provider);
+      const current = result.providers.find((provider) => provider.provider === (ready?.provider ?? selectedProvider));
       setMessage(result.activeProviderRun
         ? `${providerLabel(result.activeProviderRun)} is planning…`
-        : 'Codex uses first-party ChatGPT sign-in. Make & Watch stores no provider OAuth token.');
+        : current?.detail ?? 'Codex uses first-party ChatGPT sign-in. Make & Watch stores no provider OAuth token.');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     }
-  }, []);
+  }, [selectedProvider]);
 
   useEffect(() => {
     void refresh();
@@ -62,8 +73,17 @@ export function DirectorProviderDock() {
     [providers, selectedProvider],
   );
 
+  const selectProvider = useCallback((providerId: DirectorProviderId) => {
+    setSelectedProvider(providerId);
+    setContextStats(null);
+    setPlanSummary(null);
+    const status = providers.find((provider) => provider.provider === providerId);
+    if (status) setMessage(status.detail);
+    else setMessage(`Checking ${providerLabel(providerId)}…`);
+  }, [providers]);
+
   useEffect(() => {
-    if (selectedStatus?.policy === 'api_required') setMessage(selectedStatus.detail);
+    if (selectedStatus) setMessage(selectedStatus.detail);
   }, [selectedStatus]);
 
   const connect = useCallback(async (provider: DirectorProviderId) => {
@@ -129,7 +149,7 @@ export function DirectorProviderDock() {
         <span className="director-link__orb"><Bot size={14} /></span>
         <div>
           <strong>DIRECTOR LINK</strong>
-          <small>policy-aware auth · bounded project context</small>
+          <small>first-party detection · bounded project context</small>
         </div>
         <button className="director-link__refresh" onClick={() => void refresh()} disabled={loading} title="Refresh provider status">
           <RefreshCw size={12} className={loading ? 'spin' : ''} />
@@ -144,7 +164,7 @@ export function DirectorProviderDock() {
             <button
               key={providerId}
               className={`director-link__provider ${status ? statusClass(status) : ''} ${selectedProvider === providerId ? 'director-link__provider--selected' : ''}`}
-              onClick={() => setSelectedProvider(providerId)}
+              onClick={() => selectProvider(providerId)}
               disabled={loading}
               title={status?.detail}
             >
@@ -158,6 +178,17 @@ export function DirectorProviderDock() {
         })}
       </div>
 
+      {selectedStatus ? (
+        <div className={`director-link__diagnostic ${selectedStatus.installed ? 'director-link__diagnostic--detected' : ''}`}>
+          <div>
+            <strong>{providerLabel(selectedStatus.provider)}</strong>
+            <span>{selectedStatus.installed ? 'CLI DETECTED' : 'CLI NOT DETECTED'}</span>
+          </div>
+          <code>{discoveryLabel(selectedStatus)}</code>
+          <small>{selectedStatus.detail}</small>
+        </div>
+      ) : null}
+
       {canConnect ? (
         <button
           className="director-link__connect"
@@ -169,7 +200,7 @@ export function DirectorProviderDock() {
       ) : null}
 
       {selectedStatus?.policy === 'api_required' ? (
-        <div className="director-link__policy"><ShieldCheck size={11} /> {selectedStatus.detail}</div>
+        <div className="director-link__policy"><ShieldCheck size={11} /> Claude Code can be detected locally, but subscription routing is intentionally disabled in the public product. A supported Anthropic API connector is required.</div>
       ) : null}
 
       <div className="director-link__objective">
