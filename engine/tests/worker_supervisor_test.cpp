@@ -229,7 +229,10 @@ void test_shutdown_drains_workers_sequentially(const std::filesystem::path& fixt
   const auto snapshot = supervisor.snapshot();
   require(snapshot.active_workers == 0 && snapshot.pending_jobs == 0,
           "shutdown should leave no worker ownership behind");
-  require(snapshot.jobs.shutdown_complete(), "background runtime should complete shutdown");
+  require(snapshot.jobs.shutting_down && snapshot.jobs.queued_jobs == 0 &&
+              snapshot.jobs.running_jobs == 0 &&
+              snapshot.jobs.cancellation_requested_jobs == 0,
+          "background runtime should complete shutdown with no lifecycle records");
   require(snapshot.jobs.resources.active_workloads == 0 &&
               snapshot.jobs.resources.vram_used_mb == 0,
           "sequential shutdown must leave zero active resource leases");
