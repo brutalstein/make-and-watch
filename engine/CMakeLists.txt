@@ -35,6 +35,8 @@ add_library(makewatch_engine STATIC
   src/application/project_session.cpp
   src/director/operation_validator.cpp
   src/ipc/dispatcher.cpp
+  src/media/series_continuity.cpp
+  src/media/video_pipeline.cpp
   src/project/graph.cpp
   src/project/engine.cpp
   src/runtime/background_job_runtime.cpp
@@ -79,6 +81,12 @@ if(MAKEWATCH_BUILD_TESTS)
   add_executable(makewatch_background_job_runtime_tests tests/background_job_runtime_test.cpp)
   target_link_libraries(makewatch_background_job_runtime_tests PRIVATE makewatch::engine)
 
+  add_executable(makewatch_series_continuity_tests tests/series_continuity_test.cpp)
+  target_link_libraries(makewatch_series_continuity_tests PRIVATE makewatch::engine)
+
+  add_executable(makewatch_video_pipeline_tests tests/video_pipeline_test.cpp)
+  target_link_libraries(makewatch_video_pipeline_tests PRIVATE makewatch::engine)
+
   add_executable(makewatch_sqlite_snapshot_store_tests tests/sqlite_snapshot_store_test.cpp)
   target_link_libraries(makewatch_sqlite_snapshot_store_tests PRIVATE makewatch::engine makewatch_sqlite)
 
@@ -93,6 +101,8 @@ if(MAKEWATCH_BUILD_TESTS)
       makewatch_project_engine_tests
       makewatch_resource_manager_tests
       makewatch_background_job_runtime_tests
+      makewatch_series_continuity_tests
+      makewatch_video_pipeline_tests
       makewatch_sqlite_snapshot_store_tests
       makewatch_project_session_tests
       makewatch_ipc_dispatcher_tests)
@@ -107,6 +117,8 @@ if(MAKEWATCH_BUILD_TESTS)
   add_test(NAME makewatch_project_engine_tests COMMAND makewatch_project_engine_tests)
   add_test(NAME makewatch_resource_manager_tests COMMAND makewatch_resource_manager_tests)
   add_test(NAME makewatch_background_job_runtime_tests COMMAND makewatch_background_job_runtime_tests)
+  add_test(NAME makewatch_series_continuity_tests COMMAND makewatch_series_continuity_tests)
+  add_test(NAME makewatch_video_pipeline_tests COMMAND makewatch_video_pipeline_tests)
   add_test(NAME makewatch_sqlite_snapshot_store_tests COMMAND makewatch_sqlite_snapshot_store_tests)
   add_test(NAME makewatch_project_session_tests COMMAND makewatch_project_session_tests)
   add_test(NAME makewatch_ipc_dispatcher_tests COMMAND makewatch_ipc_dispatcher_tests)
