@@ -18,51 +18,65 @@ Make & Watch must not impersonate official clients, scrape credentials, copy tok
 The supported Codex flow is:
 
 ```text
-Studio
+runtime warm-up
  -> local bridge
  -> codex app-server
+ -> initialize / initialized
  -> account/read
- -> account/login/start(type=chatgpt) when required
+
+user Send when auth is required
+ -> account/login/start(type=chatgpt)
  -> official ChatGPT browser flow
  -> account/login/completed / account/updated
+ -> queued local message submitted
 ```
 
-Codex owns OAuth persistence and refresh. Make & Watch receives only sanitized readiness/account information and the official login URL required to continue the user-initiated browser flow. Account email and OAuth credentials are deliberately stripped before provider state can reach React.
+Codex owns OAuth persistence and refresh. Make & Watch receives only sanitized readiness/account information plus the official login URL required for the user-initiated browser flow. Account email and OAuth credentials are deliberately stripped before provider state can reach React.
 
-The bridge keeps one owned App Server process and shuts it down with the bridge. Director turns use read-only, no-approval execution and schema-constrained output.
+The bridge owns one App Server process and shuts it down with the bridge.
+
+## User-gesture and queued-message rule
+
+Browser authentication is initiated from an explicit user action. Normal UX uses the first **Send** gesture when sign-in is still required; manual Connect remains a recovery/control action.
+
+The composer itself is never credential-gated. The user may type before account readiness.
+
+A message waiting for authentication is held locally and visibly marked queued. It is submitted only after sanitized provider status reports chat readiness. If connection fails before submission, the text is restored to the composer.
+
+This avoids both a dead disabled composer and silent message loss.
 
 ## Claude policy
 
-Claude Code subscription login for ordinary Claude Code use is distinct from a supported third-party product authentication path. Anthropic's current legal/compliance guidance requires products/services to use supported API/Console/cloud-provider authentication rather than route Free/Pro/Max credentials on users' behalf.
+Claude Code subscription login for ordinary Claude Code use is distinct from a supported third-party product authentication path.
 
 Therefore:
 
-- a detected Claude CLI is visible but not misleadingly shown as a shipping OAuth provider;
-- public product status is `api_required`;
+- a detected Claude CLI may be visible;
+- public product status remains `api_required`;
 - Claude Code developer preview exists only behind `MAKEWATCH_ENABLE_EXPERIMENTAL_CLAUDE_CODE=1`;
-- production Claude support will use an OS-secret-backed Anthropic API/enterprise provider unless official policy changes.
+- shipping Claude chat/planning must use a supported Anthropic API/Console/cloud-provider path;
+- Make & Watch must not route Free/Pro/Max credentials through the product on the user's behalf.
 
-## Studio flow
+## Studio/provider flow
 
-1. `GET /api/director/providers` returns sanitized typed readiness and policy state.
-2. Codex readiness is split into CLI / App Server / account / planning stages.
-3. `POST /api/director/connect` asks App Server to start ChatGPT-managed auth and returns the official auth URL; Make & Watch never receives the OAuth token.
-4. Studio opens that URL from a user click and polls sanitized provider state until planning readiness becomes true.
-5. `POST /api/director/plan` compiles bounded project-specific context and runs one policy-permitted provider.
-6. Output must match `AutopilotPlan` schema and then pass live revision/Autopilot validation.
-7. Current provider plans remain Assist-only and cannot mutate semantic project state.
+1. dev-runner starts the native engine and bridge;
+2. before Studio starts, it warms provider status so Codex App Server initializes when available;
+3. Studio receives sanitized typed readiness;
+4. user can type immediately regardless of account state;
+5. `POST /api/director/chat` handles bounded multi-turn conversation after readiness;
+6. `POST /api/director/connect` is used automatically by first Send when needed or manually from Connections;
+7. `POST /api/director/plan` remains a separate schema-constrained Assist planning surface;
+8. chat/planning output cannot mutate semantic project state directly.
 
 ## Project specialization versus fine-tuning
 
 Codex/Claude are not retrained for this repository. Make-&-Watch specialization is provided by:
 
 - tiny provider-native runtime instructions;
-- `project_brain/AI_DIRECTOR_CONTEXT.md` policy hash;
-- bounded live graph context;
-- typed output schema;
-- native revision/lock/capability validation.
-
-This is cheaper and more deterministic than repeatedly sending the whole repository or maintaining hidden duplicate project memory.
+- bounded native graph context;
+- provider-native conversation thread state for follow-up chat;
+- schema-constrained planning;
+- native revision/lock/capability validation before any later execution.
 
 ## Credential storage
 
@@ -72,16 +86,28 @@ Future direct Anthropic/OpenAI API or enterprise credentials must use an OS-back
 
 ## Failure behavior
 
-- Missing CLI: report missing; never fake connection.
-- CLI without working App Server: report update/integration issue explicitly.
-- App Server ready but no ChatGPT account: expose first-party connect action.
+- Missing CLI: report missing; local project operation remains available.
+- CLI without working App Server: report exact integration issue; do not fake readiness.
+- App Server ready but no ChatGPT account: composer stays writable; first Send can initiate official sign-in.
+- Popup blocked: preserve queued text and expose the official auth URL as a recovery link.
 - Login pending: preserve one owned login flow and poll boundedly.
-- Policy-disallowed provider: show the supported API requirement and reject product login/inference.
-- Concurrent Director inference: reject the second run.
+- Connection failure before chat submission: restore text to composer.
+- Possible failure after chat submission: do not blindly auto-replay and risk a duplicate turn.
+- Policy-disallowed provider: explain supported API requirement.
+- Concurrent Director inference: reject overlap.
 - Turn timeout: interrupt the owned turn.
-- Bridge shutdown: interrupt active turn, close App Server, bounded-wait, then terminate if necessary.
-- Invalid schema/stale revision: reject before native mutation.
+- Bridge shutdown: interrupt active work, close owned chat threads, close App Server, bounded-wait, then terminate if necessary.
+- Invalid plan schema/stale revision: reject before native mutation.
 
-## Future provider modes
+## Authority boundary
 
-Guided/Director semantic execution will reuse this same provider/validator boundary only after explicit preview/capability/approval UX is complete. Native C++ `ProjectSession` remains authoritative regardless of provider.
+Conversation history is not a project database.
+
+```text
+chat = creative context
+plan = typed proposal
+ProjectSession = authoritative semantic commit boundary
+SQLite/journal = durable project truth/history
+```
+
+Guided/Director semantic execution must continue to reuse this boundary. Native C++ `ProjectSession` remains authoritative regardless of provider.
