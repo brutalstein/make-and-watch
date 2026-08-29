@@ -153,9 +153,34 @@ export function providerLaunchSummary(executable) {
     : `${executable.name} direct (${executable.discovery})`;
 }
 
+/**
+ * Child-process pipe errors (notably Windows EPIPE when a CLI closes stdin while
+ * the parent still has an in-flight write) are EventEmitter `error` events. If a
+ * stream has no listener Node terminates the entire bridge process. Provider
+ * failure must be isolated from the native project bridge, so every owned stdio
+ * pipe gets a passive guard. Higher layers still observe child exit/request
+ * timeout and decide whether to retry/fail over.
+ */
+export function guardProviderStdio(child) {
+  if (!child) return child;
+  for (const [name, stream] of [['stdin', child.stdin], ['stdout', child.stdout], ['stderr', child.stderr]]) {
+    if (!stream || typeof stream.on !== 'function') continue;
+    stream.on('error', (error) => {
+      child.makewatchLastPipeError = {
+        stream: name,
+        code: typeof error?.code === 'string' ? error.code : '',
+        message: String(error?.message ?? error).slice(0, 300),
+      };
+    });
+  }
+  return child;
+}
+
 export function spawnProviderExecutable(executable, args, options = {}) {
   if (!executable) throw new Error('provider executable is not resolved');
-  if (!executable.commandShellRequired) return spawn(executable.path, args, options);
+  if (!executable.commandShellRequired) {
+    return guardProviderStdio(spawn(executable.path, args, options));
+  }
 
   const env = options.env ?? process.env;
   const comspec = env.ComSpec ?? env.COMSPEC ?? process.env.ComSpec ?? process.env.COMSPEC ?? 'cmd.exe';
@@ -167,8 +192,8 @@ export function spawnProviderExecutable(executable, args, options = {}) {
   // The command is safe to pass verbatim because every argument is internally
   // generated and quoteCmdArgument escapes cmd expansion characters; user text is
   // always supplied over stdin, never interpolated into this command line.
-  return spawn(comspec, ['/d', '/s', '/c', command], {
+  return guardProviderStdio(spawn(comspec, ['/d', '/s', '/c', command], {
     ...options,
     windowsVerbatimArguments: true,
-  });
+  }));
 }
