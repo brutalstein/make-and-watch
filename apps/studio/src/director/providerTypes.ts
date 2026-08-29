@@ -11,10 +11,13 @@ export type DirectorProviderIntegration =
   | 'anthropic_api_required'
   | 'claude_code_preview';
 
+export type DirectorRuntimeMode = 'app_server' | 'exec_fallback' | 'none';
+
 export interface DirectorProviderStatus {
   provider: DirectorProviderId;
   policy: DirectorProviderPolicy;
   integration: DirectorProviderIntegration;
+  runtimeMode: DirectorRuntimeMode;
   installed: boolean;
   authenticated: boolean;
   authMethod: string;
