@@ -6,11 +6,18 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const stableContextPath = resolve(root, 'project_brain', 'AI_DIRECTOR_CONTEXT.md');
 
-const MAX_CONTEXT_CHARS = 24_000;
-const MAX_OBJECTIVE_CHARS = 4_000;
-const MAX_NODES = 96;
-const MAX_DEPENDENCIES = 160;
-const MAX_METADATA_VALUE_CHARS = 160;
+const MAX_CONTEXT_CHARS = 16_000;
+const MAX_OBJECTIVE_CHARS = 3_000;
+const MAX_NODES = 72;
+const MAX_DEPENDENCIES = 120;
+const MAX_METADATA_VALUE_CHARS = 120;
+
+const CORE_RUNTIME_DIRECTIVE = [
+  'You are the Make & Watch creative Director, not a repository coding agent.',
+  'Native C++ project truth, locks, revisions, dependency invalidation and resource admission are authoritative.',
+  'Return only the smallest sufficient AutopilotPlan v1 JSON. Never edit files, run commands, bypass native policy, or expose hidden reasoning.',
+  'Preserve locked/user-approved continuity. Prefer minimal incremental scope and explicit impact/checkpoints for risky semantic edits.',
+].join(' ');
 
 const USEFUL_METADATA_KEYS = new Set([
   'index',
@@ -25,7 +32,7 @@ const USEFUL_METADATA_KEYS = new Set([
   'mode',
 ]);
 
-let stableContextPromise = null;
+let policyHashPromise = null;
 
 function boundedText(value, maximum) {
   const text = String(value ?? '').trim();
@@ -41,11 +48,12 @@ function stableStringify(value) {
   return JSON.stringify(value);
 }
 
-async function stableContext() {
-  if (!stableContextPromise) {
-    stableContextPromise = readFile(stableContextPath, 'utf8').then((text) => text.trim());
+async function policyHash() {
+  if (!policyHashPromise) {
+    policyHashPromise = readFile(stableContextPath, 'utf8').then((text) =>
+      createHash('sha256').update(text).digest('hex').slice(0, 16));
   }
-  return stableContextPromise;
+  return policyHashPromise;
 }
 
 function compactMetadata(metadata) {
@@ -66,9 +74,9 @@ function compactNodes(snapshot, selectedId) {
     : nodes;
 
   return ordered.slice(0, MAX_NODES).map((node) => ({
-    id: boundedText(node.id, 180),
+    id: boundedText(node.id, 160),
     kind: node.kind,
-    title: boundedText(node.title, 180),
+    title: boundedText(node.title, 140),
     revision: node.revision,
     approval: node.approval,
     locked: Boolean(node.locked),
@@ -77,12 +85,15 @@ function compactNodes(snapshot, selectedId) {
   }));
 }
 
-function compactDependencies(snapshot) {
+function compactDependencies(snapshot, includedIds) {
   const dependencies = Array.isArray(snapshot?.dependencies) ? snapshot.dependencies : [];
-  return dependencies.slice(0, MAX_DEPENDENCIES).map((edge) => ({
-    dependent: boundedText(edge.dependent, 180),
-    dependency: boundedText(edge.dependency, 180),
-  }));
+  return dependencies
+    .filter((edge) => includedIds.has(edge.dependent) && includedIds.has(edge.dependency))
+    .slice(0, MAX_DEPENDENCIES)
+    .map((edge) => ({
+      dependent: boundedText(edge.dependent, 160),
+      dependency: boundedText(edge.dependency, 160),
+    }));
 }
 
 function compactPositions(positions, allowedIds) {
@@ -119,51 +130,48 @@ export async function buildDirectorContextPack({
 
   const nodes = compactNodes(snapshot, selectedId);
   const allowedIds = new Set(nodes.map((node) => node.id));
+  const dependencies = compactDependencies(snapshot, allowedIds);
   const dynamic = {
+    policyHash: await policyHash(),
     provider,
     mode,
     expectedProjectRevision: snapshot.projectRevision,
     selectedId: selectedId && allowedIds.has(selectedId) ? selectedId : null,
     objective: boundedText(objective, MAX_OBJECTIVE_CHARS),
     project: {
-      nodeCount: Array.isArray(snapshot.nodes) ? snapshot.nodes.length : 0,
-      dependencyCount: Array.isArray(snapshot.dependencies) ? snapshot.dependencies.length : 0,
+      totalNodeCount: Array.isArray(snapshot.nodes) ? snapshot.nodes.length : 0,
+      totalDependencyCount: Array.isArray(snapshot.dependencies) ? snapshot.dependencies.length : 0,
       nodes,
-      dependencies: compactDependencies(snapshot),
+      dependencies,
       workspacePositions: compactPositions(workspacePositions, allowedIds),
     },
   };
 
-  const stable = await stableContext();
   const dynamicJson = stableStringify(dynamic);
   let prompt = [
     'MAKEWATCH DIRECTOR MODE',
+    CORE_RUNTIME_DIRECTIVE,
     '',
-    stable,
-    '',
-    '## Live bounded context',
+    'The official local client already loaded repository-scoped AGENTS.md/CLAUDE.md instructions. Do not re-read or restate them.',
+    'Live bounded project context:',
     dynamicJson,
     '',
-    '## Required response',
-    'Return exactly one AutopilotPlan v1 JSON object. No Markdown fences, commentary, or hidden reasoning.',
-    `Set provider to ${provider} and expectedProjectRevision to ${snapshot.projectRevision}.`,
-    'Use the smallest sufficient ordered step list. The Studio validator and native engine remain authoritative.',
+    'Return exactly one AutopilotPlan v1 JSON object. No Markdown fences, commentary, or reasoning transcript.',
+    `Set provider=${provider}; expectedProjectRevision=${snapshot.projectRevision}.`,
   ].join('\n');
 
   if (prompt.length > MAX_CONTEXT_CHARS) {
     const overflow = prompt.length - MAX_CONTEXT_CHARS;
-    const reducedDynamic = dynamicJson.slice(0, Math.max(0, dynamicJson.length - overflow - 80));
+    const reducedDynamic = dynamicJson.slice(0, Math.max(0, dynamicJson.length - overflow - 96));
     prompt = [
       'MAKEWATCH DIRECTOR MODE',
+      CORE_RUNTIME_DIRECTIVE,
       '',
-      stable,
+      'Live bounded project context (tail omitted by deterministic context compiler):',
+      `${reducedDynamic}\n[context-budget-cut]`,
       '',
-      '## Live bounded context',
-      `${reducedDynamic}\n[context truncated by bounded compiler]`,
-      '',
-      '## Required response',
-      'Return exactly one AutopilotPlan v1 JSON object. No Markdown fences or commentary.',
-      `Set provider to ${provider} and expectedProjectRevision to ${snapshot.projectRevision}.`,
+      'Return exactly one AutopilotPlan v1 JSON object only.',
+      `Set provider=${provider}; expectedProjectRevision=${snapshot.projectRevision}.`,
     ].join('\n');
   }
 
@@ -174,6 +182,6 @@ export async function buildDirectorContextPack({
     chars: prompt.length,
     estimatedTokens: Math.ceil(prompt.length / 4),
     nodeCountIncluded: nodes.length,
-    dependencyCountIncluded: Math.min(snapshot.dependencies.length, MAX_DEPENDENCIES),
+    dependencyCountIncluded: dependencies.length,
   };
 }
