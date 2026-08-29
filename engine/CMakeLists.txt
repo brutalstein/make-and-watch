@@ -31,6 +31,12 @@ else()
   target_compile_options(makewatch_sqlite PRIVATE -w)
 endif()
 
+if(WIN32)
+  set(MAKEWATCH_WORKER_PROCESS_SOURCE src/runtime/worker_process_win.cpp)
+else()
+  set(MAKEWATCH_WORKER_PROCESS_SOURCE src/runtime/worker_process_posix.cpp)
+endif()
+
 add_library(makewatch_engine STATIC
   src/application/project_session.cpp
   src/director/operation_validator.cpp
@@ -41,6 +47,11 @@ add_library(makewatch_engine STATIC
   src/project/engine.cpp
   src/runtime/background_job_runtime.cpp
   src/runtime/resource_manager.cpp
+  src/runtime/worker_protocol.cpp
+  src/runtime/worker_supervisor.cpp
+  src/runtime/worker_supervisor_api.cpp
+  src/runtime/worker_supervisor_lifecycle.cpp
+  ${MAKEWATCH_WORKER_PROCESS_SOURCE}
   src/persistence/sqlite_snapshot_store.cpp
 )
 
@@ -81,6 +92,12 @@ if(MAKEWATCH_BUILD_TESTS)
   add_executable(makewatch_background_job_runtime_tests tests/background_job_runtime_test.cpp)
   target_link_libraries(makewatch_background_job_runtime_tests PRIVATE makewatch::engine)
 
+  add_executable(makewatch_worker_fixture tests/worker_fixture.cpp)
+
+  add_executable(makewatch_worker_supervisor_tests tests/worker_supervisor_test.cpp)
+  target_link_libraries(makewatch_worker_supervisor_tests PRIVATE makewatch::engine)
+  add_dependencies(makewatch_worker_supervisor_tests makewatch_worker_fixture)
+
   add_executable(makewatch_series_continuity_tests tests/series_continuity_test.cpp)
   target_link_libraries(makewatch_series_continuity_tests PRIVATE makewatch::engine)
 
@@ -101,6 +118,8 @@ if(MAKEWATCH_BUILD_TESTS)
       makewatch_project_engine_tests
       makewatch_resource_manager_tests
       makewatch_background_job_runtime_tests
+      makewatch_worker_fixture
+      makewatch_worker_supervisor_tests
       makewatch_series_continuity_tests
       makewatch_video_pipeline_tests
       makewatch_sqlite_snapshot_store_tests
@@ -117,6 +136,10 @@ if(MAKEWATCH_BUILD_TESTS)
   add_test(NAME makewatch_project_engine_tests COMMAND makewatch_project_engine_tests)
   add_test(NAME makewatch_resource_manager_tests COMMAND makewatch_resource_manager_tests)
   add_test(NAME makewatch_background_job_runtime_tests COMMAND makewatch_background_job_runtime_tests)
+  add_test(
+    NAME makewatch_worker_supervisor_tests
+    COMMAND makewatch_worker_supervisor_tests $<TARGET_FILE:makewatch_worker_fixture>
+  )
   add_test(NAME makewatch_series_continuity_tests COMMAND makewatch_series_continuity_tests)
   add_test(NAME makewatch_video_pipeline_tests COMMAND makewatch_video_pipeline_tests)
   add_test(NAME makewatch_sqlite_snapshot_store_tests COMMAND makewatch_sqlite_snapshot_store_tests)
