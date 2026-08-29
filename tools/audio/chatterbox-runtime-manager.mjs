@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { access, mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
@@ -59,8 +59,18 @@ function selectPython() {
 }
 
 function runChecked(command, args) {
-  const result = spawnSync(command, args, { stdio: 'inherit', windowsHide: true, env: { ...process.env, PYTHONUTF8: '1' } });
-  if (result.status !== 0) throw new Error(`${basename(command)} exited with code ${result.status ?? 'unknown'}`);
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(command, args, {
+      stdio: 'inherit',
+      windowsHide: true,
+      env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' },
+    });
+    child.once('error', reject);
+    child.once('exit', (code) => {
+      if (code === 0) resolvePromise();
+      else reject(new Error(`${basename(command)} exited with code ${code ?? 'unknown'}`));
+    });
+  });
 }
 
 export async function chatterboxRuntimeStatus() {
@@ -78,25 +88,32 @@ export async function chatterboxRuntimeStatus() {
   };
 }
 
+let installPromise = null;
+
 export async function ensureChatterboxRuntime() {
   const current = await chatterboxRuntimeStatus();
   if (current.installed && current.python) return current;
+  if (installPromise) return installPromise;
 
-  const python = selectPython();
-  if (!python) {
-    throw new Error('Chatterbox automatic setup requires Python 3.11. Install Python 3.11 once; Make & Watch manages everything else.');
-  }
-  const paths = chatterboxRuntimePaths();
-  await mkdir(paths.base, { recursive: true });
-  if (!await exists(paths.python)) {
-    console.log(`  [audio] Creating isolated Chatterbox runtime · ${paths.venv}`);
-    runChecked(python.command, [...python.prefix, '-m', 'venv', paths.venv]);
-  }
-  console.log('  [audio] Installing Chatterbox Multilingual voice runtime…');
-  runChecked(paths.python, ['-m', 'pip', 'install', '--upgrade', 'pip']);
-  runChecked(paths.python, ['-m', 'pip', 'install', 'chatterbox-tts']);
+  installPromise = (async () => {
+    const python = selectPython();
+    if (!python) {
+      throw new Error('Chatterbox automatic setup requires Python 3.11. Install Python 3.11 once; Make & Watch manages everything else.');
+    }
+    const paths = chatterboxRuntimePaths();
+    await mkdir(paths.base, { recursive: true });
+    if (!await exists(paths.python)) {
+      console.log(`  [audio] Creating isolated Chatterbox runtime · ${paths.venv}`);
+      await runChecked(python.command, [...python.prefix, '-m', 'venv', paths.venv]);
+    }
+    console.log('  [audio] Installing Chatterbox Multilingual voice runtime…');
+    await runChecked(paths.python, ['-m', 'pip', 'install', '--upgrade', 'pip']);
+    await runChecked(paths.python, ['-m', 'pip', 'install', 'chatterbox-tts']);
 
-  const ready = await chatterboxRuntimeStatus();
-  if (!ready.installed || !ready.python) throw new Error(`Chatterbox runtime installation failed${ready.detail ? `: ${ready.detail}` : ''}`);
-  return ready;
+    const ready = await chatterboxRuntimeStatus();
+    if (!ready.installed || !ready.python) throw new Error(`Chatterbox runtime installation failed${ready.detail ? `: ${ready.detail}` : ''}`);
+    return ready;
+  })().finally(() => { installPromise = null; });
+
+  return installPromise;
 }
