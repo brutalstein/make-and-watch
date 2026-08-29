@@ -12,6 +12,7 @@ const directorRuntimeRoot = resolve(root, 'tools', 'director', 'runtime');
 const planSchemaPath = resolve(root, 'schemas', 'v1', 'director-autopilot-plan.schema.json');
 
 const REQUEST_TIMEOUT_MS = 8_000;
+const TOOL_TIMEOUT_MS = 20_000;
 const PLAN_TIMEOUT_MS = 120_000;
 const INTERRUPT_GRACE_MS = 2_500;
 const SHUTDOWN_GRACE_MS = 2_000;
@@ -111,12 +112,31 @@ function waitForExit(child, timeoutMs) {
   });
 }
 
+function withTimeout(promise, timeoutMs, message) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const timer = setTimeout(() => rejectPromise(new Error(message)), timeoutMs);
+    timer.unref();
+    Promise.resolve(promise).then(
+      (value) => {
+        clearTimeout(timer);
+        resolvePromise(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        rejectPromise(error);
+      },
+    );
+  });
+}
+
 export class CodexAppServerClient extends EventEmitter {
-  constructor({ executable, processFactory = null } = {}) {
+  constructor({ executable, processFactory = null, dynamicTools = [], dynamicToolHandler = null } = {}) {
     super();
     if (!executable) throw new Error('Codex app-server requires a resolved executable');
     this.executable = executable;
     this.processFactory = processFactory;
+    this.dynamicTools = Array.isArray(dynamicTools) ? dynamicTools : [];
+    this.dynamicToolHandler = typeof dynamicToolHandler === 'function' ? dynamicToolHandler : null;
     this.child = null;
     this.reader = null;
     this.readyPromise = null;
@@ -143,6 +163,10 @@ export class CodexAppServerClient extends EventEmitter {
     return this.permissionMode;
   }
 
+  dynamicToolSpecs() {
+    return this.dynamicToolHandler ? this.dynamicTools : [];
+  }
+
   readOnlyThreadSecurityParams() {
     if (this.permissionMode === 'profile' && this.permissionProfileId) {
       return { permissions: this.permissionProfileId };
@@ -154,8 +178,6 @@ export class CodexAppServerClient extends EventEmitter {
     if (this.permissionMode === 'profile' && this.permissionProfileId) {
       return { permissions: this.permissionProfileId };
     }
-    // Older App Server builds support the legacy policy. Do not send the old
-    // restricted `access` object: newer builds explicitly reject that shape.
     return { sandboxPolicy: { type: LEGACY_TURN_READ_ONLY_SANDBOX } };
   }
 
@@ -295,7 +317,7 @@ export class CodexAppServerClient extends EventEmitter {
     }
 
     if (message && typeof message.method === 'string' && Object.prototype.hasOwnProperty.call(message, 'id')) {
-      this.#handleServerRequest(message);
+      void this.#handleServerRequest(message);
       return;
     }
     if (message && Object.prototype.hasOwnProperty.call(message, 'id')) {
@@ -310,19 +332,62 @@ export class CodexAppServerClient extends EventEmitter {
     if (message && typeof message.method === 'string') this.#handleNotification(message.method, message.params ?? {});
   }
 
-  #handleServerRequest(message) {
+  async #handleServerRequest(message) {
+    if (message.method !== 'item/tool/call' || !this.dynamicToolHandler) {
+      try {
+        this.#write({
+          id: message.id,
+          error: {
+            code: -32601,
+            message: 'Make & Watch Director does not permit this Codex server request',
+          },
+        });
+      } catch {
+        // Connection teardown owns failure propagation.
+      }
+      this.emit('protocol-warning', { method: message.method });
+      return;
+    }
+
+    const params = message.params ?? {};
+    const call = {
+      threadId: typeof params.threadId === 'string' ? params.threadId : '',
+      turnId: typeof params.turnId === 'string' ? params.turnId : '',
+      callId: typeof params.callId === 'string' ? params.callId : `rpc-${message.id}`,
+      namespace: typeof params.namespace === 'string' ? params.namespace : '',
+      tool: typeof params.tool === 'string' ? params.tool : '',
+      arguments: params.arguments ?? {},
+    };
+
     try {
+      const text = await withTimeout(
+        this.dynamicToolHandler(call),
+        TOOL_TIMEOUT_MS,
+        `Codex dynamic tool timed out after ${TOOL_TIMEOUT_MS} ms`,
+      );
       this.#write({
         id: message.id,
-        error: {
-          code: -32601,
-          message: 'Make & Watch Director does not permit interactive Codex tool requests',
+        result: {
+          contentItems: [{ type: 'inputText', text: String(text ?? '') }],
+          success: true,
         },
       });
-    } catch {
-      // Connection teardown owns failure propagation.
+      this.emit('tool/completed', { ...call, success: true });
+    } catch (error) {
+      const text = safeMessage(error instanceof Error ? error.message : error, 'Make & Watch tool failed');
+      try {
+        this.#write({
+          id: message.id,
+          result: {
+            contentItems: [{ type: 'inputText', text: `Make & Watch tool failed: ${text}` }],
+            success: false,
+          },
+        });
+      } catch {
+        // Connection teardown owns failure propagation.
+      }
+      this.emit('tool/completed', { ...call, success: false, error: text });
     }
-    this.emit('protocol-warning', { method: message.method });
   }
 
   #handleNotification(method, params) {
@@ -441,8 +506,6 @@ export class CodexAppServerClient extends EventEmitter {
       resolveCompletion = resolvePromise;
       rejectCompletion = rejectPromise;
     });
-    // A turn/start request can fail before the completion promise is awaited. Keep
-    // an observer attached so cleanup rejection can never become process-fatal.
     void completion.catch(() => undefined);
     const turn = {
       threadId,
