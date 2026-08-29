@@ -14,6 +14,7 @@ const MAX_PLAN_PROCESS_BYTES = 2 * 1024 * 1024;
 
 let activeRun = null;
 let activePlanChild = null;
+let claudeSchemaPromise = null;
 
 function providerCommand(provider) {
   if (provider === 'codex') return 'codex';
@@ -108,8 +109,7 @@ function runBounded(command, args, {
       finishResolve({ code: code ?? -1, signal, stdout: stdoutText, stderr: stderrText });
     });
 
-    if (input) child.stdin.end(input);
-    else child.stdin.end();
+    child.stdin.end(input || undefined);
   });
 }
 
@@ -124,7 +124,7 @@ async function helpText(command, args) {
 
 function safeStatusDetail({ installed, authenticated, capable }) {
   if (!installed) return 'Official client not found on PATH';
-  if (!capable) return 'Official client is installed but must be updated for the required automation flags';
+  if (!capable) return 'Official client is installed but must be updated for required safe automation flags';
   if (!authenticated) return 'Official client is installed and awaiting first-party sign-in';
   return 'Official client is authenticated and ready for Make & Watch Director planning';
 }
@@ -185,7 +185,9 @@ async function claudeStatus() {
   const cliHelp = await helpText(command, ['--help']);
   const capable = cliHelp.includes('--output-format')
     && cliHelp.includes('--max-turns')
-    && cliHelp.includes('--permission-mode');
+    && cliHelp.includes('--permission-mode')
+    && cliHelp.includes('--json-schema')
+    && cliHelp.includes('--tools');
 
   let authenticated = false;
   let authMethod = '';
@@ -238,14 +240,43 @@ export async function launchProviderLogin(provider) {
   };
 }
 
-function parsePlanText(text) {
-  const trimmed = String(text ?? '').trim();
-  if (!trimmed) throw new Error('Director provider returned an empty result');
-  const parsed = JSON.parse(trimmed);
+function parsePlanObject(parsed) {
   if (!parsed || typeof parsed !== 'object' || parsed.schemaVersion !== 1 || !Array.isArray(parsed.steps)) {
     throw new Error('Director provider result is not an AutopilotPlan v1 object');
   }
   return parsed;
+}
+
+function parsePlanText(text) {
+  const trimmed = String(text ?? '').trim();
+  if (!trimmed) throw new Error('Director provider returned an empty result');
+  return parsePlanObject(JSON.parse(trimmed));
+}
+
+function toClaudeDraft7Schema(value) {
+  if (Array.isArray(value)) return value.map(toClaudeDraft7Schema);
+  if (!value || typeof value !== 'object') return value;
+  const converted = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (key === '$schema' || key === '$id') continue;
+    const nextKey = key === '$defs' ? 'definitions' : key;
+    if (key === '$ref' && typeof child === 'string') {
+      converted[nextKey] = child.replace('#/$defs/', '#/definitions/');
+    } else {
+      converted[nextKey] = toClaudeDraft7Schema(child);
+    }
+  }
+  return converted;
+}
+
+async function claudeSchemaString() {
+  if (!claudeSchemaPromise) {
+    claudeSchemaPromise = readFile(planSchemaPath, 'utf8').then((text) => {
+      const parsed = JSON.parse(text);
+      return JSON.stringify(toClaudeDraft7Schema(parsed));
+    });
+  }
+  return claudeSchemaPromise;
 }
 
 async function invokeCodex(prompt) {
@@ -270,19 +301,22 @@ async function invokeCodex(prompt) {
     if (result.code !== 0) {
       throw new Error(result.stderr || result.stdout || `Codex exited with code ${result.code}`);
     }
-    const final = await readFile(outputPath, 'utf8');
-    return parsePlanText(final);
+    return parsePlanText(await readFile(outputPath, 'utf8'));
   } finally {
     await rm(temp, { recursive: true, force: true });
   }
 }
 
 async function invokeClaude(prompt) {
+  const schema = await claudeSchemaString();
   const result = await runBounded('claude', [
     '-p',
     '--output-format', 'json',
     '--permission-mode', 'plan',
     '--max-turns', '1',
+    '--tools', '',
+    '--disallowedTools', 'mcp__*',
+    '--json-schema', schema,
   ], {
     input: prompt,
     timeoutMs: PLAN_TIMEOUT_MS,
@@ -303,7 +337,9 @@ async function invokeClaude(prompt) {
   if (envelope.is_error === true) {
     throw new Error(String(envelope.result ?? 'Claude Code reported an error'));
   }
-  return parsePlanText(envelope.result);
+  if (envelope.structured_output) return parsePlanObject(envelope.structured_output);
+  if (typeof envelope.result === 'string') return parsePlanText(envelope.result);
+  throw new Error('Claude Code completed without validated structured_output');
 }
 
 export async function invokeDirectorPlan(provider, prompt) {
