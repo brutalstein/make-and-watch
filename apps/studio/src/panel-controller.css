@@ -1,0 +1,182 @@
+:root {
+  --mw-panel-rail-width: 58px;
+}
+
+.studio-shell {
+  --mw-director-active-width: var(--mw-director-width);
+  --mw-chat-active-width: var(--mw-chat-width);
+  --mw-inspector-active-width: var(--mw-inspector-width);
+}
+.studio-shell--control-collapsed { --mw-director-active-width: var(--mw-panel-rail-width); }
+.studio-shell--inspector-collapsed { --mw-inspector-active-width: var(--mw-panel-rail-width); }
+.studio-shell:has(.workspace--director-chat-closed) { --mw-chat-active-width: var(--mw-chat-rail-width); }
+
+.studio-shell .workspace {
+  grid-template-columns:
+    var(--mw-director-active-width)
+    var(--mw-chat-active-width)
+    minmax(520px, 1fr)
+    var(--mw-inspector-active-width) !important;
+  transition: grid-template-columns 320ms cubic-bezier(.2,.78,.22,1) !important;
+}
+
+.director-panel,
+.inspector-panel {
+  position: relative;
+  transition: padding 260ms ease, background 260ms ease, border-color 260ms ease;
+}
+
+.studio-panel-heading-toggle-host {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 4px;
+}
+.studio-panel-heading-toggle {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #343b4d;
+  border-radius: 10px;
+  color: #9fa8b9;
+  background: linear-gradient(145deg, rgba(25,30,44,.95), rgba(15,19,29,.96));
+  box-shadow: inset 0 1px rgba(255,255,255,.035), 0 8px 20px rgba(0,0,0,.14);
+  cursor: pointer;
+  transition: transform 150ms ease, border-color 150ms ease, color 150ms ease, box-shadow 150ms ease;
+}
+.studio-panel-heading-toggle:hover {
+  transform: translateY(-1px);
+  color: #f0edff;
+  border-color: #6558a5;
+  box-shadow: inset 0 1px rgba(255,255,255,.055), 0 10px 24px rgba(58,43,129,.18);
+}
+
+.studio-panel-toggle-host {
+  position: absolute;
+  inset: 0;
+  z-index: 12;
+  pointer-events: none;
+}
+.director-panel:not(.director-panel--collapsed) > .studio-panel-toggle-host,
+.inspector-panel:not(.inspector-panel--collapsed) > .studio-panel-toggle-host { display: none; }
+
+.director-panel--collapsed,
+.inspector-panel--collapsed {
+  padding: 0 !important;
+  overflow: hidden !important;
+  background:
+    radial-gradient(circle at 50% 8%, rgba(111,88,222,.12), transparent 26%),
+    linear-gradient(180deg, rgba(14,17,27,.99), rgba(7,10,17,.99));
+}
+.director-panel--collapsed > :not(.studio-panel-toggle-host),
+.inspector-panel--collapsed > :not(.studio-panel-toggle-host) {
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+.studio-panel-rail {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  border: 0;
+  color: #6f7890;
+  background: transparent;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: color 180ms ease, background 220ms ease, box-shadow 220ms ease;
+}
+.studio-panel-rail:hover {
+  color: #eeeaff;
+  background: linear-gradient(180deg, rgba(94,73,190,.13), rgba(25,30,45,.06));
+  box-shadow: inset 0 0 0 1px rgba(125,105,220,.16), inset 0 0 38px rgba(94,73,190,.08);
+}
+.studio-panel-rail__icon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #3b4055;
+  border-radius: 11px;
+  color: #b7aff0;
+  background: linear-gradient(145deg, #252a3d, #161a28);
+  box-shadow: inset 0 1px rgba(255,255,255,.04), 0 10px 26px rgba(0,0,0,.18);
+}
+.studio-panel-rail:hover .studio-panel-rail__icon {
+  border-color: #6e60b3;
+  box-shadow: inset 0 1px rgba(255,255,255,.05), 0 0 24px rgba(113,91,224,.18);
+}
+.studio-panel-rail__label {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  font-size: 9px;
+  font-weight: 850;
+  letter-spacing: .17em;
+  color: currentColor;
+}
+
+/* The AI interaction veil owns only the workflow surface. Sidecars remain usable. */
+.autopilot-interaction-lock {
+  left: calc(var(--mw-director-active-width) + var(--mw-chat-active-width)) !important;
+  right: var(--mw-inspector-active-width) !important;
+}
+
+/* Premium internal scrollbars: quiet at rest, brighter only while hovered. */
+.chat-history,
+.inspector-panel,
+.director-chat__messages,
+.director-chat__connection-drawer {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(116,103,171,.62) transparent;
+}
+.chat-history::-webkit-scrollbar,
+.inspector-panel::-webkit-scrollbar,
+.director-chat__messages::-webkit-scrollbar,
+.director-chat__connection-drawer::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.chat-history::-webkit-scrollbar-track,
+.inspector-panel::-webkit-scrollbar-track,
+.director-chat__messages::-webkit-scrollbar-track,
+.director-chat__connection-drawer::-webkit-scrollbar-track {
+  background: transparent;
+}
+.chat-history::-webkit-scrollbar-thumb,
+.inspector-panel::-webkit-scrollbar-thumb,
+.director-chat__messages::-webkit-scrollbar-thumb,
+.director-chat__connection-drawer::-webkit-scrollbar-thumb {
+  min-height: 44px;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(142,121,229,.72), rgba(76,94,128,.72)) padding-box;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.035);
+}
+.chat-history::-webkit-scrollbar-thumb:hover,
+.inspector-panel::-webkit-scrollbar-thumb:hover,
+.director-chat__messages::-webkit-scrollbar-thumb:hover,
+.director-chat__connection-drawer::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(166,145,255,.9), rgba(92,123,166,.86)) padding-box;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .studio-shell .workspace,
+  .director-panel,
+  .inspector-panel,
+  .studio-panel-heading-toggle,
+  .studio-panel-rail { transition: none !important; }
+}
+
+@media (max-width: 1500px) {
+  :root { --mw-panel-rail-width: 54px; }
+  .studio-shell .workspace {
+    grid-template-columns:
+      var(--mw-director-active-width)
+      var(--mw-chat-active-width)
+      minmax(420px, 1fr)
+      var(--mw-inspector-active-width) !important;
+  }
+}
