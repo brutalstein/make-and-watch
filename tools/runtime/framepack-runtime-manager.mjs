@@ -4,6 +4,11 @@ import { dirname, join, resolve } from 'node:path';
 
 const FRAMEPACK_MIN_VRAM_MB = 6 * 1024;
 const FRAMEPACK_MODEL_DOWNLOAD_WARNING_GB = 30;
+const REQUIRED_HF_CACHE_REPOS = [
+  'models--hunyuanvideo-community--HunyuanVideo',
+  'models--lllyasviel--flux_redux_bfl',
+  'models--lllyasviel--FramePackI2V_HY',
+];
 
 async function exists(path) {
   if (!path) return false;
@@ -50,6 +55,19 @@ function candidateBases() {
   ]);
 }
 
+async function inspectModelCache(root) {
+  const hub = join(root, 'hf_download', 'hub');
+  const states = [];
+  for (const repo of REQUIRED_HF_CACHE_REPOS) {
+    states.push({ repo, present: await exists(join(hub, repo)) });
+  }
+  return {
+    hub,
+    requiredRepos: states,
+    likelyReady: states.every((entry) => entry.present),
+  };
+}
+
 async function inspectRoot(root) {
   const sourceEntry = join(root, 'demo_gradio.py');
   const helperDirectory = join(root, 'diffusers_helper');
@@ -75,6 +93,7 @@ async function inspectRoot(root) {
     }
   }
 
+  const modelCache = await inspectModelCache(root);
   return {
     root,
     kind: oneClickInstall ? 'official-one-click' : 'source',
@@ -82,6 +101,7 @@ async function inspectRoot(root) {
     runScript: oneClickInstall ? runBat : null,
     updateScript: await isFile(updateBat) ? updateBat : null,
     python,
+    modelCache,
     score: oneClickInstall ? 100 : python ? 90 : 70,
   };
 }
@@ -115,27 +135,38 @@ export async function framePackRuntimeStatus(hardware = {}) {
   const installations = await discoverFramePackInstallations();
   const hardwareAssessment = framePackHardwareAssessment(hardware);
   const selected = installations[0] ?? null;
+  const modelsReady = Boolean(selected?.modelCache?.likelyReady);
   return {
     provider: 'framepack',
     installed: Boolean(selected),
     launchable: Boolean(selected?.runScript || selected?.sourceEntry),
+    modelsReady,
     selected,
-    discovered: installations.map(({ root, kind, score, python }) => ({ root, kind, score, python: Boolean(python) })),
+    discovered: installations.map(({ root, kind, score, python, modelCache }) => ({
+      root,
+      kind,
+      score,
+      python: Boolean(python),
+      modelsReady: Boolean(modelCache?.likelyReady),
+    })),
     hardware: hardwareAssessment,
     automaticBootstrap: false,
     bootstrapPolicy: 'explicit-only',
     modelDownloadWarningGb: FRAMEPACK_MODEL_DOWNLOAD_WARNING_GB,
-    detail: selected
-      ? hardwareAssessment.readyForAttempt
-        ? 'FramePack installation discovered; execution adapter can be activated without hidden model bootstrap.'
-        : 'FramePack installation discovered but hardware assessment is not ready.'
-      : `FramePack is not installed. Automatic installation is intentionally disabled because the official model download is over ${FRAMEPACK_MODEL_DOWNLOAD_WARNING_GB} GB.`,
+    detail: !selected
+      ? `FramePack is not installed. Automatic installation is intentionally disabled because the official model download is over ${FRAMEPACK_MODEL_DOWNLOAD_WARNING_GB} GB.`
+      : !modelsReady
+        ? `FramePack code is installed, but its required Hugging Face model cache is incomplete. Explicit setup is required before generation; Make & Watch will not trigger the ${FRAMEPACK_MODEL_DOWNLOAD_WARNING_GB}+ GB download implicitly.`
+        : !hardwareAssessment.readyForAttempt
+          ? 'FramePack code and models are present, but hardware assessment is not ready.'
+          : 'FramePack code and required model-cache roots are present; offline execution can be attempted.',
   };
 }
 
 export const framePackRuntimeConstants = Object.freeze({
   minimumVramMb: FRAMEPACK_MIN_VRAM_MB,
   modelDownloadWarningGb: FRAMEPACK_MODEL_DOWNLOAD_WARNING_GB,
+  requiredHfCacheRepos: REQUIRED_HF_CACHE_REPOS,
   managedRoot: join(managedRuntimeBase(), 'FramePack'),
   parentOfManagedRoot: dirname(join(managedRuntimeBase(), 'FramePack')),
 });
