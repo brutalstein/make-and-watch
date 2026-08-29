@@ -26,6 +26,7 @@
   transition: padding 260ms ease, background 260ms ease, border-color 260ms ease;
 }
 .director-panel { overflow: hidden !important; }
+.inspector-panel > .panel-heading > svg { display: none; }
 
 .studio-panel-heading-toggle-host {
   display: inline-flex;
