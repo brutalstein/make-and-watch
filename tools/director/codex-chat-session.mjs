@@ -23,10 +23,12 @@ export class CodexChatSession {
 
   async createThread() {
     await this.client.start();
+    const dynamicTools = this.client.dynamicToolSpecs?.() ?? [];
     const result = await this.client.request('thread/start', {
       cwd: directorRuntimeRoot,
       approvalPolicy: 'never',
       ...this.client.readOnlyThreadSecurityParams(),
+      ...(dynamicTools.length > 0 ? { dynamicTools } : {}),
       ephemeral: true,
       serviceName: 'make_and_watch_director_chat',
     }, 15_000);
@@ -47,8 +49,6 @@ export class CodexChatSession {
       resolveCompletion = resolvePromise;
       rejectCompletion = rejectPromise;
     });
-    // turn/start can fail before completion is awaited. Keep a rejection observer
-    // attached so local request failure cannot become a process-level unhandled rejection.
     void completion.catch(() => undefined);
     const turn = { threadId, turnId: null, finalText: '', settled: false, resolve: resolveCompletion, reject: rejectCompletion, completion, timer: null };
 
