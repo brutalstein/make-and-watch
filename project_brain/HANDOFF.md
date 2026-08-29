@@ -9,82 +9,120 @@ The current foundation includes:
 - C++20 transactional semantic project graph with typed commands/events, revisions, locks, approvals, staleness, dependency invalidation, impact preview, snapshots and guarded hydration;
 - SQLite schema v2 with WAL, foreign keys, atomic snapshot + append-only journal persistence and v1 migration;
 - `ProjectSession` persist-before-live-commit semantics;
-- durable commit provenance (`actor`, `source`, `plan`, `reason`) and bounded native `project.history`;
+- durable commit provenance and bounded native `project.history`;
 - JSONL IPC v1 + real `makewatch_engine_host` process;
-- localhost development bridge and native-driven React/TypeScript Studio;
+- localhost bridge and native-driven React/TypeScript Studio;
 - presentation-only workflow layout separated from semantic state;
-- Durable Activity feed backed by native history;
-- generic native `ResourceManager` with VRAM/RAM/CPU budgets, GPU exclusivity, admission preview, high-water metrics, counters and move-only `ResourceLease`;
-- native `BackgroundJobRuntime` with bounded job capacity, resource-aware ready scanning, cancellation ownership and deterministic one-at-a-time shutdown contract;
+- Durable Activity backed by native history;
+- generic native `ResourceManager` plus bounded `BackgroundJobRuntime` lifecycle ownership;
 - typed AI Director Autopilot with exact-revision validation, pause/resume/cancel/checkpoints and emergency takeover;
-- exact workflow pointer pick-and-place interaction for every displaced node;
-- provider-agnostic Director boundary; Claude/Codex authentication remains intentionally unimplemented rather than faked.
+- exact workflow pointer pick-and-place for every displaced node;
+- cursor-centric drag camera: held node + virtual pointer move into a focal point and remain there while the canvas travels underneath;
+- deterministic **30 FPS** presentation ceiling with awaited viewport frames;
+- first-party Codex/Claude Director bridge with zero OAuth credential custody;
+- bounded project-specific Director context compiler and schema-constrained plan output;
+- Studio `DIRECTOR LINK` for first-party status/login and validated Assist-plan preview.
 
-## Exact pointer milestone
+## Exact pointer / camera milestone
 
-The previous autonomous camera-follower design was removed after hands-on testing showed visible pointer/node drift.
-
-`AutopilotCameraFollower.tsx` is deleted. `VirtualCursor` no longer clamps the rendered pointer away from its logical coordinate.
-
-The canonical workflow interaction now lives in `workflowPointerInteraction.ts` and follows:
+The canonical interaction lives in `apps/studio/src/director/workflowPointerInteraction.ts`:
 
 ```text
-pan workspace -> find node -> exact hover -> settle -> press ->
-move node + pointer from the same projected anchor -> release -> verify -> next node
+pan workspace -> find node -> exact hover -> press ->
+held node + cursor enter focal point -> canvas follows underneath ->
+release -> verify -> next node
 ```
 
-Important implementation guarantees:
+Important guarantees:
 
-- off-screen nodes are found by visible bounded workspace pan gestures, not hidden `fitView`/teleport;
-- pointer location is reprojected after viewport mutations before press;
-- rendered pointer coordinate equals logical pointer coordinate;
-- drag does not use `delta * zoom` integration;
-- viewport stays fixed while a node is held;
-- every drag frame projects the exact next node anchor and places the pointer at the same point;
-- pre-grab and post-drop alignment are checked with a small epsilon;
-- every displaced node gets its own `dragNode` step; the old five-node limit/bulk remainder path is gone;
-- deterministic 24 FPS animation remains, with awaited frame callbacks so viewport writes cannot overtake one another;
-- pause preserves grab presentation instead of pretending to release the node;
-- cancellation clears panning/dragging presentation state immediately.
+- off-screen nodes are found by visible bounded workspace pan gestures;
+- cursor lands on a freshly projected node anchor before grab;
+- rendered and logical cursor coordinates are identical;
+- drag never uses `delta * zoom` approximation;
+- after grab, viewport translation is recomputed and awaited every deterministic frame so the exact flow anchor stays at the cursor focal point;
+- cursor is reprojected after each viewport write;
+- pre-grab and post-drop alignment are checked;
+- every displaced node is handled individually;
+- presentation cadence is capped at 30 FPS, not monitor refresh rate;
+- cursor/pan/drag timings are substantially faster than the first exact-pointer pass while preserving visible press/release phases;
+- pause freezes current held state; cancellation clears presentation ownership immediately.
 
-See `AUTOPILOT.md`.
+Do not reintroduce an independent camera follower. The pointer interaction primitive itself owns camera movement while a node is held.
+
+## First-party AI Director milestone
+
+Read `DIRECTOR_PROVIDERS.md`, `AUTH_AND_AI_DIRECTOR.md`, and `AI_DIRECTOR_CONTEXT.md` before changing this layer.
+
+Make & Watch does not implement subscription OAuth itself. It invokes the user's official local client:
+
+- Codex: official `codex login`, `codex login status`, `codex exec`;
+- Claude Code: official Claude login/status commands and non-interactive print mode.
+
+Current bridge endpoints:
+
+- `GET /api/director/providers`;
+- `POST /api/director/connect`;
+- `POST /api/director/plan`.
+
+Provider planning rules:
+
+- one active Director inference maximum;
+- finite timeout/output limits;
+- bridge shutdown terminates active provider child process tree;
+- status returned to React is sanitized;
+- prompts travel through stdin;
+- Codex uses read-only sandbox, ephemeral session and JSON Schema output;
+- Claude uses one turn, plan permission, all built-in tools disabled, MCP tools denied and JSON Schema structured output;
+- provider result is still only a proposal and must pass Studio Autopilot validation/live revision checks.
+
+The current Studio provider phase requests **Assist-mode preview plans only**. It deliberately does not grant semantic write authority yet.
+
+## Context economy
+
+Root `AGENTS.md` / `CLAUDE.md` carry provider-native project instructions. `AI_DIRECTOR_CONTEXT.md` is the canonical policy.
+
+Runtime prompts avoid resending that full policy. The context compiler sends a short invariant reminder, canonical policy hash and bounded live graph slice.
+
+Hard bounds:
+
+- <=16,000 prompt characters;
+- conservative estimate <=4,000 context tokens;
+- <=3,000 objective characters;
+- <=72 nodes;
+- <=120 included dependency edges;
+- allow-listed compact metadata only.
+
+The context pack is deterministic and SHA-256 hashed. CI has a regression test against context growth and irrelevant metadata leakage.
 
 ## Background runtime milestone
 
-`BackgroundJobRuntime` now sits above `ResourceManager`.
-
-It does **not** launch model processes yet. It owns lifecycle/admission state and each running job's resource lease so the future process supervisor cannot free accounting early.
+`BackgroundJobRuntime` sits above `ResourceManager`. It does not launch model/media processes yet.
 
 Key rules:
 
-- queued + running work is bounded by fixed capacity;
-- duplicate job IDs are rejected;
-- resource-blocked GPU work does not cause head-of-line blocking for later safe CPU-only work;
-- cancelling queued work removes it immediately because it owns no lease;
-- cancelling running work changes state to cancellation-requested but retains VRAM/RAM/CPU accounting;
-- resources are released only after actual stop/completion confirmation;
-- shutdown stops new admission and cancels queued work;
-- exactly one running shutdown target is exposed at a time;
-- the same target remains current until stop is confirmed;
+- queued + running work has fixed capacity;
+- duplicate IDs rejected;
+- resource-aware ready scan avoids safe CPU work being blocked behind unavailable GPU work;
+- running cancellation retains VRAM/RAM/CPU lease until actual stop confirmation;
+- shutdown stops admission, clears queued work and exposes exactly one running stop target at a time;
 - wrong-target confirmation fails closed;
-- shutdown releases running resource leases one-by-one in deterministic oldest-first order.
+- leases release one-by-one only after confirmed worker stop.
 
-Read `BACKGROUND_JOBS.md` before implementing WorkerSupervisor. Do not launch/kill provider processes outside that ownership contract.
+Concrete WorkerSupervisor remains next native process layer.
 
-## CI validation
+## Validation status
 
-The exact-pointer + BackgroundJobRuntime code passed the current GitHub Actions code gates:
+CI validates code structure without authenticated user subscriptions. Current gates include:
 
-- bridge/fixture checks;
+- bridge/fixture syntax and development seed check;
+- deterministic Director context-budget regression check;
+- provider-manager missing-client/sanitized-status smoke;
 - strict shared/Studio TypeScript;
 - Vite production build;
 - strict native configure/build;
-- complete CTest suite;
-- new background lifecycle tests.
+- full CTest including graph, persistence/history, ResourceManager, BackgroundJobRuntime and real native-host smoke.
 
-Background runtime tests cover bounded capacity, duplicate rejection, GPU head-of-line avoidance, cancellation retaining resource reservations, sequential shutdown, wrong-target fail-closed behavior and active resource count reaching zero only after final confirmed stop.
-
-Code-level CI is green; the newest pointer behavior still requires a hands-on Windows/NVIDIA product-machine run before it is called visually validated.
+Authenticated first-party provider behavior and the newest 30 FPS cursor-camera choreography still require Windows product-machine validation.
 
 ## Immediate Windows gate
 
@@ -96,52 +134,59 @@ git pull
 .\dev.ps1
 ```
 
-Then deliberately scatter multiple nodes far apart and run **Let AI drive this workflow**.
+### Pointer
 
-Validate:
+1. scatter nodes far apart, including outside viewport;
+2. run **Let AI drive this workflow**;
+3. verify finding/pickup is visibly faster than previous version;
+4. cursor lands on node exactly;
+5. after grab, cursor/node move toward the workflow focal point and camera travels with them;
+6. once focused, cursor/node stay visually anchored while canvas moves underneath toward the destination;
+7. release occurs on target with no visible pointer drift;
+8. every displaced node is processed individually;
+9. `Space` pause mid-drag freezes without teleport;
+10. `Esc` cancels immediately;
+11. Studio stays responsive and native semantic revision does not change from Assist layout.
 
-1. AI moves through workflow space to find an off-screen target by visibly panning the canvas;
-2. cursor ends visibly on the node body before any grab;
-3. a short hover/settle is visible;
-4. cursor presses while exactly on the node;
-5. node and pointer remain locked together throughout the drag;
-6. pointer releases at the final node position;
-7. it repeats the full sequence for every displaced node, not only a sample;
-8. no hidden camera motion fights the cursor;
-9. `Space` pause during a grab freezes the held state without teleport/release;
-10. `Esc` / **Take back control** cancels and returns interaction immediately;
-11. Studio remains responsive during movement;
-12. presentation-only layout does not increment native project revision;
-13. arranged positions persist after restart;
-14. `./verify.ps1` passes the new background lifecycle tests on the Windows toolchain.
+### Director provider
 
-Any pointer/node mismatch or freeze found on the product machine must be treated as a failed gate, not papered over by more camera motion.
+1. inspect new **DIRECTOR LINK** panel;
+2. refresh provider status;
+3. select installed Codex or Claude;
+4. if unauthenticated, use **Connect ... officially** and complete the first-party browser/client flow;
+5. refresh until provider reports authenticated/capable;
+6. submit a small objective;
+7. confirm a schema-valid Assist plan is reported;
+8. confirm context token estimate stays within budget;
+9. confirm native project revision does not change merely from provider planning;
+10. close `./dev.ps1` while a provider request is running and verify no orphan CLI process remains.
+
+Any pointer drift, freeze, auth-token custody, unbounded context, orphan process or stale-revision acceptance is a failed gate.
 
 ## Next engineering sequence
 
-1. concrete cross-platform WorkerSupervisor on top of `BackgroundJobRuntime`;
-2. graceful stop -> bounded wait -> one-process termination escalation -> confirmed exit -> lease release;
-3. typed worker health/capability handshake and bounded logs;
-4. checkpoint/recovery policy on snapshot + journal;
-5. content-addressed asset/provenance storage;
-6. hardware-profile probing/calibration;
-7. first lightweight local voice/storyboard provider paths;
-8. Claude/Codex plan producers only after supported authentication is reverified.
+1. enable provider-generated Assist plan execution through the existing Autopilot runtime after live provider validation;
+2. add Guided plan preview/checkpoint UX before semantic AI mutation;
+3. concrete cross-platform WorkerSupervisor on top of `BackgroundJobRuntime`;
+4. graceful stop -> bounded wait -> single-process escalation -> confirmed exit -> lease release;
+5. typed worker health/capability handshake and bounded logs;
+6. checkpoint/recovery policy;
+7. content-addressed asset/provenance storage;
+8. hardware-profile probing/calibration;
+9. first lightweight local voice/storyboard workers.
 
 ## What not to do
 
-- Do not reintroduce `AutopilotCameraFollower` or cursor safe-frame clamping.
-- Do not use stale DOM coordinates after viewport movement.
-- Do not use `delta * zoom` cursor integration during node drag.
-- Do not bulk-move displaced nodes while claiming the AI handled them individually.
-- Do not let presentation state mutate native semantic state.
-- Do not give providers unrestricted OS mouse/keyboard or arbitrary DOM authority.
+- Do not reintroduce a separate hidden camera follower.
+- Do not use stale DOM coordinates or `delta * zoom` pointer integration.
+- Do not couple Autopilot presentation cadence to display refresh rate.
+- Do not copy/read Codex or Claude OAuth credential caches.
+- Do not expose raw first-party auth status text to React/logs.
+- Do not resend the entire repository/project brain on every Director request.
+- Do not allow provider output to bypass typed Autopilot/native validation.
+- Do not grant semantic write authority just because provider login succeeded.
 - Do not free running-job resources when cancellation is merely requested.
-- Do not expose a second shutdown target before the first worker is confirmed stopped.
-- Do not let scheduler/provider code bypass `ResourceManager`.
-- Do not claim WorkerSupervisor/process launching exists yet.
-- Do not make ComfyUI project-state owner.
-- Do not implement fake/custom Claude subscription OAuth.
+- Do not launch media workers outside `BackgroundJobRuntime`/future WorkerSupervisor ownership.
 - Do not weaken strict type/compiler/test gates.
 - Do not publicly disclose patent-sensitive adaptive synthesis-selection logic while the repo is public.
 
