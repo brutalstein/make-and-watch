@@ -13,7 +13,7 @@ This folder is the canonical context handoff for **Make & Watch**. A new enginee
 7. `WORKSPACE_LAYOUT.md` — draggable workflow presentation-state boundary.
 8. `AUTOPILOT.md` — exact virtual-pointer pick-and-place protocol, typed takeover, interaction ownership, and safety boundaries.
 9. `AI_DIRECTOR_CONTEXT.md` — compact stable creative-Director policy.
-10. `DIRECTOR_PROVIDERS.md` — first-party Codex/Claude auth, process and context-budget boundary.
+10. `DIRECTOR_PROVIDERS.md` — Codex/Claude provider policy, process and context-budget boundary.
 11. `AUTH_AND_AI_DIRECTOR.md` — authentication invariants and provider authority.
 12. `RUNTIME_FOUNDATION.md` — native resource admission and lifecycle safety layer.
 13. `BACKGROUND_JOBS.md` — bounded job ownership, cancellation, and deterministic one-at-a-time shutdown contract.
@@ -30,11 +30,13 @@ Make & Watch is a local-first desktop series-production studio where a user dire
 
 ## Current stage
 
-**Foundation v1 / Interactive Native Studio + exact Autopilot pointer + first-party Director link + bounded background lifecycle.** The repository has a transactional C++ project graph, SQLite schema-v2 snapshot/journal persistence, guarded resource admission, bounded background-job ownership, versioned native IPC, a persist-before-live-commit application session, interactive Studio, and a typed Autopilot executor whose visible pointer finds, grabs and places displaced workflow nodes one-by-one while the viewport tracks the held node/cursor.
+**Foundation v1 / Interactive Native Studio + exact Autopilot pointer + policy-aware Director link + bounded background lifecycle.** The repository has a transactional C++ project graph, SQLite schema-v2 snapshot/journal persistence, guarded resource admission, bounded background-job ownership, versioned native IPC, a persist-before-live-commit application session, interactive Studio, and a typed Autopilot executor whose visible pointer finds/grabs/places displaced nodes while the viewport follows the held cursor/node through a deterministic 30 FPS presentation ceiling.
 
-Codex and Claude Code now have a local first-party-client connection boundary: Make & Watch probes official CLI/auth capability, launches official login without owning OAuth tokens, compiles a bounded project-specific context pack, and requests schema-constrained Assist plans. Authenticated provider planning still requires a fresh Windows product-machine validation because CI does not contain the user's first-party subscription session.
+The Director provider surface now has an explicit policy boundary. Codex is the primary local-client path to validate with official ChatGPT sign-in; Make & Watch owns no Codex OAuth credential. Claude Code is detected but public-product subscription routing is disabled by default because Anthropic's current third-party policy requires a supported API/Console/cloud-provider path. Claude Code remains an explicit developer-preview adapter only, never a silent shipping default.
 
-No heavyweight image/video/voice model is a hard dependency yet. The background runtime owns lifecycle/resource accounting but does not launch provider workers yet; concrete WorkerSupervisor remains the next native runtime layer.
+The Director context compiler is project-specific and bounded rather than repo-dump based: it uses project instructions, a canonical policy hash, live native revision, compact graph state, JSON Schema output and a conservative <=4K-token context budget.
+
+No heavyweight image/video/voice model is a hard dependency yet. `BackgroundJobRuntime` owns bounded lifecycle/resource accounting but does not launch media workers; concrete WorkerSupervisor remains the next native runtime layer.
 
 Provider planning, worker processes and model execution must build on these validated boundaries rather than bypassing them.
 
