@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 
 import { AudioGenerationService } from '../audio/audio-generation-service.mjs';
 import { compileEpisodeComposition } from '../composition/episode-composition.mjs';
+import { EpisodeRenderService } from '../composition/episode-render-service.mjs';
 import { GenerationBridgeClient } from './bridge-client.mjs';
 import { ComfyUiClient } from './comfyui-client.mjs';
 import { GpuExclusiveScheduler } from './gpu-scheduler.mjs';
@@ -13,6 +14,8 @@ const root = process.cwd();
 const port = Number(process.env.MAKEWATCH_GENERATION_PORT ?? 4178);
 const sceneArtifactRoot = resolve(root, process.env.MAKEWATCH_ARTIFACT_DIR ?? '.makewatch/artifacts/scenes');
 const audioArtifactRoot = resolve(root, process.env.MAKEWATCH_AUDIO_ARTIFACT_DIR ?? '.makewatch/artifacts/audio');
+const episodeArtifactRoot = resolve(root, process.env.MAKEWATCH_EPISODE_ARTIFACT_DIR ?? '.makewatch/artifacts/episodes');
+const renderCacheRoot = resolve(root, process.env.MAKEWATCH_RENDER_CACHE_DIR ?? '.makewatch/render-cache');
 const bridge = new GenerationBridgeClient();
 const comfy = new ComfyUiClient();
 const scheduler = new GpuExclusiveScheduler();
@@ -32,6 +35,12 @@ const audioService = new AudioGenerationService({
   artifactRoot: audioArtifactRoot,
   workerPath: resolve(root, 'tools/audio/chatterbox-worker.py'),
   comfyBaseUrl: comfy.baseUrl.origin,
+});
+const renderService = new EpisodeRenderService({
+  bridge,
+  projectRoot: root,
+  artifactRoot: episodeArtifactRoot,
+  cacheRoot: renderCacheRoot,
 });
 
 if (!Number.isInteger(port) || port < 1024 || port > 65535) {
@@ -113,7 +122,7 @@ const server = createServer(async (request, response) => {
     if (request.method === 'GET' && url.pathname === '/api/health') {
       sendJson(request, response, 200, {
         service: 'makewatch-media-generation',
-        modes: ['storyboard-preview', 'multilingual-voice', 'episode-composition'],
+        modes: ['storyboard-preview', 'multilingual-voice', 'episode-composition', 'episode-preview-render'],
         gpuScheduler: scheduler.status(),
       });
       return;
@@ -136,6 +145,11 @@ const server = createServer(async (request, response) => {
       sendJson(request, response, 200, { jobs: audioService.list(Number.isInteger(limit) ? limit : 20) });
       return;
     }
+    if (request.method === 'GET' && url.pathname === '/api/render/jobs') {
+      const limit = Number(url.searchParams.get('limit') ?? '20');
+      sendJson(request, response, 200, { jobs: renderService.list(Number.isInteger(limit) ? limit : 20) });
+      return;
+    }
     if (request.method === 'POST' && url.pathname === '/api/scenes') {
       const body = await readJson(request);
       const job = await sceneService.startScene(boundedId(body.sceneId, 'sceneId'));
@@ -156,6 +170,12 @@ const server = createServer(async (request, response) => {
       sendJson(request, response, 200, { manifest: compileEpisodeComposition(snapshot, episodeId) });
       return;
     }
+    const renderStartMatch = /^\/api\/render\/episodes\/([A-Za-z0-9._:-]+)$/.exec(url.pathname);
+    if (request.method === 'POST' && renderStartMatch) {
+      const episodeId = boundedId(renderStartMatch[1], 'episodeId');
+      sendJson(request, response, 202, { job: await renderService.startEpisode(episodeId) });
+      return;
+    }
 
     const jobMatch = /^\/api\/jobs\/([A-Za-z0-9-]+)$/.exec(url.pathname);
     if (request.method === 'GET' && jobMatch) {
@@ -167,6 +187,11 @@ const server = createServer(async (request, response) => {
       sendJson(request, response, 200, { job: audioService.get(audioJobMatch[1]) });
       return;
     }
+    const renderJobMatch = /^\/api\/render\/jobs\/([A-Za-z0-9-]+)$/.exec(url.pathname);
+    if (request.method === 'GET' && renderJobMatch) {
+      sendJson(request, response, 200, { job: renderService.get(renderJobMatch[1]) });
+      return;
+    }
 
     const artifactMatch = /^\/api\/artifacts\/([A-Za-z0-9-]+)\/([A-Za-z0-9._:-]+)$/.exec(url.pathname);
     if (request.method === 'GET' && artifactMatch) {
@@ -176,6 +201,11 @@ const server = createServer(async (request, response) => {
     const audioArtifactMatch = /^\/api\/audio\/artifacts\/([A-Za-z0-9-]+)$/.exec(url.pathname);
     if (request.method === 'GET' && audioArtifactMatch) {
       streamArtifact(request, response, audioService.artifact(audioArtifactMatch[1]));
+      return;
+    }
+    const renderArtifactMatch = /^\/api\/render\/artifacts\/([A-Za-z0-9-]+)$/.exec(url.pathname);
+    if (request.method === 'GET' && renderArtifactMatch) {
+      streamArtifact(request, response, renderService.artifact(renderArtifactMatch[1]));
       return;
     }
 
@@ -197,6 +227,7 @@ server.listen(port, '127.0.0.1', () => {
   console.log(`[generation] media gateway ready at http://127.0.0.1:${port}`);
   console.log(`[generation] scene artifacts: ${sceneArtifactRoot}`);
   console.log(`[generation] audio artifacts: ${audioArtifactRoot}`);
+  console.log(`[generation] episode artifacts: ${episodeArtifactRoot}`);
   void sceneService.providerStatus().then((status) => {
     if (status.online) console.log(`[generation] ComfyUI ready · ${status.checkpoint}`);
     else console.log(`[generation] ComfyUI offline · ${status.detail}`);
