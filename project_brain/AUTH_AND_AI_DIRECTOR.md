@@ -2,71 +2,66 @@
 
 ## Product requirement
 
-The user chooses one AI Director connection. The first supported targets are **Codex** and **Claude Code**. Media generation remains local and does not depend on that provider.
+The user chooses one AI Director. Media generation remains local and provider-independent.
+
+Current product integration policy:
+
+- **Codex** — primary local-client Director path; official Codex client owns ChatGPT/API-key authentication.
+- **Claude** — production third-party path requires Anthropic API/Console or supported cloud-provider authentication. Claude Code subscription routing is policy-gated by default.
 
 ## Non-negotiable security rule
 
-Make & Watch must not impersonate official clients, scrape credentials, copy subscription token caches, or invent a third-party OAuth exchange for subscription model access.
-
-The implemented local subscription path is:
-
-```text
-Make & Watch Studio
-   |
-   +--> local bridge --> official Codex CLI  --> ChatGPT browser sign-in
-   |
-   +--> local bridge --> official Claude Code -> Claude.ai/Pro/Max sign-in
-```
-
-The first-party client owns authentication and credential storage. Make & Watch owns only sanitized status probing, bounded process invocation, context compilation, plan validation and native project execution.
+Make & Watch must not impersonate official clients, scrape credentials, copy token caches, collect session tokens, or invent a provider OAuth exchange.
 
 ## Official behavior verified 2026-08-29
 
-OpenAI's current Codex authentication documentation states that Codex supports **Sign in with ChatGPT for subscription access**, and documents `codex login` as the Codex CLI browser-login entry point. The Codex CLI reference documents stable non-interactive `codex exec`, read-only sandboxing, ephemeral sessions, JSON Schema output and final-message file output. Codex also officially loads project-scoped `AGENTS.md` instructions.
+OpenAI documents Codex **Sign in with ChatGPT for subscription access** for local Codex clients and documents non-interactive `codex exec` capabilities used by the bridge. Make & Watch therefore asks the official Codex client to sign in and never receives the resulting OAuth credential.
 
-Anthropic's current Claude Code setup documentation supports Claude App Pro/Max login and states that Claude Code stores its credentials. The current CLI reference documents print mode, JSON output, one-turn bounds, plan permission mode, tool restriction and `--json-schema` structured output. Claude project instructions are represented by `CLAUDE.md`.
+Anthropic documents Claude Code subscription login for ordinary use of Claude Code/native Anthropic applications. Anthropic's legal/compliance documentation separately states that developers building products/services should use Claude Console API-key authentication or a supported cloud provider and may not offer Claude.ai login in their own application or route Free/Pro/Max credentials on users' behalf.
 
-Canonical official links and the exact bridge contract are recorded in `DIRECTOR_PROVIDERS.md`.
+Therefore a detected Claude Code installation is **not** treated as a shipping subscription OAuth provider. The adapter is disabled by default and can only be enabled as an explicit developer-preview experiment with `MAKEWATCH_ENABLE_EXPERIMENTAL_CLAUDE_CODE=1`. Production Claude support must use a supported Anthropic API path unless Anthropic policy changes or explicit approval is obtained.
+
+See `DIRECTOR_PROVIDERS.md` for official links and implementation details.
 
 ## Implemented Studio flow
 
-1. `GET /api/director/providers` probes official client/version/auth/capability state.
-2. React receives only sanitized typed state; raw status output is not exposed.
-3. `POST /api/director/connect` launches the first-party login command.
-4. The browser/official client completes OAuth; Make & Watch never receives the token.
-5. `POST /api/director/plan` compiles bounded Make-&-Watch-specific context and starts one first-party provider process.
-6. Provider output must match `AutopilotPlan` schema and then pass the existing Studio validator/live revision check.
-7. The initial provider connection phase remains Assist-only: it proves real planning without silently granting semantic write authority.
+1. `GET /api/director/providers` returns sanitized typed provider status plus explicit policy state.
+2. Codex may expose `supported_local_client` and first-party login.
+3. Claude normally exposes `api_required`; the Studio does not offer product subscription login.
+4. `POST /api/director/connect` rejects policy-disallowed providers.
+5. `POST /api/director/plan` compiles bounded Make-&-Watch-specific context and invokes one policy-permitted provider.
+6. Output must match `AutopilotPlan` schema and then pass live Studio/native revision validation.
+7. Connection-phase provider plans remain Assist-only and cannot mutate semantic project state.
 
 ## Project specialization versus fine-tuning
 
-Codex/Claude are not actually retrained for this repository. They are specialized through:
+Codex/Claude are not retrained for this repository. Make-&-Watch specialization is provided by:
 
-- root `AGENTS.md` for Codex;
-- root `CLAUDE.md` for Claude;
-- canonical `project_brain/AI_DIRECTOR_CONTEXT.md` policy;
-- deterministic bounded live-project context;
+- root `AGENTS.md` / `CLAUDE.md` project instructions;
+- `project_brain/AI_DIRECTOR_CONTEXT.md`;
+- bounded live graph context;
 - typed output schema;
-- exact native project revision and validation.
+- native revision/lock/capability validation.
 
-This is preferred to repeatedly dumping the repository into the context window. It is cheaper, more deterministic, easier to version, and does not create a second hidden project state.
+This avoids repeatedly sending the entire repository or maintaining a hidden duplicate project memory.
 
 ## Credential storage
 
-The subscription path stores **zero provider secrets in Make & Watch**.
+The supported local Codex path stores **zero Codex secrets in Make & Watch**.
 
-If Make & Watch later adds direct API-key/enterprise providers, secrets must use an OS-backed secret abstraction such as Windows Credential Manager, macOS Keychain, or Linux Secret Service. Never persist provider secrets inside project files, SQLite project metadata, `.env` shipping defaults, logs or Director context packs.
+Future direct Anthropic/OpenAI API or enterprise credentials must use an OS-backed secret abstraction such as Windows Credential Manager, macOS Keychain, or Linux Secret Service. Never persist secrets in project files, SQLite project metadata, logs, shipping `.env` defaults or Director context packs.
 
 ## Failure behavior
 
-- Missing client: report not installed; do not fake connection.
-- Old client lacking required safe flags: require official client update.
-- Unauthenticated client: offer first-party login.
-- Provider already busy: reject the second concurrent planning request.
+- Missing client: report missing; never fake connection.
+- Old client: require official update.
+- Unauthenticated supported client: offer first-party login.
+- Policy-disallowed provider: show the supported API requirement and reject login/inference.
+- Concurrent Director inference: reject the second run.
 - Timeout/output overflow: terminate the owned provider process tree.
-- Bridge shutdown: terminate any request-scoped provider plan child.
-- Invalid structured output or stale project revision: reject before native mutation.
+- Bridge shutdown: terminate the active request-scoped provider child.
+- Invalid schema/stale revision: reject before native mutation.
 
 ## Future provider modes
 
-Guided/Director semantic execution will reuse the same provider/validator boundary, but must add explicit plan preview, capability grant and approval UX before enabling broader mutation. The native C++ engine and `ProjectSession` remain authoritative regardless of provider.
+Guided/Director semantic execution will reuse the same provider/validator boundary only after explicit preview/capability/approval UX is complete. Native C++ `ProjectSession` remains authoritative regardless of provider.
