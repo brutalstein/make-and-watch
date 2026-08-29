@@ -76,12 +76,31 @@ export class GenerationGatewayClient {
     return this.request('/audio/provider');
   }
 
+  temporalProviders() {
+    return this.request('/temporal/providers');
+  }
+
   temporalShotPlan(shotId, { totalVramMb, maxSegmentSeconds } = {}) {
     const query = new URLSearchParams();
     if (Number.isFinite(Number(totalVramMb))) query.set('vramMb', String(Number(totalVramMb)));
     if (Number.isFinite(Number(maxSegmentSeconds))) query.set('maxSegmentSeconds', String(Number(maxSegmentSeconds)));
     const suffix = query.size ? `?${query.toString()}` : '';
     return this.request(`/temporal/shots/${encodeURIComponent(shotId)}/plan${suffix}`);
+  }
+
+  startTemporalShot(shotId, providerId) {
+    return this.request('/temporal/shots', {
+      method: 'POST',
+      body: JSON.stringify({ shotId, providerId }),
+    });
+  }
+
+  temporalJob(jobId) {
+    return this.request(`/temporal/jobs/${encodeURIComponent(jobId)}`);
+  }
+
+  temporalJobs(limit = 20) {
+    return this.request(`/temporal/jobs?limit=${encodeURIComponent(String(limit))}`);
   }
 
   startScene(sceneId) {
