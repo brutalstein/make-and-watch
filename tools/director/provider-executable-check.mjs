@@ -61,12 +61,20 @@ try {
   assert.equal(overridden?.discovery, 'override');
   assert.equal(overridden?.path, overridePath);
 
-  const fakeChild = {
+  const fakeChild = Object.assign(new EventEmitter(), {
     stdin: new EventEmitter(),
     stdout: new EventEmitter(),
     stderr: new EventEmitter(),
-  };
+  });
   guardProviderStdio(fakeChild);
+
+  const spawnError = Object.assign(new Error('spawn failed'), { code: 'ENOENT' });
+  assert.doesNotThrow(() => fakeChild.emit('error', spawnError), 'provider process errors must not terminate the owning bridge');
+  assert.deepEqual(fakeChild.makewatchLastProcessError, {
+    code: 'ENOENT',
+    message: 'spawn failed',
+  });
+
   const epipe = Object.assign(new Error('broken pipe'), { code: 'EPIPE' });
   assert.doesNotThrow(() => fakeChild.stdin.emit('error', epipe), 'provider EPIPE must not terminate the owning bridge process');
   assert.deepEqual(fakeChild.makewatchLastPipeError, {
