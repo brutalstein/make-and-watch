@@ -2,15 +2,15 @@ name: CI
 
 on:
   push:
-    branches: [main, "foundation/**"]
+    branches: [main, "foundation/**", "runtime/**"]
   pull_request:
 
 permissions:
   contents: read
 
 jobs:
-  native:
-    name: Native core
+  native-linux:
+    name: Native core · Linux
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -21,7 +21,24 @@ jobs:
       - name: Build
         run: cmake --build --preset dev
       - name: Test
-        run: ctest --preset dev
+        run: ctest --preset dev --output-on-failure
+
+  native-windows:
+    name: Native core · Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Configure, build and test in MSVC environment
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) { throw "vswhere.exe was not found" }
+          $install = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $install) { throw "Visual Studio C++ toolchain was not found" }
+          $devCmd = Join-Path $install "Common7\Tools\VsDevCmd.bat"
+          $command = "call `"$devCmd`" -arch=x64 && ninja --version && cmake --preset dev && cmake --build --preset dev && ctest --preset dev --output-on-failure"
+          & $env:ComSpec /D /S /C $command
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   studio:
     name: Studio contracts and build
