@@ -18,7 +18,8 @@ const SHUTDOWN_GRACE_MS = 2_000;
 const MAX_PROTOCOL_LINE_BYTES = 2 * 1024 * 1024;
 const MAX_PROTOCOL_WRITE_BYTES = 512 * 1024;
 const MAX_STDERR_BYTES = 64 * 1024;
-const READ_ONLY_SANDBOX = 'read-only';
+const THREAD_READ_ONLY_SANDBOX = 'read-only';
+const TURN_READ_ONLY_SANDBOX = 'readOnly';
 
 let planSchemaPromise = null;
 
@@ -412,7 +413,7 @@ export class CodexAppServerClient extends EventEmitter {
     const threadResult = await this.request('thread/start', {
       cwd: directorRuntimeRoot,
       approvalPolicy: 'never',
-      sandbox: READ_ONLY_SANDBOX,
+      sandbox: THREAD_READ_ONLY_SANDBOX,
       serviceName: 'make_and_watch_director',
     }, 15_000);
     const threadId = threadResult?.thread?.id;
@@ -426,7 +427,7 @@ export class CodexAppServerClient extends EventEmitter {
         cwd: directorRuntimeRoot,
         approvalPolicy: 'never',
         sandboxPolicy: {
-          type: READ_ONLY_SANDBOX,
+          type: TURN_READ_ONLY_SANDBOX,
           access: {
             type: 'restricted',
             includePlatformDefaults: true,
