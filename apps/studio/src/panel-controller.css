@@ -124,7 +124,7 @@
   right: var(--mw-inspector-active-width) !important;
 }
 
-/* Premium internal scrollbars: quiet at rest, brighter only while hovered. */
+/* Premium internal scrollbars: no native arrow buttons or white track chrome. */
 .chat-history,
 .inspector-panel,
 .director-chat__messages,
@@ -138,11 +138,24 @@
 .director-chat__connection-drawer::-webkit-scrollbar {
   width: 8px;
   height: 8px;
+  background: transparent;
+}
+.chat-history::-webkit-scrollbar-button,
+.inspector-panel::-webkit-scrollbar-button,
+.director-chat__messages::-webkit-scrollbar-button,
+.director-chat__connection-drawer::-webkit-scrollbar-button {
+  width: 0;
+  height: 0;
+  display: none;
 }
 .chat-history::-webkit-scrollbar-track,
 .inspector-panel::-webkit-scrollbar-track,
 .director-chat__messages::-webkit-scrollbar-track,
-.director-chat__connection-drawer::-webkit-scrollbar-track {
+.director-chat__connection-drawer::-webkit-scrollbar-track,
+.chat-history::-webkit-scrollbar-corner,
+.inspector-panel::-webkit-scrollbar-corner,
+.director-chat__messages::-webkit-scrollbar-corner,
+.director-chat__connection-drawer::-webkit-scrollbar-corner {
   background: transparent;
 }
 .chat-history::-webkit-scrollbar-thumb,
