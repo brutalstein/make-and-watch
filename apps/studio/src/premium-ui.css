@@ -1,0 +1,99 @@
+:root {
+  --mw-text-xs: 10.5px;
+  --mw-text-sm: 11.5px;
+  --mw-text-md: 13px;
+  --mw-text-lg: 15px;
+}
+
+html, body, #root {
+  min-width: 1420px;
+  overflow: hidden;
+}
+
+body { font-size: 13px; }
+
+.studio-shell { grid-template-rows: 68px 1fr; height: 100vh; overflow: hidden; }
+.topbar { min-height: 68px; grid-template-columns: 290px minmax(300px, 1fr) auto; }
+.brand-lockup strong { font-size: 15px; }
+.brand-lockup span { font-size: 11px; }
+.episode-title { font-size: 12px; }
+.revision-pill { font-size: 10px; padding: 4px 7px; }
+.system-strip { font-size: 11.5px; }
+
+.workspace {
+  grid-template-columns: 280px 410px minmax(520px, 1fr) 310px !important;
+  height: calc(100vh - 68px) !important;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.director-panel,
+.inspector-panel { padding: 18px; }
+.director-panel { min-width: 0; overflow-y: auto !important; }
+.inspector-panel { min-width: 0; }
+.panel-heading h2 { font-size: 17px; }
+.kicker { font-size: 10px; letter-spacing: .13em; }
+.connected-pill { font-size: 10.5px; padding: 6px 8px; }
+
+.chat-history { gap: 12px; }
+.message { font-size: 12.5px; line-height: 1.58; padding: 13px; }
+.message__title { font-size: 12px; }
+.impact-list span { font-size: 10.5px; padding: 5px 7px; }
+.message-actions button { font-size: 10.5px; padding: 7px 9px; }
+.autopilot-card p { font-size: 11.5px !important; line-height: 1.55 !important; }
+.autopilot-card__head strong { font-size: 13px !important; }
+.autopilot-card__head span { font-size: 10.5px !important; }
+.autopilot-card__trust span { font-size: 9.5px !important; }
+.autopilot-start { min-height: 38px; font-size: 11.5px !important; }
+
+.canvas-panel { min-width: 0; grid-template-rows: 62px minmax(0, 1fr) 112px; }
+.canvas-toolbar { padding: 0 16px; }
+.canvas-toolbar strong { font-size: 12px; }
+.layout-status { font-size: 10px; }
+.canvas-tools button { font-size: 10px; padding: 6px 8px; }
+.canvas-tools kbd, .view-tab { font-size: 9.5px; }
+.view-tab { padding: 7px 9px; }
+
+.flow-card { gap: 8px; padding: 13px; }
+.flow-card strong { font-size: 13px; }
+.flow-card__topline { font-size: 9.5px; }
+.flow-card__meta { font-size: 10.5px; line-height: 1.4; }
+.flow-card__state { font-size: 9px; }
+
+.timeline-dock__header { font-size: 10.5px; }
+.scene-chip { min-width: 96px; padding: 8px; }
+.scene-chip span { font-size: 10.5px; }
+.scene-chip small { font-size: 9px; }
+
+.preview-frame__content > span { font-size: 9.5px !important; }
+.preview-frame__content > strong { font-size: 15px !important; }
+.preview-frame__content > small { font-size: 10.5px !important; line-height: 1.45 !important; }
+.inspector-section { gap: 9px; }
+.metric-row { min-height: 28px; }
+.metric-row span { font-size: 10.5px !important; }
+.metric-row strong { font-size: 11px !important; }
+.resource-card div { font-size: 10.5px; }
+.resource-card small { font-size: 9.5px; line-height: 1.45; }
+.secondary-action { min-height: 38px; font-size: 11px; }
+.activity-heading small,
+.activity-entry__body small,
+.activity-entry__rev { font-size: 9.5px !important; }
+.activity-entry__body strong { font-size: 10.5px !important; }
+
+.autopilot-banner strong { font-size: 12px !important; }
+.autopilot-banner span,
+.autopilot-banner small,
+.autopilot-banner button { font-size: 10px !important; }
+
+.error-banner { font-size: 11px; }
+
+@media (max-width: 1680px) {
+  html, body, #root { min-width: 1280px; }
+  .workspace { grid-template-columns: 245px 360px minmax(480px, 1fr) 285px !important; }
+  .director-chat { padding: 14px; }
+}
+
+@media (max-width: 1450px) {
+  .workspace { grid-template-columns: 230px 330px minmax(440px, 1fr) 270px !important; }
+  .system-strip > span:nth-child(2) { display: none; }
+}
