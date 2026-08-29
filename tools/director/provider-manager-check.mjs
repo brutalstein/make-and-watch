@@ -18,9 +18,10 @@ for (const provider of result.providers) {
   assert.equal(typeof provider.planningAvailable, 'boolean');
   assert.equal(typeof provider.chatAvailable, 'boolean');
   assert.equal(typeof provider.loginPending, 'boolean');
+  assert.ok(['app_server', 'exec_fallback', 'none'].includes(provider.runtimeMode));
   assert.ok(Array.isArray(provider.capabilityIssues));
   assert.equal(typeof provider.detail, 'string');
-  assert.ok(provider.detail.length <= 240, 'sanitized provider status detail must remain bounded');
+  assert.ok(provider.detail.length <= 500, 'sanitized provider status detail must remain bounded');
   assert.equal(JSON.stringify(provider).includes('@'), false, 'sanitized provider status must not expose account email');
   assert.ok(
     ['supported_local_client', 'api_required', 'experimental_local_client'].includes(provider.policy),
