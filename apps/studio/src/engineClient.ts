@@ -5,7 +5,10 @@ import type {
   ProjectCommand,
   ProjectGraphSnapshot,
   ProjectHistoryResult,
+  SavedWorkflowListResult,
+  SavedWorkflowSummary,
   SystemTelemetry,
+  WorkflowRestoreResult,
 } from '@makewatch/contracts';
 
 import type {
@@ -138,6 +141,23 @@ export const engineClient = {
   snapshot: () => request<ProjectGraphSnapshot>('/project'),
   history: (limit = 10) => request<ProjectHistoryResult>(`/project/history?limit=${encodeURIComponent(String(limit))}`),
   system: systemTelemetry,
+  workflows: (includeRecovery = true) => request<SavedWorkflowListResult>(`/workflows?includeRecovery=${includeRecovery ? '1' : '0'}`),
+  saveWorkflow: (name: string, description = '') => request<{ workflow: SavedWorkflowSummary }>('/workflows/save', {
+    method: 'POST',
+    body: JSON.stringify({ name, description }),
+  }),
+  newWorkflow: (expectedProjectRevision: number, reason = 'create clean workflow') => request<WorkflowRestoreResult>('/workflows/new', {
+    method: 'POST',
+    body: JSON.stringify({ expectedProjectRevision, reason }),
+  }),
+  loadWorkflow: (workflowId: string, expectedProjectRevision: number, reason = 'load saved workflow') => request<WorkflowRestoreResult>('/workflows/load', {
+    method: 'POST',
+    body: JSON.stringify({ workflowId, expectedProjectRevision, reason }),
+  }),
+  deleteWorkflow: (workflowId: string) => request<{ workflow: SavedWorkflowSummary }>('/workflows/delete', {
+    method: 'POST',
+    body: JSON.stringify({ workflowId }),
+  }),
   directorProviders: () => request<DirectorProvidersResult>('/director/providers'),
   connectDirector: (provider: DirectorProviderId) => request<DirectorConnectResult>('/director/connect', {
     method: 'POST',
@@ -159,8 +179,12 @@ export const engineClient = {
     method: 'POST',
     body: JSON.stringify({ source }),
   }),
-  apply: (commands: ProjectCommand[], context?: ProjectCommitContext) => request<ApplyProjectResult>('/project/apply', {
+  apply: (
+    commands: ProjectCommand[],
+    context?: ProjectCommitContext,
+    expectedProjectRevision?: number,
+  ) => request<ApplyProjectResult>('/project/apply', {
     method: 'POST',
-    body: JSON.stringify({ commands, context }),
+    body: JSON.stringify({ commands, context, expectedProjectRevision }),
   }),
 };
