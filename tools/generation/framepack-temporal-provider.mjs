@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { createReadStream } from 'node:fs';
-import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { basename, relative, resolve } from 'node:path';
+import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
+import { relative, resolve } from 'node:path';
 
 import { ensureFfmpegRuntime } from '../runtime/ffmpeg-runtime-manager.mjs';
 import { framePackRuntimeStatus } from '../runtime/framepack-runtime-manager.mjs';
+import { releaseComfyGpu } from '../runtime/media-memory-coordinator.mjs';
 
 const RESULT_PREFIX = 'MW_TEMPORAL_RESULT_V1\t';
 const MAX_FRAMEPACK_SHOT_SECONDS = 8;
@@ -157,6 +158,8 @@ export class FramePackTemporalProvider {
     runtimeResolver = framePackRuntimeStatus,
     workerRunner = runWorkerProcess,
     videoProbe = probeVideo,
+    gpuReleaser = releaseComfyGpu,
+    comfyBaseUrl = process.env.MAKEWATCH_COMFYUI_URL ?? 'http://127.0.0.1:8188',
   }) {
     this.id = 'framepack';
     this.displayName = 'FramePack I2V';
@@ -166,6 +169,8 @@ export class FramePackTemporalProvider {
     this.runtimeResolver = runtimeResolver;
     this.workerRunner = workerRunner;
     this.videoProbe = videoProbe;
+    this.gpuReleaser = gpuReleaser;
+    this.comfyBaseUrl = comfyBaseUrl;
   }
 
   async status(context = {}) {
@@ -240,7 +245,12 @@ export class FramePackTemporalProvider {
     };
     await writeFile(requestPath, JSON.stringify(workerRequest), 'utf8');
 
+    let memoryRelease = null;
     try {
+      memoryRelease = await this.gpuReleaser({ baseUrl: this.comfyBaseUrl });
+      if (memoryRelease?.requested && !memoryRelease?.released) {
+        throw providerError('not_ready', `ComfyUI is reachable but could not release resident GPU models: ${memoryRelease.detail}`);
+      }
       const worker = await this.workerRunner(selected.python, this.workerPath, requestPath, { cwd: selected.root });
       const info = await stat(outputPath);
       if (!info.isFile() || info.size <= 1024) throw providerError('provider_error', 'FramePack output file is missing or empty');
@@ -265,6 +275,7 @@ export class FramePackTemporalProvider {
           teacache: worker?.payload?.teacache ?? null,
           steps: worker?.payload?.steps ?? null,
           requestedDurationSeconds: duration,
+          comfyMemoryReleased: memoryRelease?.released === true,
         },
       };
     } catch (error) {
