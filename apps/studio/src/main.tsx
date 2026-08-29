@@ -15,6 +15,7 @@ import './react-flow-attribution.css';
 import './workflow-manager.css';
 import './workflow-context-menu.css';
 import { App } from './App';
+import { DirectorArchivePreferenceController } from './DirectorArchivePreferenceController';
 import { DirectorProviderDock } from './director/DirectorProviderDock';
 import { ReactFlowAttribution } from './ReactFlowAttribution';
 import { StudioPanelController } from './StudioPanelController';
@@ -38,6 +39,7 @@ createRoot(root).render(
       <App />
       <ReactFlowAttribution />
       <DirectorProviderDock />
+      <DirectorArchivePreferenceController />
       <WorkflowManagerDock />
       <WorkflowContextMenuDock />
       <StudioPanelController />
