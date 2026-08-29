@@ -1,3 +1,6 @@
+.director-note,
+.director-input--disabled { display: none; }
+
 .director-link {
   position: fixed;
   left: 18px;
