@@ -14,11 +14,18 @@ for (const provider of result.providers) {
   assert.equal(typeof provider.authenticated, 'boolean');
   assert.equal(typeof provider.capable, 'boolean');
   assert.equal(typeof provider.detail, 'string');
+  assert.equal(typeof provider.executableName, 'string');
+  assert.equal(typeof provider.discovery, 'string');
+  assert.ok(
+    ['', 'override', 'path', 'known-user-bin'].includes(provider.discovery),
+    'provider discovery source must remain bounded and sanitized',
+  );
   assert.ok(
     ['supported_local_client', 'api_required', 'experimental_local_client'].includes(provider.policy),
     'provider policy must be explicit',
   );
-  assert.ok(provider.detail.length <= 160, 'sanitized provider status detail must remain bounded');
+  assert.ok(provider.detail.length <= 180, 'sanitized provider status detail must remain bounded');
+  assert.ok(!/[\\/]/.test(provider.executableName), 'React must receive only executable basename, never a local path');
 }
 
 const codex = result.providers.find((provider) => provider.provider === 'codex');
