@@ -3,6 +3,8 @@ import type { ProjectGraphSnapshot } from '@makewatch/contracts';
 import { defaultWorkflowPositions, type WorkflowPositions } from '../workflowLayout';
 import type { AutopilotPlan, AutopilotStep } from './autopilotTypes';
 
+const MAX_DRAGS_PER_PASS = 120;
+
 function distance(left: { x: number; y: number }, right: { x: number; y: number }) {
   return Math.hypot(left.x - right.x, left.y - right.y);
 }
@@ -26,10 +28,9 @@ function deterministicTextCompare(left: string, right: string) {
 }
 
 function dragDurationMs(distanceUnits: number) {
-  // Faster than the first exact-pointer pass, but still long enough to read the
-  // physical grab/transport/drop choreography. Camera follow removes the need
-  // for long cross-canvas cursor travel while the node is held.
-  return Math.round(clamp(430 + distanceUnits * 0.26, 520, 980));
+  // Camera follow keeps the held node under the cursor, so long cross-canvas
+  // movement should not translate into equally long presentation time.
+  return Math.round(clamp(360 + distanceUnits * 0.20, 440, 820));
 }
 
 export function buildWorkspaceAutopilotPlan(
@@ -42,11 +43,11 @@ export function buildWorkspaceAutopilotPlan(
       id: 'announce.start',
       type: 'announce',
       message: 'I’ll find each displaced node, grab it, place it in dependency order, and return control.',
-      holdMs: 360,
+      holdMs: 260,
     },
   ];
 
-  const candidates = snapshot.nodes
+  const allCandidates = snapshot.nodes
     .map((node) => ({
       node,
       from: currentPositions[node.id],
@@ -60,6 +61,7 @@ export function buildWorkspaceAutopilotPlan(
       const rightDistance = right.from && right.to ? distance(right.from, right.to) : 0;
       return rightDistance - leftDistance || deterministicTextCompare(left.node.id, right.node.id);
     });
+  const candidates = allCandidates.slice(0, MAX_DRAGS_PER_PASS);
 
   for (const [index, entry] of candidates.entries()) {
     if (!entry.from || !entry.to) continue;
@@ -72,14 +74,6 @@ export function buildWorkspaceAutopilotPlan(
       durationMs: dragDurationMs(travel),
       label: `Placing ${entry.node.title}`,
     });
-    if (index + 1 < candidates.length) {
-      steps.push({
-        id: `wait.after.${index}`,
-        type: 'wait',
-        durationMs: 52,
-        label: 'Placement verified',
-      });
-    }
   }
 
   const reviewTarget = snapshot.nodes.find((node) => node.kind === 'scene' && node.approval === 'review')
@@ -103,20 +97,25 @@ export function buildWorkspaceAutopilotPlan(
     );
   }
 
+  const remaining = allCandidates.length - candidates.length;
   steps.push({
     id: 'announce.finish',
     type: 'announce',
     message: candidates.length > 0
-      ? `Workspace pass complete. ${candidates.length} displaced node${candidates.length === 1 ? '' : 's'} were placed individually without changing semantic project state.`
+      ? remaining > 0
+        ? `Workspace pass complete. ${candidates.length} displaced nodes were placed safely; ${remaining} remain for the next bounded pass.`
+        : `Workspace pass complete. ${candidates.length} displaced node${candidates.length === 1 ? '' : 's'} were placed individually without changing semantic project state.`
       : 'Workspace pass complete. The graph was already organized, so I only inspected its structure.',
-    holdMs: 320,
+    holdMs: 240,
   });
 
   return {
     schemaVersion: 1,
     planId: `workspace-r${snapshot.projectRevision}-n${candidates.length}`,
     title: 'AI Workspace Drive',
-    summary: 'The AI Director is physically organizing each displaced workflow node while native project truth remains protected.',
+    summary: remaining > 0
+      ? `The AI Director is organizing a bounded batch of ${candidates.length} displaced workflow nodes while native project truth remains protected.`
+      : 'The AI Director is physically organizing each displaced workflow node while native project truth remains protected.',
     mode: 'assist',
     provider: 'demo',
     expectedProjectRevision: snapshot.projectRevision,
