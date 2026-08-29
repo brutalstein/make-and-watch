@@ -9,13 +9,20 @@ class FakeClient extends EventEmitter {
     this.isRunning = true;
     this.requests = [];
     this.turn = 0;
+    this.failNextTurnStart = false;
   }
   async start() {}
+  readOnlyThreadSecurityParams() { return { permissions: ':read-only' }; }
+  readOnlyTurnSecurityParams() { return { permissions: ':read-only' }; }
   async request(method, params) {
     this.requests.push({ method, params });
     if (method === 'thread/start') return { thread: { id: 'chat-thread-1' } };
     if (method === 'thread/delete' || method === 'turn/interrupt') return {};
     if (method === 'turn/start') {
+      if (this.failNextTurnStart) {
+        this.failNextTurnStart = false;
+        throw new Error('simulated chat turn/start failure');
+      }
       this.turn += 1;
       const turnId = `chat-turn-${this.turn}`;
       queueMicrotask(() => {
@@ -36,7 +43,8 @@ assert.equal(threadId, 'chat-thread-1');
 const threadStart = client.requests.find((request) => request.method === 'thread/start');
 assert.ok(threadStart, 'chat must create a Codex thread');
 assert.equal(threadStart.params.approvalPolicy, 'never');
-assert.equal(threadStart.params.sandbox, 'read-only', 'thread/start sandbox uses the CLI-style kebab-case wire enum');
+assert.equal(threadStart.params.permissions, ':read-only');
+assert.equal(Object.prototype.hasOwnProperty.call(threadStart.params, 'sandbox'), false);
 
 assert.equal(await chat.send(threadId, 'first message'), 'reply 1');
 assert.equal(await chat.send(threadId, 'second message'), 'reply 2');
@@ -44,8 +52,18 @@ const turns = client.requests.filter((request) => request.method === 'turn/start
 assert.equal(turns.length, 2);
 assert.equal(turns[0].params.threadId, turns[1].params.threadId, 'multi-turn chat must keep one Codex thread');
 assert.equal(turns[0].params.approvalPolicy, 'never');
-assert.equal(turns[0].params.sandboxPolicy.type, 'readOnly', 'turn/start sandboxPolicy uses the App Server camelCase policy enum');
-assert.equal(turns[0].params.sandboxPolicy.access.type, 'restricted');
+assert.equal(turns[0].params.permissions, ':read-only');
+assert.equal(Object.prototype.hasOwnProperty.call(turns[0].params, 'sandboxPolicy'), false);
+
+const unhandled = [];
+const onUnhandled = (reason) => unhandled.push(reason);
+process.on('unhandledRejection', onUnhandled);
+client.failNextTurnStart = true;
+await assert.rejects(chat.send(threadId, 'failing message'), /simulated chat turn\/start failure/);
+await new Promise((resolvePromise) => setImmediate(resolvePromise));
+process.off('unhandledRejection', onUnhandled);
+assert.equal(unhandled.length, 0, 'chat turn/start rejection must never terminate the bridge through an orphaned promise');
+
 await chat.deleteThread(threadId);
 assert.ok(client.requests.some((request) => request.method === 'thread/delete'));
 
