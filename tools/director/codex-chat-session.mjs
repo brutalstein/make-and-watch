@@ -7,11 +7,15 @@ const directorRuntimeRoot = resolve(root, 'tools', 'director', 'runtime');
 const CHAT_TURN_TIMEOUT_MS = 120_000;
 const TURN_START_TIMEOUT_MS = 20_000;
 const INTERRUPT_TIMEOUT_MS = 2_500;
-const THREAD_TIMEOUT_MS = 10_000;
+const THREAD_TIMEOUT_MS = 15_000;
 
 function safeText(value, fallback = 'Codex Director chat failed') {
   const text = String(value ?? '').trim();
   return text || fallback;
+}
+
+function invalidParams(error) {
+  return error?.code === -32602 || /invalid params|unknown field|excludeTurns/i.test(String(error?.message ?? ''));
 }
 
 export class CodexChatSession {
@@ -19,29 +23,117 @@ export class CodexChatSession {
     if (!client) throw new Error('Codex chat requires an App Server client');
     this.client = client;
     this.activeTurn = null;
+    this.attachedThreads = new Set();
+  }
+
+  threadSecurityParams() {
+    return {
+      cwd: directorRuntimeRoot,
+      approvalPolicy: 'never',
+      ...this.client.readOnlyThreadSecurityParams(),
+    };
   }
 
   async createThread() {
     await this.client.start();
     const dynamicTools = this.client.dynamicToolSpecs?.() ?? [];
     const result = await this.client.request('thread/start', {
-      cwd: directorRuntimeRoot,
-      approvalPolicy: 'never',
-      ...this.client.readOnlyThreadSecurityParams(),
+      ...this.threadSecurityParams(),
       ...(dynamicTools.length > 0 ? { dynamicTools } : {}),
-      ephemeral: true,
       serviceName: 'make_and_watch_director_chat',
-    }, 15_000);
+    }, THREAD_TIMEOUT_MS);
     const threadId = result?.thread?.id;
     if (typeof threadId !== 'string' || !threadId) throw new Error('Codex App Server did not create a Director chat thread');
+    this.attachedThreads.add(threadId);
     return threadId;
+  }
+
+  async resumeThread(threadId) {
+    if (typeof threadId !== 'string' || !threadId) throw new Error('Director chat thread ID is required');
+    if (this.attachedThreads.has(threadId)) return threadId;
+    await this.client.start();
+
+    let result;
+    try {
+      result = await this.client.request('thread/resume', {
+        threadId,
+        ...this.threadSecurityParams(),
+        excludeTurns: true,
+      }, THREAD_TIMEOUT_MS);
+    } catch (error) {
+      if (!invalidParams(error)) throw error;
+      result = await this.client.request('thread/resume', {
+        threadId,
+        ...this.threadSecurityParams(),
+      }, THREAD_TIMEOUT_MS);
+    }
+
+    const resumedId = result?.thread?.id;
+    if (typeof resumedId !== 'string' || resumedId !== threadId) {
+      throw new Error('Codex App Server returned an invalid resumed Director thread');
+    }
+    this.attachedThreads.add(threadId);
+    return threadId;
+  }
+
+  async readThread(threadId, includeTurns = false) {
+    await this.client.start();
+    const result = await this.client.request('thread/read', { threadId, includeTurns }, THREAD_TIMEOUT_MS);
+    if (!result?.thread || result.thread.id !== threadId) throw new Error('Codex App Server returned an invalid Director thread read');
+    return result.thread;
+  }
+
+  async nameThread(threadId, name) {
+    if (!threadId || !String(name ?? '').trim()) return;
+    await this.client.start();
+    await this.client.request('thread/name/set', {
+      threadId,
+      name: String(name).trim().slice(0, 120),
+    }, THREAD_TIMEOUT_MS);
+  }
+
+  async unsubscribeThread(threadId) {
+    if (!threadId || !this.attachedThreads.has(threadId)) return;
+    await this.client.start();
+    await this.client.request('thread/unsubscribe', { threadId }, THREAD_TIMEOUT_MS).catch(() => undefined);
+    this.attachedThreads.delete(threadId);
+  }
+
+  async archiveThread(threadId) {
+    if (!threadId) return;
+    if (this.activeTurn?.threadId === threadId && !this.activeTurn.settled) {
+      throw new Error('Cannot archive the Director conversation while its turn is active');
+    }
+    await this.client.start();
+    await this.client.request('thread/archive', { threadId }, THREAD_TIMEOUT_MS);
+    this.attachedThreads.delete(threadId);
+  }
+
+  async unarchiveThread(threadId) {
+    if (!threadId) return;
+    await this.client.start();
+    const result = await this.client.request('thread/unarchive', { threadId }, THREAD_TIMEOUT_MS);
+    if (result?.thread?.id && result.thread.id !== threadId) {
+      throw new Error('Codex App Server returned an invalid unarchived Director thread');
+    }
+    this.attachedThreads.delete(threadId);
+  }
+
+  async deleteThread(threadId) {
+    if (!threadId) return;
+    if (this.activeTurn?.threadId === threadId && !this.activeTurn.settled) {
+      throw new Error('Cannot delete the Director conversation while its turn is active');
+    }
+    await this.client.start();
+    await this.client.request('thread/delete', { threadId }, THREAD_TIMEOUT_MS);
+    this.attachedThreads.delete(threadId);
   }
 
   async send(threadId, prompt) {
     if (this.activeTurn) throw new Error('Codex Director already has an active turn');
     if (typeof threadId !== 'string' || !threadId) throw new Error('Director chat thread ID is required');
     if (typeof prompt !== 'string' || !prompt.trim()) throw new Error('Director chat prompt is required');
-    await this.client.start();
+    await this.resumeThread(threadId);
 
     let resolveCompletion;
     let rejectCompletion;
@@ -109,8 +201,7 @@ export class CodexChatSession {
       if (typeof returnedTurnId !== 'string' || !returnedTurnId) throw new Error('Codex App Server did not start a Director chat turn');
       if (turn.turnId && turn.turnId !== returnedTurnId) throw new Error('Codex App Server returned conflicting chat turn identifiers');
       turn.turnId = returnedTurnId;
-      const reply = safeText(await completion, 'Codex completed without a chat reply');
-      return reply;
+      return safeText(await completion, 'Codex completed without a chat reply');
     } catch (error) {
       if (!turn.settled) {
         const id = turn.turnId;
@@ -125,18 +216,16 @@ export class CodexChatSession {
     }
   }
 
-  async deleteThread(threadId) {
-    if (!threadId) return;
-    await this.client.start();
-    await this.client.request('thread/delete', { threadId }, THREAD_TIMEOUT_MS);
-  }
-
   async shutdown() {
     const turn = this.activeTurn;
-    if (!turn || turn.settled) return;
+    if (!turn || turn.settled) {
+      this.attachedThreads.clear();
+      return;
+    }
     const id = turn.turnId;
     if (id && this.client.isRunning) {
       await this.client.request('turn/interrupt', { threadId: turn.threadId, turnId: id }, INTERRUPT_TIMEOUT_MS).catch(() => undefined);
     }
+    this.attachedThreads.clear();
   }
 }
