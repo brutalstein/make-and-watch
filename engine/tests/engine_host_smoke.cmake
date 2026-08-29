@@ -12,8 +12,9 @@ file(REMOVE "${DB}" "${DB}-wal" "${DB}-shm" "${INPUT}")
 
 file(WRITE "${INPUT}"
   "{\"protocol\":1,\"id\":\"health\",\"method\":\"health\",\"params\":{}}\n"
-  "{\"protocol\":1,\"id\":\"apply\",\"method\":\"project.apply\",\"params\":{\"commands\":[{\"type\":\"node.create\",\"node\":{\"id\":\"series.smoke\",\"kind\":\"series\",\"title\":\"Smoke Series\"}}]}}\n"
+  "{\"protocol\":1,\"id\":\"apply\",\"method\":\"project.apply\",\"params\":{\"commands\":[{\"type\":\"node.create\",\"node\":{\"id\":\"series.smoke\",\"kind\":\"series\",\"title\":\"Smoke Series\"}}],\"context\":{\"actor\":\"user\",\"source\":\"process-smoke\",\"reason\":\"verify durable native history\"}}}\n"
   "{\"protocol\":1,\"id\":\"snapshot\",\"method\":\"project.snapshot\",\"params\":{}}\n"
+  "{\"protocol\":1,\"id\":\"history\",\"method\":\"project.history\",\"params\":{\"limit\":4}}\n"
 )
 
 execute_process(
@@ -31,12 +32,21 @@ endif()
 
 string(REGEX MATCHALL "\"ok\":true" OK_MATCHES "${OUTPUT}")
 list(LENGTH OK_MATCHES OK_COUNT)
-if(OK_COUNT LESS 3)
-  message(FATAL_ERROR "expected three successful RPC responses, got ${OK_COUNT}: ${OUTPUT}")
+if(OK_COUNT LESS 4)
+  message(FATAL_ERROR "expected four successful RPC responses, got ${OK_COUNT}: ${OUTPUT}")
 endif()
 
 if(NOT OUTPUT MATCHES "series\\.smoke")
   message(FATAL_ERROR "snapshot did not contain persisted smoke node: ${OUTPUT}")
+endif()
+if(NOT OUTPUT MATCHES "process-smoke")
+  message(FATAL_ERROR "history did not expose persisted commit source: ${OUTPUT}")
+endif()
+if(NOT OUTPUT MATCHES "verify durable native history")
+  message(FATAL_ERROR "history did not expose persisted commit reason: ${OUTPUT}")
+endif()
+if(NOT OUTPUT MATCHES "\"actor\":\"user\"")
+  message(FATAL_ERROR "history did not preserve commit actor: ${OUTPUT}")
 endif()
 if(NOT EXISTS "${DB}")
   message(FATAL_ERROR "engine host did not create the SQLite project database")
