@@ -83,6 +83,7 @@ export interface DirectorChatResult {
   reply: string;
   turnCount: number;
   projectRevision: number;
+  projectChanged: boolean;
   context: DirectorContextStats;
 }
 
