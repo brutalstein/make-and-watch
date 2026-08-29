@@ -51,6 +51,7 @@ import {
 } from 'lucide-react';
 
 import { engineClient } from './engineClient';
+import { PROJECT_CHANGED_EVENT } from './projectEvents';
 import { AutopilotCancelledError, AutopilotExecutionControl, controlledDelay } from './director/autopilotControl';
 import { executeAutopilotPlan, type AutopilotRuntime } from './director/autopilotExecutor';
 import { buildWorkspaceAutopilotPlan } from './director/autopilotPlan';
@@ -247,6 +248,23 @@ export function App() {
     }
   }, []);
 
+  const refreshProjectState = useCallback(async () => {
+    try {
+      const [nextHealth, nextSnapshot, nextHistory] = await Promise.all([
+        engineClient.health(),
+        engineClient.snapshot(),
+        engineClient.history(10),
+      ]);
+      setHealth(nextHealth);
+      setSnapshot(nextSnapshot);
+      setHistory(nextHistory.transactions);
+      setImpact(null);
+      setError(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }, []);
+
   const refreshAll = useCallback(async () => {
     try {
       const [nextHealth, nextSnapshot, nextTelemetry, nextHistory] = await Promise.all([
@@ -274,8 +292,17 @@ export function App() {
   }, [refreshAll]);
 
   useEffect(() => {
+    const onProjectChanged = () => {
+      void refreshProjectState();
+    };
+    window.addEventListener(PROJECT_CHANGED_EVENT, onProjectChanged);
+    return () => window.removeEventListener(PROJECT_CHANGED_EVENT, onProjectChanged);
+  }, [refreshProjectState]);
+
+  useEffect(() => {
     if (!snapshot || snapshot.nodes.length === 0) {
       setSelectedId(null);
+      setImpact(null);
       setFlowNodes([]);
       return;
     }
@@ -286,6 +313,7 @@ export function App() {
     setLayoutStatus('Drag nodes · layout auto-saves');
 
     if (selectedId && snapshot.nodes.some((node) => node.id === selectedId)) return;
+    setImpact(null);
     setSelectedId(
       snapshot.nodes.find((node) => node.kind === 'shot')?.id
       ?? snapshot.nodes.find((node) => node.kind === 'scene')?.id
@@ -371,7 +399,7 @@ export function App() {
   ) => {
     setBusy(true);
     try {
-      const result = await engineClient.apply(commands, context);
+      const result = await engineClient.apply(commands, context, snapshot?.projectRevision);
       setSnapshot(result.snapshot);
       setHealth((current) => current ? { ...current, projectRevision: result.projectRevision, nodeCount: result.snapshot.nodes.length } : current);
       setImpact(null);
@@ -383,7 +411,7 @@ export function App() {
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [snapshot?.projectRevision]);
 
   const previewImpactFor = useCallback(async (nodeId: string) => {
     setBusy(true);
@@ -659,7 +687,11 @@ export function App() {
         </div>
         <div className="episode-title">
           <span className={health ? 'status-dot' : 'status-dot status-dot--offline'} />
-          {episode ? `Episode ${episode.metadata.episodeNumber ?? '—'} · ${episode.title}` : 'Project loading'}
+          {episode
+            ? `Episode ${episode.metadata.episodeNumber ?? '—'} · ${episode.title}`
+            : snapshot
+              ? 'Clean workflow · ready'
+              : 'Project loading'}
           {snapshot ? <span className="revision-pill">rev {snapshot.projectRevision}</span> : null}
         </div>
         <div className="system-strip">
@@ -761,14 +793,14 @@ export function App() {
               </div>
             </div>
             <div className="director-note">
-              Claude/Codex authentication is still intentionally not faked. Their future output plugs into the same validated Autopilot plan and native command boundary already used here.
+              Codex App Server can now operate the authoritative project through typed Make & Watch tools. Shell/filesystem access stays read-only; revisions, locks, journaling, recovery and persistence remain native authority.
             </div>
           </div>
 
           <div className="director-input director-input--disabled">
             <MessageSquareText size={17} />
-            <span>Natural-language Director arrives after provider authentication…</span>
-            <kbd>next</kbd>
+            <span>Use Director Chat for direct project operations and long-form creative context.</span>
+            <kbd>live</kbd>
           </div>
         </aside>
 
