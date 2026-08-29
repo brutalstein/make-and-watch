@@ -3,11 +3,15 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { discoverProviderExecutable } from './provider-executable.mjs';
+import {
+  buildWindowsCmdCommand,
+  discoverProviderExecutable,
+  providerLaunchSummary,
+} from './provider-executable.mjs';
 
 const temp = await mkdtemp(join(tmpdir(), 'makewatch-provider-discovery-'));
 try {
-  const windowsBin = join(temp, 'windows-bin');
+  const windowsBin = join(temp, 'windows bin');
   await mkdir(windowsBin, { recursive: true });
   await writeFile(join(windowsBin, 'codex.cmd'), '@echo off\r\n', 'utf8');
   await writeFile(join(windowsBin, 'claude.exe'), '', 'utf8');
@@ -20,6 +24,12 @@ try {
   assert.equal(codex.name.toLowerCase(), 'codex.cmd');
   assert.equal(codex.discovery, 'path');
   assert.equal(codex.commandShellRequired, true, '.cmd must be launched through cmd.exe');
+  assert.match(providerLaunchSummary(codex), /via cmd\.exe/);
+
+  const versionCommand = buildWindowsCmdCommand(codex, ['--version']);
+  assert.ok(versionCommand.startsWith('""'), 'cmd /S /C command must contain an outer quote before the quoted shim path');
+  assert.ok(versionCommand.endsWith('""'), 'cmd /S /C command must close the outer quote after arguments');
+  assert.ok(versionCommand.includes('codex.cmd" "--version"'), 'shim path and generated argument must both be quoted');
 
   const claude = discoverProviderExecutable('claude', {
     platform: 'win32',
@@ -28,6 +38,7 @@ try {
   assert.ok(claude, 'Windows native claude.exe must be discovered');
   assert.equal(claude.name.toLowerCase(), 'claude.exe');
   assert.equal(claude.commandShellRequired, false, '.exe must be launched directly');
+  assert.match(providerLaunchSummary(claude), /direct/);
 
   const userBin = join(temp, '.local', 'bin');
   await mkdir(userBin, { recursive: true });
