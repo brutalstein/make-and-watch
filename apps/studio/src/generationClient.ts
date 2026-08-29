@@ -13,14 +13,28 @@ export interface GenerationProviderStatus {
   detail?: string;
 }
 
+export interface AudioProviderStatus {
+  provider: 'chatterbox';
+  mode: 'multilingual-v3';
+  installed: boolean;
+  ready: boolean;
+  model: string;
+  languages: string[];
+  detail: string;
+}
+
 export interface SceneGenerationArtifact {
   shotId: string;
   generationNodeId: string;
+  assetNodeId: string;
   filename: string;
   relativePath: string;
   contentType: string;
+  sha256: string;
   promptId: string;
   checkpoint: string;
+  seed: number;
+  promptHash: string;
 }
 
 export interface SceneGenerationJob {
@@ -37,6 +51,35 @@ export interface SceneGenerationJob {
   completedAt: string | null;
   error: string;
   artifacts: SceneGenerationArtifact[];
+}
+
+export interface AudioGenerationArtifact {
+  assetNodeId: string;
+  generationNodeId: string;
+  filename: string;
+  relativePath: string;
+  contentType: 'audio/wav';
+  sha256: string;
+  durationSeconds: number;
+  sampleRate: number;
+  model: string;
+  language: string;
+  seed: number;
+  watermarked: boolean;
+  voiceReferenceUsed: boolean;
+}
+
+export interface AudioGenerationJob {
+  id: string;
+  audioId: string;
+  audioTitle: string;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  progress: number;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  error: string;
+  artifact: AudioGenerationArtifact | null;
 }
 
 interface Envelope<T> {
@@ -73,11 +116,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const generationClient = {
   provider: () => request<GenerationProviderStatus>('/provider'),
+  audioProvider: () => request<AudioProviderStatus>('/audio/provider'),
   jobs: (limit = 20) => request<{ jobs: SceneGenerationJob[] }>(`/jobs?limit=${encodeURIComponent(String(limit))}`),
+  audioJobs: (limit = 20) => request<{ jobs: AudioGenerationJob[] }>(`/audio/jobs?limit=${encodeURIComponent(String(limit))}`),
   startScene: (sceneId: string) => request<{ job: SceneGenerationJob }>('/scenes', {
     method: 'POST',
     body: JSON.stringify({ sceneId }),
   }),
+  startAudio: (audioId: string) => request<{ job: AudioGenerationJob }>('/audio', {
+    method: 'POST',
+    body: JSON.stringify({ audioId }),
+  }),
   job: (jobId: string) => request<{ job: SceneGenerationJob }>(`/jobs/${encodeURIComponent(jobId)}`),
+  audioJob: (jobId: string) => request<{ job: AudioGenerationJob }>(`/audio/jobs/${encodeURIComponent(jobId)}`),
   artifactUrl: (jobId: string, shotId: string) => `${GENERATION_BASE}/artifacts/${encodeURIComponent(jobId)}/${encodeURIComponent(shotId)}`,
+  audioArtifactUrl: (jobId: string) => `${GENERATION_BASE}/audio/artifacts/${encodeURIComponent(jobId)}`,
 };
