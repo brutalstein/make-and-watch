@@ -92,21 +92,58 @@ export async function probeComfyUi(baseUrl = COMFY_BASE_URL) {
   }
 }
 
+// Windows redirects the Documents/Desktop known folders into OneDrive on most
+// consumer machines, so homedir()/Documents is frequently NOT where the user's
+// files actually live. Searching only under homedir() therefore misses very
+// common installs.
+function searchBases() {
+  const bases = [homedir()];
+  for (const key of ['OneDrive', 'OneDriveConsumer', 'OneDriveCommercial', 'USERPROFILE']) {
+    if (process.env[key]) bases.push(process.env[key]);
+  }
+  return [...new Set(bases.filter(Boolean))];
+}
+
+// Directories people actually clone or unpack ComfyUI into, relative to a base.
+const COMFY_RELATIVE_PARENTS = [
+  '',
+  'Documents',
+  'Desktop',
+  'Downloads',
+  join('Documents', 'GitHub'),
+  join('Desktop', 'GitHub'),
+  join('source', 'repos'),
+  'git',
+  'dev',
+  'projects',
+];
+
+const COMFY_DIRECTORY_NAMES = [
+  'ComfyUI',
+  join('ComfyUI_windows_portable', 'ComfyUI'),
+];
+
 function commonComfyRoots() {
-  const home = homedir();
   const managed = managedMediaRuntimePaths().workspace;
   const roots = [
     process.env.MAKEWATCH_COMFYUI_HOME,
     process.env.COMFYUI_HOME,
     managed,
-    join(home, 'ComfyUI'),
-    join(home, 'Documents', 'ComfyUI'),
-    join(home, 'Desktop', 'ComfyUI'),
-    join(home, 'Downloads', 'ComfyUI'),
-    join(home, 'Downloads', 'ComfyUI_windows_portable', 'ComfyUI'),
-    join(home, 'Desktop', 'ComfyUI_windows_portable', 'ComfyUI'),
   ];
-  if (process.platform === 'win32') roots.push('C:\\ComfyUI', 'D:\\ComfyUI');
+
+  // Bounded cross-product of known bases, parents and directory names. This is
+  // a fixed list of access() checks, never a recursive disk scan.
+  for (const base of searchBases()) {
+    for (const parent of COMFY_RELATIVE_PARENTS) {
+      for (const name of COMFY_DIRECTORY_NAMES) {
+        roots.push(parent ? join(base, parent, name) : join(base, name));
+      }
+    }
+  }
+
+  if (process.platform === 'win32') roots.push('C:\ComfyUI', 'D:\ComfyUI');
+  // Runtime directories installed by other local AI tooling.
+  roots.push(join(homedir(), '.aice', 'runtime', 'ComfyUI'));
   return unique(roots);
 }
 
@@ -158,6 +195,9 @@ export async function discoverComfyUiInstallations() {
     if (!python) continue;
     const parent = dirname(root);
     const portable = basename(parent).toLowerCase().includes('portable') || basename(dirname(python)).toLowerCase().includes('python_embed');
+    // A dedicated interpreter means the install was actually provisioned; a
+    // fallback to a global python usually means missing ComfyUI dependencies.
+    const dedicated = resolve(python).toLowerCase().startsWith(resolve(parent).toLowerCase());
     results.push({
       kind: portable ? 'portable' : 'python-source',
       root,
@@ -170,7 +210,7 @@ export async function discoverComfyUiInstallations() {
         '--disable-auto-launch',
       ],
       cwd: root,
-      score: root === managed.workspace ? 90 : portable ? 80 : 60,
+      score: (root === managed.workspace ? 90 : portable ? 80 : 60) + (dedicated ? 5 : 0),
     });
   }
 

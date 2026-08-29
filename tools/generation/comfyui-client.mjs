@@ -121,6 +121,35 @@ export function buildStoryboardWorkflow({
   };
 }
 
+// ComfyUI reports a failure as its whole execution message log. Dumping that
+// JSON reaches the user (and the Director) as the generation job error, which
+// buries the one line that says what actually broke.
+function firstLine(text) {
+  return String(text).replace(/\s+/g, " ").trim().slice(0, 400);
+}
+
+function describeComfyFailure(messages) {
+  const error = messages.find(([name]) => name === 'execution_error')?.[1];
+  if (!error) {
+    const raw = messages.length ? `: ${JSON.stringify(messages).slice(0, 400)}` : '';
+    return `ComfyUI generation failed${raw}`;
+  }
+
+  const detail = String(error.exception_message ?? error.exception_type ?? 'unknown error').trim();
+  const node = error.node_type ? ` in ${error.node_type}` : '';
+
+  // A GPU newer than the installed PyTorch build is the most common local
+  // failure and is unfixable from inside Make & Watch, so name the remedy.
+  if (/no kernel image is available/i.test(detail)) {
+    return `ComfyUI cannot run on this GPU${node}: the ComfyUI environment's PyTorch build does not include kernels for this card. `
+      + 'Reinstall PyTorch in that ComfyUI virtual environment with a CUDA build that supports it, or run ComfyUI with --cpu.';
+  }
+  if (/out of memory/i.test(detail)) {
+    return `ComfyUI ran out of VRAM${node}. Lower MAKEWATCH_PREVIEW_WIDTH/HEIGHT or close other GPU workloads.`;
+  }
+  return `ComfyUI generation failed${node}: ${firstLine(detail)}`;
+}
+
 export class ComfyUiClient {
   constructor({
     baseUrl = process.env.MAKEWATCH_COMFYUI_URL ?? DEFAULT_BASE_URL,
@@ -234,7 +263,7 @@ export class ComfyUiClient {
         const status = history.status ?? {};
         if (status.status_str === 'error' || status.completed === false && status.status_str === 'error') {
           const messages = Array.isArray(status.messages) ? status.messages : [];
-          throw new Error(`ComfyUI generation failed${messages.length ? `: ${JSON.stringify(messages).slice(0, 1000)}` : ''}`);
+          throw new Error(describeComfyFailure(messages));
         }
         if (history.outputs && Object.keys(history.outputs).length > 0) return history;
         if (status.completed === true) return history;
