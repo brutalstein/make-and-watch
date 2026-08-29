@@ -9,6 +9,7 @@ import { GenerationBridgeClient } from './bridge-client.mjs';
 import { ComfyUiClient } from './comfyui-client.mjs';
 import { GpuExclusiveScheduler } from './gpu-scheduler.mjs';
 import { SceneGenerationService } from './scene-generation-service.mjs';
+import { buildTemporalShotRequest, temporalShotContract } from './temporal-shot-contract.mjs';
 
 const root = process.cwd();
 const port = Number(process.env.MAKEWATCH_GENERATION_PORT ?? 4178);
@@ -90,9 +91,16 @@ function boundedId(value, label) {
   return value;
 }
 
+function boundedNumber(value, fallback, minimum, maximum) {
+  if (value === null || value === undefined || value === '') return fallback;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(minimum, Math.min(maximum, number));
+}
+
 function errorStatus(error) {
   if (error?.code === 'not_found') return 404;
-  if (error?.code === 'busy') return 409;
+  if (error?.code === 'busy' || error?.code === 'not_ready') return 409;
   if (error?.code === 'resource_exhausted') return 429;
   if (error?.code === 'invalid_argument') return 400;
   return 502;
@@ -122,7 +130,8 @@ const server = createServer(async (request, response) => {
     if (request.method === 'GET' && url.pathname === '/api/health') {
       sendJson(request, response, 200, {
         service: 'makewatch-media-generation',
-        modes: ['storyboard-preview', 'multilingual-voice', 'episode-composition', 'episode-preview-render'],
+        modes: ['storyboard-preview', 'temporal-shot-planning', 'multilingual-voice', 'episode-composition', 'episode-preview-render'],
+        temporal: temporalShotContract,
         gpuScheduler: scheduler.status(),
       });
       return;
@@ -160,6 +169,21 @@ const server = createServer(async (request, response) => {
       const body = await readJson(request);
       const job = await audioService.startAudio(boundedId(body.audioId, 'audioId'));
       sendJson(request, response, 202, { job });
+      return;
+    }
+
+    const temporalPlanMatch = /^\/api\/temporal\/shots\/([A-Za-z0-9._:-]+)\/plan$/.exec(url.pathname);
+    if (request.method === 'GET' && temporalPlanMatch) {
+      const shotId = boundedId(temporalPlanMatch[1], 'shotId');
+      const totalVramMb = boundedNumber(url.searchParams.get('vramMb'), 8192, 0, 196_608);
+      const maxSegmentSeconds = boundedNumber(url.searchParams.get('maxSegmentSeconds'), undefined, 1, 10);
+      const snapshot = await bridge.snapshot();
+      sendJson(request, response, 200, {
+        plan: buildTemporalShotRequest(snapshot, shotId, {
+          totalVramMb,
+          ...(maxSegmentSeconds === undefined ? {} : { maxSegmentSeconds }),
+        }),
+      });
       return;
     }
 
