@@ -96,8 +96,21 @@ body { font-size: 13px; }
 .autopilot-banner small,
 .autopilot-banner button { font-size: 10px !important; }
 
-/* Autopilot owns workflow geometry, not conversation. Keep the Director sidecar
-   fully interactive so the user can continue directing or cancel/change intent. */
+/* Autopilot owns workflow geometry, not conversation. The fixed veil is clipped
+   to the live ReactFlow surface: below the toolbar, above the timeline, between
+   sidecars. This preserves exact-pointer choreography without stealing Chat input. */
+.autopilot-interaction-lock {
+  top: 130px !important;
+  bottom: 112px !important;
+  right: var(--mw-inspector-width) !important;
+  pointer-events: auto !important;
+}
+.studio-shell:has(.workspace--director-chat-open) .autopilot-interaction-lock {
+  left: calc(var(--mw-director-width) + var(--mw-chat-width)) !important;
+}
+.studio-shell:has(.workspace--director-chat-closed) .autopilot-interaction-lock {
+  left: calc(var(--mw-director-width) + var(--mw-chat-rail-width)) !important;
+}
 .studio-shell--autopilot .director-chat {
   opacity: 1 !important;
   pointer-events: auto !important;
