@@ -1,5 +1,6 @@
 import type { ProjectNodeKind } from './index';
 import capabilities from './nodeCapabilities.json';
+import temporalOverlay from './temporalNodeCapabilities.json';
 
 export type NodeExecutionRole = 'scope' | 'creative-anchor' | 'production-unit' | 'execution' | 'artifact';
 export type NodeMetadataFieldType = 'text' | 'multiline' | 'number' | 'enum' | 'boolean' | 'duration' | 'seed' | 'language' | 'path';
@@ -29,13 +30,42 @@ export interface ProjectNodeCapability {
   fields: readonly NodeMetadataFieldSpec[];
 }
 
+type CapabilityOverlay = Partial<Pick<ProjectNodeCapability, 'invariants' | 'fields'>>;
 
-// The capability table itself lives in ./nodeCapabilities.json so that the
-// Node-side Director runtime (tools/) and the TypeScript Studio/contract layer
-// read exactly the same production schema. Editing the JSON is the only way to
-// change the semantic node model.
-export const PROJECT_NODE_CAPABILITIES =
-  capabilities as unknown as Record<ProjectNodeKind, ProjectNodeCapability>;
+function mergeFields(
+  baseFields: readonly NodeMetadataFieldSpec[],
+  overlayFields: readonly NodeMetadataFieldSpec[] = [],
+): NodeMetadataFieldSpec[] {
+  const overlays = new Map(overlayFields.map((field) => [field.key, field]));
+  const merged = baseFields.map((field) => ({ ...field, ...(overlays.get(field.key) ?? {}) }));
+  const existing = new Set(baseFields.map((field) => field.key));
+  for (const field of overlayFields) {
+    if (!existing.has(field.key)) merged.push(field);
+  }
+  return merged;
+}
+
+function mergedCapabilities(): Record<ProjectNodeKind, ProjectNodeCapability> {
+  const base = capabilities as unknown as Record<ProjectNodeKind, ProjectNodeCapability>;
+  const overlay = temporalOverlay as unknown as Partial<Record<ProjectNodeKind, CapabilityOverlay>>;
+  return Object.fromEntries(
+    Object.entries(base).map(([kind, capability]) => {
+      const patch = overlay[kind as ProjectNodeKind];
+      if (!patch) return [kind, capability];
+      return [kind, {
+        ...capability,
+        invariants: [...capability.invariants, ...(patch.invariants ?? [])],
+        fields: mergeFields(capability.fields, patch.fields),
+      } satisfies ProjectNodeCapability];
+    }),
+  ) as Record<ProjectNodeKind, ProjectNodeCapability>;
+}
+
+// The stable semantic node model lives in nodeCapabilities.json. Additive
+// temporal-video evolution lives in temporalNodeCapabilities.json so older
+// projects keep the same defaults while Studio and Director can expose new
+// temporal/continuity fields from one shared overlay.
+export const PROJECT_NODE_CAPABILITIES = mergedCapabilities();
 
 export function defaultMetadataForKind(kind: ProjectNodeKind): Record<string, string> {
   return Object.fromEntries(
