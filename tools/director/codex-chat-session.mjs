@@ -1,3 +1,9 @@
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const directorRuntimeRoot = resolve(root, 'tools', 'director', 'runtime');
+
 const CHAT_TURN_TIMEOUT_MS = 120_000;
 const TURN_START_TIMEOUT_MS = 20_000;
 const INTERRUPT_TIMEOUT_MS = 2_500;
@@ -18,7 +24,7 @@ export class CodexChatSession {
   async createThread() {
     await this.client.start();
     const result = await this.client.request('thread/start', {
-      cwd: undefined,
+      cwd: directorRuntimeRoot,
       approvalPolicy: 'never',
       sandbox: 'readOnly',
       ephemeral: true,
@@ -90,8 +96,16 @@ export class CodexChatSession {
       const result = await this.client.request('turn/start', {
         threadId,
         input: [{ type: 'text', text: prompt }],
+        cwd: directorRuntimeRoot,
         approvalPolicy: 'never',
-        sandboxPolicy: { type: 'readOnly' },
+        sandboxPolicy: {
+          type: 'readOnly',
+          access: {
+            type: 'restricted',
+            includePlatformDefaults: true,
+            readableRoots: [directorRuntimeRoot],
+          },
+        },
         effort: 'medium',
         summary: 'concise',
       }, TURN_START_TIMEOUT_MS);
