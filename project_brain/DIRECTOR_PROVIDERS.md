@@ -15,6 +15,7 @@ Official references checked 2026-08-29:
 - OpenAI Codex App Server: https://developers.openai.com/codex/app-server
 - OpenAI Codex authentication: https://developers.openai.com/codex/auth
 - OpenAI Codex `AGENTS.md`: https://developers.openai.com/codex/guides/agents-md
+- OpenAI Codex open-source App Server protocol and permission-profile implementation
 - Anthropic Claude Code legal/compliance: https://docs.anthropic.com/en/docs/claude-code/legal-and-compliance
 
 ## Codex — resilient supported local-client path
@@ -28,6 +29,7 @@ Codex CLI detected
       |
       +-- app-server advertised + initializes
       |       -> app_server
+      |       -> permission-profile negotiation
       |       -> account/read
       |       -> ChatGPT browser auth when needed
       |       -> native Codex threads for multi-turn chat
@@ -47,18 +49,43 @@ Codex CLI detected
 One bridge-owned App Server process handles sanitized account state, login, bounded chat threads and schema-constrained planning:
 
 ```text
-initialize -> initialized -> account/read
+initialize(experimentalApi=true)
+ -> initialized
+ -> permissionProfile/list
+ -> select allowed :read-only
+ -> account/read
       |
       +-- auth needed -> account/login/start(type=chatgpt)
       |                 -> official browser flow
       |                 -> account/login/completed / account/updated
       |
-      +-- chat -> thread/start -> repeated turn/start -> thread/delete
+      +-- chat -> thread/start(permissions=:read-only)
+      |          -> repeated turn/start(permissions=:read-only)
+      |          -> thread/delete
       |
-      +-- plan -> thread/start -> turn/start(outputSchema) -> thread/delete
+      +-- plan -> thread/start(permissions=:read-only)
+                 -> turn/start(permissions=:read-only, outputSchema)
+                 -> thread/delete
 ```
 
 Codex owns OAuth persistence/refresh. Make & Watch receives sanitized account type/plan state and, when needed, the official auth URL. Account email and token material are stripped before provider state reaches React.
+
+### Permission-profile compatibility
+
+Current Codex builds expose named permission profiles. The built-in read-only profile is `:read-only`.
+
+Rules:
+
+- App Server initialization opts into the experimental API surface required for permission-profile discovery;
+- `permissionProfile/list` is queried for the Director runtime working directory;
+- `:read-only` must exist and be allowed before the modern App Server path is considered safe;
+- modern `thread/start` and `turn/start` use `permissions: ":read-only"`;
+- `permissions` is never combined with legacy `sandbox` / `sandboxPolicy` fields;
+- the deprecated `readOnly.access` shape is never emitted;
+- if an older App Server does not implement permission-profile discovery, Make & Watch may use the minimal legacy read-only fields without the removed `access` object;
+- if read-only permission negotiation itself is denied by policy, App Server is rejected and the bounded official CLI compatibility path may be used instead.
+
+This negotiation exists because official docs and installed Codex builds may evolve at different speeds. The runtime contract is therefore capability-driven rather than depending on one hard-coded legacy sandbox payload.
 
 ### Exec compatibility mode
 
@@ -131,6 +158,8 @@ Common bounds:
 - explicit conversation cleanup on New conversation/close/shutdown;
 - provider process remains bridge-owned while active.
 
+A crucial lifecycle invariant is that a rejected `turn/start` may occur before the turn-completion promise is awaited. Chat and plan runtimes therefore attach an explicit rejection observer to completion promises so cleanup failure cannot become a process-level unhandled rejection. Provider errors must be returned/fail over; they must never terminate the native project bridge.
+
 Chat is creative context only; it cannot mutate SQLite/native project state.
 
 ## Planning path
@@ -164,7 +193,7 @@ Public behavior:
 
 Workflow is the persistent central canvas. Creative Control, Director Chat and Inspector are independent presentation sidecars.
 
-- Director Chat already supports open/rail states;
+- Director Chat supports open/rail states;
 - `StudioPanelController` gives Creative Control and Inspector independent persisted collapse/rail states;
 - collapsing a sidecar returns width to the workflow instead of overlaying it;
 - Autopilot interaction lock tracks the actual active sidecar widths and still owns only the workflow surface;
@@ -198,11 +227,13 @@ Chat first-turn context has its own bounded compiler. App Server mode uses provi
 ## Shutdown / failure behavior
 
 - missing CLI: report unavailable; never fake connection;
-- App Server start failure: record the bounded diagnostic and attempt official CLI exec compatibility;
+- App Server start/protocol failure: record the bounded diagnostic and attempt official CLI exec compatibility when safe;
 - incompatible exec fallback: report unavailable rather than run an unsafe/unbounded command path;
 - auth required: first Send or manual Connect can initiate official Codex login;
 - concurrent provider run: reject the second run rather than overlap hidden state;
 - timeout: interrupt/terminate only the owned provider run;
+- provider ChildProcess and stdio `error` events are guarded so EPIPE/process errors cannot terminate the bridge EventEmitter;
+- turn-completion promises cannot become orphaned unhandled rejections;
 - bridge shutdown: drain App Server/turns and any active exec/login child before exit;
 - malformed provider output never becomes project state.
 
@@ -215,10 +246,12 @@ Windows live validation must prove:
 1. `dev.ps1` reports the actual Codex runtime;
 2. composer accepts typing before authentication/readiness;
 3. an already-connected ChatGPT CLI session enables either App Server chat or exec compatibility chat without reconfiguration;
-4. if sign-in is required, first Send preserves the message while official login completes;
-5. a second message preserves bounded conversation continuity;
-6. Chat stays interactive while Autopilot protects workflow geometry;
-7. Creative Control, Chat and Inspector can collapse/reopen independently without breaking canvas geometry;
-8. no nested white/native Creative Control scrollbar remains;
-9. bridge shutdown during a provider turn leaves no orphan owned provider process;
-10. chat/planning do not mutate semantic project revision by themselves.
+4. modern App Server selects the allowed `:read-only` permission profile and does not emit deprecated `readOnly.access`;
+5. if sign-in is required, first Send preserves the message while official login completes;
+6. a second message preserves bounded conversation continuity;
+7. an App Server turn error must either safely fail over or return a bounded error while native bridge/system telemetry stay alive;
+8. Chat stays interactive while Autopilot protects workflow geometry;
+9. Creative Control, Chat and Inspector can collapse/reopen independently without breaking canvas geometry;
+10. no nested white/native Creative Control scrollbar remains;
+11. bridge shutdown during a provider turn leaves no orphan owned provider process;
+12. chat/planning do not mutate semantic project revision by themselves.
