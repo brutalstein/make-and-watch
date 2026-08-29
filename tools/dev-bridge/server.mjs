@@ -7,6 +7,13 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
+import { buildDirectorContextPack } from '../director/context-pack.mjs';
+import {
+  invokeDirectorPlan,
+  launchProviderLogin,
+  providerStatuses,
+  shutdownDirectorProviders,
+} from '../director/provider-manager.mjs';
 import { DEV_SEED_COMMANDS, DEV_SEED_VERSION } from './dev-seed.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -112,6 +119,10 @@ function sendJson(request, response, status, payload) {
   response.end(JSON.stringify(payload));
 }
 
+function localSuccess(result) {
+  return { protocol: 1, id: `bridge-${randomUUID()}`, ok: true, result };
+}
+
 async function readJsonBody(request) {
   const chunks = [];
   let size = 0;
@@ -131,6 +142,22 @@ function boundedHistoryLimit(value) {
     throw new Error('history limit must be an integer between 1 and 24');
   }
   return parsed;
+}
+
+function directorProvider(value) {
+  if (value === 'codex' || value === 'claude') return value;
+  throw new Error('Director provider must be codex or claude');
+}
+
+function directorMode(value) {
+  if (value === 'assist' || value === 'guided' || value === 'director') return value;
+  throw new Error('Director mode must be assist, guided, or director');
+}
+
+function directorObjective(value) {
+  if (typeof value !== 'string' || !value.trim()) throw new Error('Director objective is required');
+  if (value.length > 4_000) throw new Error('Director objective exceeds 4000 characters');
+  return value.trim();
 }
 
 async function systemTelemetry() {
@@ -241,12 +268,46 @@ const server = createServer(async (request, response) => {
       return;
     }
     if (request.method === 'GET' && url.pathname === '/api/system') {
-      sendJson(request, response, 200, {
-        protocol: 1,
-        id: `system-${randomUUID()}`,
-        ok: true,
-        result: await systemTelemetry(),
+      sendJson(request, response, 200, localSuccess(await systemTelemetry()));
+      return;
+    }
+    if (request.method === 'GET' && url.pathname === '/api/director/providers') {
+      sendJson(request, response, 200, localSuccess(await providerStatuses()));
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/director/connect') {
+      const body = await readJsonBody(request);
+      sendJson(request, response, 200, localSuccess(await launchProviderLogin(directorProvider(body.provider))));
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/director/plan') {
+      const body = await readJsonBody(request);
+      const provider = directorProvider(body.provider);
+      const mode = directorMode(body.mode ?? 'guided');
+      const objective = directorObjective(body.objective);
+      const snapshotResponse = await rpc('project.snapshot');
+      if (!snapshotResponse.ok) {
+        throw new Error(`native snapshot failed before Director planning: ${snapshotResponse.error?.message ?? 'unknown error'}`);
+      }
+      const context = await buildDirectorContextPack({
+        provider,
+        objective,
+        mode,
+        snapshot: snapshotResponse.result,
+        selectedId: typeof body.selectedId === 'string' ? body.selectedId : null,
+        workspacePositions: body.workspacePositions ?? null,
       });
+      const plan = await invokeDirectorPlan(provider, context.prompt);
+      sendJson(request, response, 200, localSuccess({
+        plan,
+        context: {
+          hash: context.hash,
+          chars: context.chars,
+          estimatedTokens: context.estimatedTokens,
+          nodeCountIncluded: context.nodeCountIncluded,
+          dependencyCountIncluded: context.dependencyCountIncluded,
+        },
+      }));
       return;
     }
     if (request.method === 'POST' && url.pathname === '/api/project/apply') {
@@ -289,6 +350,7 @@ server.listen(bridgePort, '127.0.0.1', () => {
 function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
+  shutdownDirectorProviders();
   server.close();
   native.stdin.end();
   if (native.exitCode === null) native.kill();
