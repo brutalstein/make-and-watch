@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -27,38 +28,56 @@ constexpr std::uint32_t kMaxVideoDimension = 16'384U;
 constexpr double kMaxFramesPerSecond = 240.0;
 constexpr std::size_t kMaxGenerationStrategyLength = 128U;
 
-const Node* find_node(const project::ProjectSnapshot& snapshot, const core::EntityId& id) {
-  const auto iterator = std::find_if(
-      snapshot.graph.nodes.begin(), snapshot.graph.nodes.end(),
-      [&id](const Node& node) { return node.id == id; });
-  return iterator == snapshot.graph.nodes.end() ? nullptr : &*iterator;
-}
-
-std::vector<const Node*> direct_dependents(
-    const project::ProjectSnapshot& snapshot,
-    const core::EntityId& dependency,
-    NodeKind kind) {
-  std::vector<const Node*> result;
-  for (const auto& edge : snapshot.graph.dependencies) {
-    if (!(edge.dependency == dependency)) continue;
-    const auto* node = find_node(snapshot, edge.dependent);
-    if (node != nullptr && node->kind == kind) result.push_back(node);
+struct GraphLookup final {
+  explicit GraphLookup(const project::ProjectSnapshot& snapshot) {
+    nodes.reserve(snapshot.graph.nodes.size());
+    dependents.reserve(snapshot.graph.nodes.size());
+    dependencies.reserve(snapshot.graph.nodes.size());
+    for (const auto& node : snapshot.graph.nodes) nodes.emplace(node.id.value(), &node);
+    for (const auto& edge : snapshot.graph.dependencies) {
+      const auto dependent = nodes.find(edge.dependent.value());
+      const auto dependency = nodes.find(edge.dependency.value());
+      if (dependent == nodes.end() || dependency == nodes.end()) continue;
+      dependents[edge.dependency.value()].push_back(dependent->second);
+      dependencies[edge.dependent.value()].push_back(dependency->second);
+    }
   }
-  return result;
-}
 
-std::vector<const Node*> direct_dependencies(
-    const project::ProjectSnapshot& snapshot,
-    const core::EntityId& dependent,
-    NodeKind kind) {
-  std::vector<const Node*> result;
-  for (const auto& edge : snapshot.graph.dependencies) {
-    if (!(edge.dependent == dependent)) continue;
-    const auto* node = find_node(snapshot, edge.dependency);
-    if (node != nullptr && node->kind == kind) result.push_back(node);
+  [[nodiscard]] const Node* find(const core::EntityId& id) const {
+    const auto iterator = nodes.find(id.value());
+    return iterator == nodes.end() ? nullptr : iterator->second;
   }
-  return result;
-}
+
+  [[nodiscard]] std::vector<const Node*> direct_dependents(
+      const core::EntityId& dependency,
+      NodeKind kind) const {
+    std::vector<const Node*> result;
+    const auto iterator = dependents.find(dependency.value());
+    if (iterator == dependents.end()) return result;
+    result.reserve(iterator->second.size());
+    for (const auto* node : iterator->second) {
+      if (node->kind == kind) result.push_back(node);
+    }
+    return result;
+  }
+
+  [[nodiscard]] std::vector<const Node*> direct_dependencies(
+      const core::EntityId& dependent,
+      NodeKind kind) const {
+    std::vector<const Node*> result;
+    const auto iterator = dependencies.find(dependent.value());
+    if (iterator == dependencies.end()) return result;
+    result.reserve(iterator->second.size());
+    for (const auto* node : iterator->second) {
+      if (node->kind == kind) result.push_back(node);
+    }
+    return result;
+  }
+
+  std::unordered_map<std::string, const Node*> nodes;
+  std::unordered_map<std::string, std::vector<const Node*>> dependents;
+  std::unordered_map<std::string, std::vector<const Node*>> dependencies;
+};
 
 int metadata_index(const Node& node) {
   const auto iterator = node.metadata.find("index");
@@ -85,7 +104,8 @@ double duration_seconds(const Node& shot) {
   char* end = nullptr;
   errno = 0;
   const auto value = std::strtod(iterator->second.c_str(), &end);
-  if (errno == ERANGE || end == iterator->second.c_str() || *end != '\0' || !std::isfinite(value) || value <= 0.0) {
+  if (errno == ERANGE || end == iterator->second.c_str() || *end != '\0' ||
+      !std::isfinite(value) || value <= 0.0) {
     return 0.0;
   }
   return value;
@@ -96,10 +116,31 @@ std::string generation_strategy(const Node& shot) {
   return iterator == shot.metadata.end() ? std::string{} : iterator->second;
 }
 
-void append_final_state_issues(const Node& node, std::string_view label, std::vector<std::string>& issues) {
+void append_final_state_issues(
+    const Node& node,
+    std::string_view label,
+    std::vector<std::string>& issues) {
   if (node.stale) issues.push_back(std::string{label} + " " + node.id.value() + " is stale");
   if (!domain::allows_final_synthesis(node.approval)) {
-    issues.push_back(std::string{label} + " " + node.id.value() + " is not approved for final synthesis");
+    issues.push_back(
+        std::string{label} + " " + node.id.value() + " is not approved for final synthesis");
+  }
+}
+
+void append_exact_parent_issue(
+    const GraphLookup& lookup,
+    const Node& child,
+    NodeKind parent_kind,
+    const Node& expected_parent,
+    std::string_view child_label,
+    std::string_view parent_label,
+    std::vector<std::string>& issues) {
+  const auto parents = lookup.direct_dependencies(child.id, parent_kind);
+  if (parents.size() != 1U || parents.front()->id != expected_parent.id) {
+    issues.push_back(
+        std::string{child_label} + " " + child.id.value() +
+        " must belong to exactly one " + std::string{parent_label} +
+        " in the compiled hierarchy");
   }
 }
 
@@ -120,13 +161,18 @@ core::Status VideoPipelineCompiler::compile(
         "video profile dimensions and frame rate must be finite, positive, and bounded");
   }
 
-  const auto* episode = find_node(snapshot, episode_id);
-  if (episode == nullptr) return core::Status::failure(core::ErrorCode::kNotFound, "video episode was not found");
+  const GraphLookup lookup{snapshot};
+  const auto* episode = lookup.find(episode_id);
+  if (episode == nullptr) {
+    return core::Status::failure(core::ErrorCode::kNotFound, "video episode was not found");
+  }
   if (episode->kind != NodeKind::kEpisode) {
-    return core::Status::failure(core::ErrorCode::kInvalidArgument, "video pipeline source must be an episode node");
+    return core::Status::failure(
+        core::ErrorCode::kInvalidArgument,
+        "video pipeline source must be an episode node");
   }
 
-  auto series_dependencies = direct_dependencies(snapshot, episode_id, NodeKind::kSeries);
+  auto series_dependencies = lookup.direct_dependencies(episode_id, NodeKind::kSeries);
   if (series_dependencies.size() != 1U) {
     return core::Status::failure(
         core::ErrorCode::kInvalidArgument,
@@ -137,6 +183,7 @@ core::Status VideoPipelineCompiler::compile(
   output.project_revision = snapshot.project_revision;
   output.episode_id = episode_id;
   output.profile = profile;
+  append_final_state_issues(*series, "series", output.issues);
   append_final_state_issues(*episode, "episode", output.issues);
 
   SeriesContinuityManifest manifest;
@@ -149,38 +196,54 @@ core::Status VideoPipelineCompiler::compile(
   for (const auto& binding : manifest.shots) {
     if (!(binding.episode_id == episode_id)) continue;
     shot_characters[binding.shot_id.value()] = binding.character_ids;
-    for (const auto& character_id : binding.character_ids) episode_characters.insert(character_id.value());
+    for (const auto& character_id : binding.character_ids) {
+      episode_characters.insert(character_id.value());
+    }
   }
   for (const auto& id : episode_characters) output.continuity_characters.emplace_back(id);
 
-  auto scenes = direct_dependents(snapshot, episode_id, NodeKind::kScene);
+  auto scenes = lookup.direct_dependents(episode_id, NodeKind::kScene);
   sort_nodes(scenes);
   std::vector<std::string> composite_tasks;
   std::set<std::string> seen_shots;
   std::size_t shot_count = 0U;
 
   for (const auto* scene : scenes) {
+    append_exact_parent_issue(
+        lookup, *scene, NodeKind::kEpisode, *episode,
+        "scene", "episode", output.issues);
     append_final_state_issues(*scene, "scene", output.issues);
-    auto shots = direct_dependents(snapshot, scene->id, NodeKind::kShot);
+    auto shots = lookup.direct_dependents(scene->id, NodeKind::kShot);
     sort_nodes(shots);
-    if (shots.empty()) output.issues.push_back("scene " + scene->id.value() + " has no shot dependencies");
+    if (shots.empty()) {
+      output.issues.push_back("scene " + scene->id.value() + " has no shot dependencies");
+    }
 
     for (const auto* shot : shots) {
       const auto inserted = seen_shots.insert(shot->id.value()).second;
       if (!inserted) {
-        output.issues.push_back("shot " + shot->id.value() + " belongs to multiple scenes in the compiled episode");
+        output.issues.push_back(
+            "shot " + shot->id.value() + " belongs to multiple scenes in the compiled episode");
         continue;
       }
       ++shot_count;
 
+      append_exact_parent_issue(
+          lookup, *shot, NodeKind::kScene, *scene,
+          "shot", "scene", output.issues);
       const auto strategy = generation_strategy(*shot);
       const auto duration = duration_seconds(*shot);
       if (strategy.empty()) {
-        output.issues.push_back("shot " + shot->id.value() + " has no explicit generationStrategy");
+        output.issues.push_back(
+            "shot " + shot->id.value() + " has no explicit generationStrategy");
       } else if (strategy.size() > kMaxGenerationStrategyLength) {
-        output.issues.push_back("shot " + shot->id.value() + " generationStrategy exceeds the bounded contract");
+        output.issues.push_back(
+            "shot " + shot->id.value() + " generationStrategy exceeds the bounded contract");
       }
-      if (duration <= 0.0) output.issues.push_back("shot " + shot->id.value() + " has no valid finite durationSeconds");
+      if (duration <= 0.0) {
+        output.issues.push_back(
+            "shot " + shot->id.value() + " has no valid finite durationSeconds");
+      }
       append_final_state_issues(*shot, "shot", output.issues);
 
       VideoRenderTask synthesis;
@@ -204,7 +267,9 @@ core::Status VideoPipelineCompiler::compile(
 
       output.total_duration_seconds += duration;
       if (!std::isfinite(output.total_duration_seconds)) {
-        return core::Status::failure(core::ErrorCode::kInvalidArgument, "episode duration overflowed during video compilation");
+        return core::Status::failure(
+            core::ErrorCode::kInvalidArgument,
+            "episode duration overflowed during video compilation");
       }
     }
   }
@@ -226,7 +291,9 @@ core::Status VideoPipelineCompiler::compile(
         [&anchor](const core::EntityId& id) { return id == anchor.character_id; });
     if (used == output.continuity_characters.end()) continue;
     if (!anchor.locked || anchor.stale || !domain::allows_final_synthesis(anchor.approval)) {
-      output.issues.push_back("continuity anchor " + anchor.character_id.value() + " is not ready for final synthesis");
+      output.issues.push_back(
+          "continuity anchor " + anchor.character_id.value() +
+          " is not ready for final synthesis");
     }
   }
 
