@@ -26,23 +26,24 @@ export function durationForDistance(
  *
  * Progress is frame-index based instead of wall-clock based, so a busy render,
  * pause, or background-tab stall slows the animation rather than skipping
- * forward. Capping presentation updates at 24 FPS also prevents high-frequency
- * React/React Flow state churn from starving the UI thread.
+ * forward. The frame callback may be async; this is important for viewport
+ * writes because the next presentation frame must never overtake the previous
+ * React Flow mutation.
  */
 export async function runDeterministicAnimation(
   durationMs: number,
   control: AutopilotExecutionControl,
-  frame: (easedProgress: number, linearProgress: number) => void,
+  frame: (easedProgress: number, linearProgress: number) => void | Promise<void>,
 ) {
   const duration = Math.max(160, durationMs);
   const frameCount = Math.max(4, Math.ceil(duration / FRAME_INTERVAL_MS));
   const frameDelay = duration / frameCount;
 
-  frame(0, 0);
+  await frame(0, 0);
   for (let index = 1; index <= frameCount; index += 1) {
     await controlledDelay(control, frameDelay);
     const linear = index / frameCount;
-    frame(easeInOutCubic(linear), linear);
+    await frame(easeInOutCubic(linear), linear);
   }
 }
 
@@ -58,6 +59,7 @@ export async function animateCursor(
     update({
       ...from,
       visible: true,
+      pressed: false,
       x: from.x + (to.x - from.x) * eased,
       y: from.y + (to.y - from.y) * eased,
       label,
