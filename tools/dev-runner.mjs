@@ -1,6 +1,12 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
 
+import {
+  discoverFfmpeg,
+  ensureComfyUiRuntime,
+  mediaRuntimeConstants,
+} from './runtime/media-runtime-manager.mjs';
+
 const root = process.cwd();
 const isWindows = process.platform === 'win32';
 const bridgeBaseUrl = `http://127.0.0.1:${process.env.MAKEWATCH_BRIDGE_PORT ?? 4177}`;
@@ -8,7 +14,7 @@ const generationBaseUrl = `http://127.0.0.1:${process.env.MAKEWATCH_GENERATION_P
 const CHILD_GRACE_MS = 4_000;
 
 console.log('\n  MAKE & WATCH  /  STUDIO RUNTIME');
-console.log('  Native engine + local bridge + generation + Director + Studio\n');
+console.log('  Native engine + local media runtimes + generation + Director + Studio\n');
 
 const nativeBuild = spawnSync(
   'cmake',
@@ -112,17 +118,55 @@ bridge.on('exit', (code) => {
   }
 });
 
-async function waitForUrl(url, label, attempts = 80) {
+async function waitForUrl(url, label, attempts = 80, delayMs = 100) {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
       const response = await fetch(url, { signal: AbortSignal.timeout(1_000) });
-      if (response.ok) return;
+      if (response.ok) return true;
     } catch {
       // Owned local service is still starting.
     }
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, delayMs));
   }
   throw new Error(`${label} did not become ready`);
+}
+
+async function prepareComfyRuntime() {
+  console.log('  [media] Resolving local image/video runtime…');
+  const resolved = await ensureComfyUiRuntime();
+  if (resolved.status === 'online') {
+    console.log(`  [media] ComfyUI already online · ${resolved.baseUrl}`);
+    return resolved;
+  }
+  if (resolved.status !== 'launchable' || !resolved.launch) {
+    console.warn(`  [media] ComfyUI unavailable · ${resolved.detail ?? resolved.status}`);
+    return resolved;
+  }
+
+  const first = resolved.discovered?.[0];
+  console.log(`  [media] ComfyUI discovered · ${first?.kind ?? 'local'} · ${resolved.launch.root}`);
+  const comfy = start(
+    resolved.launch.command,
+    resolved.launch.args,
+    {
+      cwd: resolved.launch.cwd,
+      detached: !isWindows,
+      env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' },
+    },
+    'ComfyUI',
+  );
+  comfy.on('exit', (code) => {
+    if (!shuttingDown) console.warn(`[media] ComfyUI exited with code ${code ?? 'unknown'}; Studio remains available`);
+  });
+
+  try {
+    await waitForUrl(`${mediaRuntimeConstants.comfyBaseUrl}/prompt`, 'ComfyUI', 360, 250);
+    console.log(`  [media] ComfyUI ready · ${mediaRuntimeConstants.comfyBaseUrl}`);
+    return { ...resolved, status: 'online', ownership: 'makewatch' };
+  } catch (error) {
+    console.warn(`  [media] ComfyUI launch did not become ready · ${error instanceof Error ? error.message : String(error)}`);
+    return resolved;
+  }
 }
 
 async function warmDirectorRuntime() {
@@ -183,6 +227,10 @@ async function warmGenerationRuntime() {
 
 try {
   await waitForUrl(`${bridgeBaseUrl}/api/health`, 'local native bridge');
+  await prepareComfyRuntime();
+
+  const ffmpeg = discoverFfmpeg();
+  console.log(`  [media] FFmpeg ${ffmpeg ? `ready · ${ffmpeg}` : 'not found yet · final assembly will self-heal when enabled'}`);
 
   const generation = start(
     process.execPath,
