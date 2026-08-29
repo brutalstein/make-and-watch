@@ -8,6 +8,7 @@ import './director/workflowPointer.css';
 import './director/director-link.css';
 import './activity.css';
 import './layout-safety.css';
+import './premium-ui.css';
 import { App } from './App';
 import { DirectorProviderDock } from './director/DirectorProviderDock';
 
