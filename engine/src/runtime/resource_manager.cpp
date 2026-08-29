@@ -223,11 +223,15 @@ core::Status ResourceManager::try_acquire(const WorkloadRequest& request) {
 }
 
 LeaseAcquireResult ResourceManager::try_acquire_scoped(const WorkloadRequest& request) {
+  // Prepare the lease identity before mutating resource accounting. If copying the
+  // ID allocates and throws, no active workload has been committed yet. Once the
+  // resource commit succeeds, constructing the lease only moves this staged ID.
+  core::EntityId lease_id = request.workload_id;
   const auto status = try_acquire(request);
   if (!status.ok()) return LeaseAcquireResult{status, {}};
   return LeaseAcquireResult{
       core::Status::success(),
-      ResourceLease{this, request.workload_id},
+      ResourceLease{this, std::move(lease_id)},
   };
 }
 
