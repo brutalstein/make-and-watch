@@ -69,7 +69,7 @@ Key rules:
 - wrong-target confirmation fails closed;
 - shutdown releases running resource leases one-by-one in deterministic oldest-first order.
 
-See `BACKGROUND_JOBS.md` and `RUNTIME_FOUNDATION.md`.
+Read `BACKGROUND_JOBS.md` before implementing WorkerSupervisor. Do not launch/kill provider processes outside that ownership contract.
 
 ## CI validation
 
