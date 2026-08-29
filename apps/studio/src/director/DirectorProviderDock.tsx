@@ -11,10 +11,23 @@ function providerLabel(provider: DirectorProviderId) {
 }
 
 function statusClass(status: DirectorProviderStatus) {
+  if (status.policy === 'api_required') return 'director-link__provider--policy';
   if (!status.installed) return 'director-link__provider--missing';
   if (!status.capable) return 'director-link__provider--update';
   if (!status.authenticated) return 'director-link__provider--auth';
   return 'director-link__provider--ready';
+}
+
+function statusLabel(status: DirectorProviderStatus | undefined) {
+  if (!status) return 'checking…';
+  if (status.policy === 'api_required') return 'API required for product';
+  if (status.policy === 'experimental_local_client') {
+    return status.authenticated ? 'developer preview · authenticated' : 'developer preview';
+  }
+  if (!status.installed) return 'not installed';
+  if (!status.capable) return 'update required';
+  if (!status.authenticated) return 'sign-in needed';
+  return status.authMethod || 'authenticated';
 }
 
 export function DirectorProviderDock() {
@@ -34,7 +47,7 @@ export function DirectorProviderDock() {
       if (ready) setSelectedProvider(ready.provider);
       setMessage(result.activeProviderRun
         ? `${providerLabel(result.activeProviderRun)} is planning…`
-        : 'Official clients own authentication · Make & Watch stores no OAuth token.');
+        : 'Codex uses first-party ChatGPT sign-in. Make & Watch stores no provider OAuth token.');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     }
@@ -48,6 +61,10 @@ export function DirectorProviderDock() {
     () => providers.find((provider) => provider.provider === selectedProvider) ?? null,
     [providers, selectedProvider],
   );
+
+  useEffect(() => {
+    if (selectedStatus?.policy === 'api_required') setMessage(selectedStatus.detail);
+  }, [selectedStatus]);
 
   const connect = useCallback(async (provider: DirectorProviderId) => {
     setLoading(true);
@@ -98,13 +115,21 @@ export function DirectorProviderDock() {
     }
   }, [objective, selectedProvider, selectedStatus]);
 
+  const canConnect = Boolean(
+    selectedStatus
+    && selectedStatus.policy !== 'api_required'
+    && selectedStatus.installed
+    && selectedStatus.capable
+    && !selectedStatus.authenticated,
+  );
+
   return (
     <section className="director-link" aria-label="AI Director provider connection">
       <div className="director-link__head">
         <span className="director-link__orb"><Bot size={14} /></span>
         <div>
           <strong>DIRECTOR LINK</strong>
-          <small>First-party auth · project-scoped context</small>
+          <small>policy-aware auth · bounded project context</small>
         </div>
         <button className="director-link__refresh" onClick={() => void refresh()} disabled={loading} title="Refresh provider status">
           <RefreshCw size={12} className={loading ? 'spin' : ''} />
@@ -121,25 +146,30 @@ export function DirectorProviderDock() {
               className={`director-link__provider ${status ? statusClass(status) : ''} ${selectedProvider === providerId ? 'director-link__provider--selected' : ''}`}
               onClick={() => setSelectedProvider(providerId)}
               disabled={loading}
+              title={status?.detail}
             >
               <span>{ready ? <Check size={12} /> : <KeyRound size={12} />}</span>
               <div>
                 <strong>{providerLabel(providerId)}</strong>
-                <small>{status?.authenticated ? status.authMethod || 'authenticated' : status?.installed ? 'sign-in needed' : 'not installed'}</small>
+                <small>{statusLabel(status)}</small>
               </div>
             </button>
           );
         })}
       </div>
 
-      {selectedStatus && !selectedStatus.authenticated ? (
+      {canConnect ? (
         <button
           className="director-link__connect"
           onClick={() => void connect(selectedProvider)}
-          disabled={loading || !selectedStatus.installed || !selectedStatus.capable}
+          disabled={loading}
         >
           <ExternalLink size={12} /> Connect {providerLabel(selectedProvider)} officially
         </button>
+      ) : null}
+
+      {selectedStatus?.policy === 'api_required' ? (
+        <div className="director-link__policy"><ShieldCheck size={11} /> {selectedStatus.detail}</div>
       ) : null}
 
       <div className="director-link__objective">
