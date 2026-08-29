@@ -7,7 +7,7 @@
   "pnpm": { "onlyBuiltDependencies": ["esbuild"] },
   "scripts": {
     "dev": "node tools/dev-runner.mjs",
-    "bridge:check": "node --check tools/dev-bridge/server.mjs && node --check tools/dev-bridge/dev-seed.mjs && node --check tools/dev-bridge/dev-seed-check.mjs && node tools/dev-bridge/dev-seed-check.mjs && node --check tools/dev-runner.mjs && node --check tools/director/context-pack.mjs && node --check tools/director/provider-manager.mjs && node tools/director/context-pack-check.mjs && node tools/director/provider-manager-check.mjs",
+    "bridge:check": "node --check tools/dev-bridge/server.mjs && node --check tools/dev-bridge/dev-seed.mjs && node --check tools/dev-bridge/dev-seed-check.mjs && node tools/dev-bridge/dev-seed-check.mjs && node --check tools/dev-runner.mjs && node --check tools/director/context-pack.mjs && node --check tools/director/provider-executable.mjs && node --check tools/director/provider-manager.mjs && node tools/director/context-pack-check.mjs && node tools/director/provider-executable-check.mjs && node tools/director/provider-manager-check.mjs",
     "build:web": "pnpm --filter @makewatch/studio build",
     "typecheck": "pnpm -r typecheck",
     "test:web": "pnpm -r --if-present test"
