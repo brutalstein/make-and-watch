@@ -17,12 +17,11 @@ The current foundation includes:
 - generic native `ResourceManager` plus bounded `BackgroundJobRuntime` lifecycle ownership;
 - typed AI Director Autopilot with exact-revision validation, pause/resume/cancel/checkpoints and emergency takeover;
 - exact workflow pointer pick-and-place for every displaced node;
-- cursor-centric drag camera: held node + virtual pointer move into a focal point and remain there while the canvas travels underneath;
-- deterministic **30 FPS** presentation ceiling with awaited viewport frames;
-- policy-aware Director provider bridge with zero OAuth credential custody;
-- supported local Codex/ChatGPT sign-in path plus default-gated Claude product policy;
-- bounded project-specific Director context compiler and schema-constrained plan output;
-- Studio `DIRECTOR LINK` for policy-aware status/login and validated Assist-plan preview.
+- cursor-centric drag camera with deterministic 30 FPS presentation ceiling;
+- supported Codex App Server Director bridge with ChatGPT-managed authentication and zero OAuth credential custody;
+- default-gated Claude product policy (`api_required`);
+- deterministic bounded Director context compiler with valid JSON under budget reduction;
+- Studio Director Link integrated into the AI Director sidebar rather than overlaying the workflow.
 
 ## Exact pointer / camera milestone
 
@@ -34,102 +33,111 @@ held node + cursor enter focal point -> canvas follows underneath ->
 release -> verify -> next node
 ```
 
-Guarantees:
+Do not reintroduce an independent camera follower. Pointer/node geometry owns the camera during a held drag. Presentation remains capped at 30 FPS, independent of monitor refresh.
 
-- off-screen nodes are found by visible bounded workspace pan gestures;
-- cursor lands on a freshly projected node anchor before grab;
-- rendered/logical cursor coordinates are identical;
-- no `delta * zoom` approximation;
-- after grab, viewport translation is recomputed and awaited each deterministic frame so the held exact flow anchor stays at the cursor focal point;
-- cursor is reprojected after each viewport write;
-- pre-grab/post-drop alignment checks remain active;
-- every displaced node is handled individually;
-- presentation is capped at 30 FPS, independent of monitor refresh;
-- cursor/pan/drag timings are faster than the first exact-pointer pass while retaining readable press/release phases;
-- pause freezes the held state and cancellation removes presentation ownership.
+## Codex Director milestone
 
-Do not reintroduce an independent camera follower. The pointer primitive owns camera movement while a node is held.
+Read `DIRECTOR_PROVIDERS.md`, `AUTH_AND_AI_DIRECTOR.md`, and `AI_DIRECTOR_CONTEXT.md` before changing provider code.
 
-## AI Director provider milestone
+The supported product path is **Codex App Server**:
 
-Read `DIRECTOR_PROVIDERS.md`, `AUTH_AND_AI_DIRECTOR.md`, and `AI_DIRECTOR_CONTEXT.md` before modifying provider code.
+```text
+local bridge
+ -> codex app-server
+ -> initialize/initialized
+ -> account/read
+ -> account/login/start(type=chatgpt) if required
+ -> account/login/completed + account/updated
+ -> thread/start
+ -> turn/start(outputSchema, read-only, approvalPolicy=never)
+ -> item/completed / turn/completed
+ -> thread/delete
+```
 
-### Codex
+Key rules:
 
-Codex is the primary local subscription-backed Director bridge to validate. Make & Watch invokes the official client for `codex login`, status, and schema-constrained `codex exec`; it never reads/copies the resulting credential.
+- Codex owns ChatGPT OAuth persistence/refresh; Make & Watch never receives the token;
+- account email is stripped before status leaves the App Server client;
+- CLI/App Server/account/planning readiness are separate typed states;
+- login is not incorrectly hidden behind planning capability;
+- one owned App Server session per bridge;
+- one active Director turn maximum;
+- early completion notifications cannot race ahead of turn waiter setup;
+- timeout/error/shutdown interrupt active turns;
+- successful turns are not unnecessarily interrupted after completion;
+- every Director thread is deleted after use to avoid hidden transcript accumulation;
+- read access is restricted to `tools/director/runtime` during Director turns;
+- provider output remains only a proposal and must pass live revision + Autopilot validation.
 
-### Claude
+Claude remains `api_required` in the public product. The Claude Code adapter is developer-preview only behind `MAKEWATCH_ENABLE_EXPERIMENTAL_CLAUDE_CODE=1`.
 
-Anthropic's current third-party product policy requires an API/Console or supported cloud-provider path. Claude Code subscription routing is therefore `api_required` and not actionable by default. The existing Claude Code adapter is developer-preview only behind `MAKEWATCH_ENABLE_EXPERIMENTAL_CLAUDE_CODE=1`; do not make that the shipping default.
+## Director Link UX
 
-Current bridge endpoints:
+`DirectorProviderDock` is mounted through a portal into a real `.director-provider-slot` immediately after the Autopilot card inside the left AI Director panel.
 
-- `GET /api/director/providers`;
-- `POST /api/director/connect`;
-- `POST /api/director/plan`.
+It must never use a fixed page overlay again.
 
-Provider rules:
+The sidebar owns its own scroll; the workflow canvas size must not change because Director Link expands. Global document scrolling is disabled by `layout-safety.css`; Director and Inspector panels scroll internally.
 
-- explicit provider policy state;
-- one active Director inference maximum;
-- finite timeout/output bounds;
-- shutdown rejects new HTTP work, terminates the active provider child tree, **awaits bounded child exit**, then closes the native host;
-- raw auth/status output is not forwarded to React;
-- prompts travel through stdin;
-- Codex uses read-only sandbox, ephemeral run and JSON Schema final output;
-- Claude developer preview uses one turn, plan permission, built-in tools disabled, MCP denied and JSON Schema structured output;
-- provider output remains only a proposal and must pass Studio/live-native validation.
+Codex readiness is shown as four stages:
 
-The current provider phase is **Assist-plan preview only**. Login does not grant semantic write authority.
+1. CLI;
+2. APP SERVER;
+3. ACCOUNT;
+4. PLAN.
+
+When ChatGPT login is required, Studio opens the official App Server `authUrl` from the user's click and boundedly polls sanitized status. Objective/plan controls appear only when planning is actually available.
 
 ## Context economy
 
-Root `AGENTS.md` / `CLAUDE.md` carry provider-native project instructions. `AI_DIRECTOR_CONTEXT.md` is canonical policy.
+Runtime prompts do not resend the repository/project brain/journal. Hard bounds remain:
 
-Runtime prompts do not resend the full policy/repository. The context compiler sends a short invariant reminder, policy hash and bounded live graph slice.
-
-Hard bounds:
-
-- <=16,000 prompt characters;
-- conservative estimate <=4,000 tokens;
+- <=16,000 characters;
+- conservative <=4,000 tokens;
 - <=3,000 objective characters;
-- <=72 nodes;
-- <=120 included dependency edges;
+- <=72 nodes before reduction;
+- <=120 edges before reduction;
 - allow-listed bounded metadata only.
 
-Context serialization is deterministic and SHA-256 hashed. CI rejects context-budget growth and irrelevant large metadata leakage.
+If needed, the compiler reduces dependency/node/objective/metadata scope deterministically. It never slices JSON mid-string. CI asserts deterministic output, valid JSON after reduction, selected-node retention and hard budget compliance.
 
 ## Background runtime milestone
 
-`BackgroundJobRuntime` sits above `ResourceManager`; it does not launch media/model processes yet.
+`BackgroundJobRuntime` sits above `ResourceManager`; it does not launch model/media workers yet.
 
 Rules:
 
 - fixed queued+running capacity;
 - duplicate IDs rejected;
-- resource-aware ready scan avoids safe CPU work being blocked behind unavailable GPU work;
-- running cancellation keeps VRAM/RAM/CPU lease until actual stop confirmation;
-- shutdown stops admission, clears queued work and exposes one running target at a time;
+- resource-aware ready scan prevents safe CPU work from being blocked behind unavailable GPU work;
+- cancel request does not release a running worker's VRAM/RAM/CPU lease;
+- shutdown stops admission, clears queued work and drains one running target at a time;
 - wrong-target confirmation fails closed;
-- leases release one-by-one only after confirmed stop.
+- lease releases only after confirmed stop.
 
-Concrete WorkerSupervisor remains the next native process layer.
+Concrete WorkerSupervisor remains the next native process layer after the new Director live gate.
 
-## Validation status
+## CI / audit state
 
-CI currently covers:
+Repository tree and PR changed-file inventory were audited across Studio, Director/bridge, contracts/schemas, native engine/runtime/tests, scripts/build config and canonical docs. High-risk runtime/provider/UI/native boundaries were deep-read. Do not represent this as a mathematical guarantee of zero defects; CI + product-machine evidence remain required.
 
-- bridge/fixture syntax and development seed;
-- Director context-budget regression;
-- provider-manager missing-client/sanitized-status/policy smoke;
-- strict shared/Studio TypeScript;
+CI now uses Node-24-generation GitHub Actions (`checkout@v7`, `setup-node@v7`, `pnpm/action-setup@v6`). The repository currently has no committed `pnpm-lock.yaml`, so install intentionally remains `--no-frozen-lockfile`; adding a committed lockfile is a separate reproducibility improvement.
+
+Current gates include:
+
+- seed and bridge syntax;
+- Director context hard-budget/valid-JSON regression;
+- Windows provider executable discovery simulation;
+- Codex App Server protocol fake-process test;
+- provider policy/status sanitization checks;
+- strict TypeScript;
 - Vite production build;
 - strict native configure/build;
-- full CTest including graph, persistence/history, ResourceManager, BackgroundJobRuntime and native-host smoke.
-
-Authenticated Codex behavior and the newest 30 FPS cursor-camera choreography still require Windows product-machine validation.
+- complete CTest suite.
 
 ## Immediate Windows gate
+
+Fully stop the old dev runtime first, then:
 
 ```powershell
 git pull
@@ -137,64 +145,51 @@ git pull
 .\dev.ps1
 ```
 
+### Director Link / Codex
+
+1. Director Link must appear inside the left AI Director panel directly under the Autopilot card; it must not cover or resize the workflow canvas.
+2. The browser page itself must not gain a vertical scrollbar; Director/Inspector panels scroll internally.
+3. Codex should show CLI -> APP SERVER readiness.
+4. If ACCOUNT is not ready, **Connect Codex officially** must be actionable.
+5. The user click opens the official ChatGPT sign-in URL returned by App Server.
+6. After sign-in, ACCOUNT and PLAN should become ready without restarting Studio.
+7. Objective input should appear only when PLAN is ready.
+8. Submit a small objective and confirm a schema-valid Assist-plan preview plus bounded context stats.
+9. Planning alone must not change native semantic revision.
+10. Stop `dev.ps1` during an active turn and verify no orphan `codex app-server` process remains.
+11. Claude should show its CLI if installed but remain **API required for product** by default.
+
 ### Pointer
 
-1. scatter nodes far apart, including outside viewport;
-2. run **Let AI drive this workflow**;
-3. verify finding/pickup is clearly faster;
-4. cursor lands exactly on node;
-5. after grab, cursor/node move toward focal point and camera travels with them;
-6. once focused, cursor/node remain visually anchored while canvas moves underneath toward destination;
-7. release has no visible pointer drift;
-8. every displaced node is processed individually;
-9. `Space` pause mid-drag freezes without teleport;
-10. `Esc` cancels immediately;
-11. Studio remains responsive and Assist layout does not change native semantic revision.
+Retest exact cursor/node alignment, focal camera follow, pause and Esc cancellation after the layout changes. Director Link must not affect workflow geometry.
 
-### Director provider
-
-1. inspect **DIRECTOR LINK**;
-2. refresh status;
-3. Codex should be the actionable local-client option when installed;
-4. if needed use **Connect Codex officially** and complete the first-party flow;
-5. refresh until Codex is authenticated/capable;
-6. submit a small objective;
-7. confirm schema-valid Assist plan preview;
-8. confirm estimated context <=4K tokens;
-9. confirm planning alone does not change native revision;
-10. while a plan is running, stop `./dev.ps1` and verify no orphan Codex child remains;
-11. Claude should show **API required for product** by default, not a subscription-connect button.
-
-Any pointer drift/freeze, credential custody, policy bypass, unbounded context, orphan process or stale-revision acceptance is a failed gate.
+Any unusable readiness state, popup/login dead-end, workflow overlap, global scrolling, pointer drift, credential custody, stale-revision acceptance, unbounded context or orphan process is a failed live gate.
 
 ## Next engineering sequence
 
-1. after live Codex validation, allow provider-generated **Assist** plans to execute through the existing exact Autopilot runtime;
+1. after live Codex validation, execute provider-generated **Assist** plans through the existing exact Autopilot runtime;
 2. add Guided plan preview/checkpoint UX before semantic AI mutation;
-3. concrete cross-platform WorkerSupervisor on top of `BackgroundJobRuntime`;
-4. graceful stop -> bounded wait -> one-process escalation -> confirmed exit -> lease release;
+3. implement concrete cross-platform WorkerSupervisor over `BackgroundJobRuntime`;
+4. graceful stop -> bounded wait -> one-process escalation -> actual exit confirmation -> lease release;
 5. typed worker health/capability handshake and bounded logs;
 6. checkpoint/recovery policy;
 7. content-addressed asset/provenance storage;
-8. hardware-profile probing/calibration;
+8. hardware profile probing/calibration;
 9. first lightweight local voice/storyboard workers;
-10. production Claude provider via supported Anthropic API/Console/cloud path.
+10. production Claude provider through a supported Anthropic API path.
 
 ## Do not
 
-- reintroduce a separate hidden camera follower;
-- use stale DOM coordinates or `delta * zoom` pointer integration;
-- couple presentation cadence to display refresh rate;
+- reintroduce a fixed Director Link overlay over workflow space;
+- reintroduce a separate hidden Autopilot camera follower;
 - copy/read provider credential caches;
-- enable Claude subscription routing as the public product default;
-- expose raw auth status to React/logs;
-- resend the whole repo/project brain on each Director request;
-- let provider output bypass Autopilot/native validation;
-- grant semantic write authority because login succeeded;
-- free running-job resources on cancel request before stop confirmation;
-- launch media workers outside background runtime/future supervisor ownership;
-- weaken strict gates;
-- expose patent-sensitive adaptive synthesis-selection logic while repo is public.
+- route Claude subscription OAuth as a public-product provider;
+- accumulate hidden Codex planning threads;
+- send the full repo/project journal per Director request;
+- let provider output bypass typed/native validation;
+- release running worker resources before actual stop confirmation;
+- weaken strict compiler/type/test gates;
+- expose patent-sensitive adaptive synthesis-selection logic while the repo is public.
 
 ## Quality bar
 
