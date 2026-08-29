@@ -1,44 +1,30 @@
-# First-Party AI Director Providers
+# AI Director Providers
 
 ## Goal
 
-Make & Watch may use **Codex** or **Claude Code** as the cloud reasoning/Director layer while keeping media generation, authoritative project state, worker lifecycle and rendering local.
+Make & Watch uses a cloud reasoning/Director layer while keeping authoritative project state, media generation, worker lifecycle and rendering local.
 
-This is project-scoped orchestration, not model fine-tuning. The provider is made Make-&-Watch-specific through repository instructions plus a bounded live-project context compiler. The underlying model is not modified or retrained.
+This is **project-scoped specialization**, not model fine-tuning. Codex/Claude are not retrained. Their Make-&-Watch behavior comes from repository instructions, a compact canonical Director policy, bounded live graph context, JSON Schema output and native validation.
 
 ## Authentication boundary
 
-Make & Watch does **not** implement its own OAuth exchange for ChatGPT/Claude subscriptions and does not copy provider credential caches.
+Make & Watch does not copy credential caches, session tokens or subscription OAuth tokens.
 
-Official references used for this implementation (checked 2026-08-29):
+Official references checked 2026-08-29:
 
 - OpenAI Codex authentication: https://developers.openai.com/codex/auth
 - OpenAI Codex CLI reference: https://developers.openai.com/codex/cli/reference
 - OpenAI Codex `AGENTS.md`: https://developers.openai.com/codex/guides/agents-md
-- Anthropic Claude Code setup/authentication: https://docs.anthropic.com/en/docs/claude-code/getting-started
+- Anthropic Claude Code setup: https://docs.anthropic.com/en/docs/claude-code/getting-started
+- Anthropic Claude Code legal/compliance: https://docs.anthropic.com/en/docs/claude-code/legal-and-compliance
 - Anthropic Claude Code CLI reference: https://docs.anthropic.com/en/docs/claude-code/cli-usage
 - Anthropic structured outputs: https://code.claude.com/docs/en/agent-sdk/structured-outputs
 
-OpenAI documents `codex login` and **Sign in with ChatGPT for subscription access**. Anthropic documents Claude App Pro/Max login through Claude Code and that Claude Code stores its own credentials. Therefore the Studio asks the first-party client to authenticate and later probes first-party status; it never receives the OAuth token.
+## Codex — primary local subscription bridge
 
-## Current bridge
+OpenAI documents **Sign in with ChatGPT for subscription access** in Codex and supports that sign-in method in the local Codex CLI. The current Make & Watch local bridge therefore treats Codex as the primary subscription-backed Director integration to validate on the product machine.
 
-`tools/director/provider-manager.mjs` owns request-scoped first-party CLI processes.
-
-Supported provider IDs:
-
-- `codex`
-- `claude`
-
-Local bridge endpoints:
-
-- `GET /api/director/providers` — sanitized installed/authenticated/capability state;
-- `POST /api/director/connect` — launches first-party login (`codex login` or `claude auth login`);
-- `POST /api/director/plan` — compiles bounded context and invokes one authenticated provider.
-
-Exactly one Director plan inference may be active at a time.
-
-## Codex execution
+Make & Watch asks the official Codex client to authenticate and probes first-party status. It never reads or persists the resulting token.
 
 The bridge requires a Codex CLI version whose `codex exec --help` exposes:
 
@@ -47,106 +33,132 @@ The bridge requires a Codex CLI version whose `codex exec --help` exposes:
 - `--output-schema`;
 - `--output-last-message`.
 
-The Director run uses `codex exec` non-interactively with:
+Director planning uses:
 
+- `codex exec` non-interactive mode;
 - read-only sandbox;
-- ephemeral session rollout;
+- ephemeral rollout session;
 - JSON Schema final-output validation;
-- final message written to a temporary file;
-- prompt through stdin;
-- finite process timeout/output bounds.
+- final result written to a temporary file;
+- prompt through stdin rather than shell interpolation;
+- finite process timeout and byte limits.
 
-The temp output directory is removed after every run.
+The temporary output directory is removed after every run.
 
-## Claude execution
+## Claude — policy-gated by default
 
-The bridge requires a current Claude Code CLI exposing:
+Claude Code itself supports user login with Claude subscription plans. That fact does **not** make subscription OAuth a supported third-party product authentication path.
 
-- print mode / JSON output;
-- `--max-turns`;
-- `--permission-mode`;
-- `--json-schema`;
-- `--tools`.
+Anthropic's current legal/compliance documentation states that developers building products/services should use an API key through Claude Console or a supported cloud provider, and that third-party developers may not offer Claude.ai login in their own application or route requests through Free/Pro/Max plan credentials on behalf of users.
 
-The Director run is deliberately narrower than a normal Claude Code session:
+Therefore public Make & Watch behavior is:
+
+- Claude Code may be detected and shown in the Director provider surface;
+- Claude subscription login/inference is **not actionable by default**;
+- the production Claude path must use an Anthropic-supported API/Console/cloud-provider integration;
+- the existing Claude Code adapter remains a developer-preview implementation only, gated behind `MAKEWATCH_ENABLE_EXPERIMENTAL_CLAUDE_CODE=1` for explicit local engineering tests where appropriate;
+- that developer flag must never silently become the shipping product default.
+
+When developer preview is explicitly enabled, the adapter is deliberately narrow:
 
 - one turn;
-- permission mode `plan`;
-- built-in tools disabled with `--tools ""`;
+- plan permission mode;
+- built-in tools disabled;
 - MCP tools denied;
 - JSON Schema structured output required;
 - finite process timeout/output bounds.
 
-The provider result prefers Claude's validated `structured_output`. Free-form parsing is only a compatibility fallback when the documented JSON envelope returns the result as a string.
+The default CI test asserts that Claude Code is `api_required`, not an enabled product subscription bridge.
+
+## Provider policy state
+
+Provider status returned to Studio includes an explicit policy:
+
+- `supported_local_client` — current Codex local-client path;
+- `api_required` — default Claude product policy;
+- `experimental_local_client` — explicit developer-only Claude Code override.
+
+This prevents UI from confusing a policy block with an outdated/missing CLI.
+
+## Current local bridge
+
+`tools/director/provider-manager.mjs` owns request-scoped provider processes.
+
+Endpoints:
+
+- `GET /api/director/providers` — sanitized installed/authenticated/capability/policy state;
+- `POST /api/director/connect` — launches only a policy-permitted first-party login;
+- `POST /api/director/plan` — compiles bounded context and invokes one policy-permitted provider.
+
+Exactly one Director planning inference may be active at a time.
 
 ## Project specialization and context economy
 
-Root `AGENTS.md` and `CLAUDE.md` provide first-party project-scoped instructions. `project_brain/AI_DIRECTOR_CONTEXT.md` is the canonical compact Director policy.
+Root `AGENTS.md` and `CLAUDE.md` provide provider-native project instructions. `project_brain/AI_DIRECTOR_CONTEXT.md` is the canonical compact Director policy.
 
-Runtime requests do **not** resend that whole policy. `tools/director/context-pack.mjs` sends only:
+Runtime requests deliberately do **not** resend the entire policy, repository or project journal. `tools/director/context-pack.mjs` sends:
 
-- a compact invariant reminder;
-- the canonical policy hash;
+- a short invariant reminder;
+- canonical policy hash;
 - current native project revision;
 - bounded user objective;
-- selected compact node fields;
+- compact relevant node state;
 - relevant dependency edges;
 - optional workspace positions.
 
-Current hard context bounds:
+Hard context bounds:
 
 - 16,000 characters total prompt;
-- approximately 4,000 tokens by conservative character estimate;
-- 3,000 characters of user objective;
-- at most 72 nodes;
-- at most 120 included dependency edges;
-- small allow-list of metadata keys and bounded metadata values.
+- conservative estimate <=4,000 tokens;
+- <=3,000 objective characters;
+- <=72 nodes;
+- <=120 included dependency edges;
+- small metadata allow-list with bounded values.
 
-The context pack is deterministically serialized and SHA-256 hashed. No prompt or provider response is persisted as a hidden long-term transcript by Make & Watch at this layer.
+The pack is deterministically serialized and SHA-256 hashed. A CI regression check rejects accidental context growth or irrelevant large metadata leakage.
 
-This design deliberately avoids sending the entire repository, journal, or episode history every turn. Context cost should scale with the relevant current graph slice rather than repository size.
+This means token/context cost scales primarily with the current useful graph slice rather than repository size.
 
 ## Output authority
 
-Provider output is not project truth.
-
-Flow:
+Provider output is never project truth.
 
 ```text
-first-party authenticated Codex / Claude
+policy-permitted provider
         -> schema-constrained AutopilotPlan
-        -> Studio plan validator
-        -> exact expected native revision
-        -> capability/autonomy policy
+        -> Studio validator
+        -> exact live native revision check
+        -> autonomy/capability policy
         -> optional user checkpoint
-        -> native ProjectSession command transaction
+        -> native ProjectSession transaction
         -> SQLite + journal
 ```
 
-The initial live connection UI requests **Assist-mode plans only** and validates them without semantic mutation. Guided/Director execution will be enabled only after plan-preview/approval UX and additional live provider tests are complete.
+The current provider connection milestone requests **Assist-mode plans only** and validates them without semantic mutation. Provider login alone never grants write authority.
 
-## Process and privacy bounds
+## Process/privacy/resource bounds
 
-- OAuth tokens/cached credential files are never read, copied or persisted by Make & Watch.
-- Provider status exposed to React is sanitized; raw CLI status text is not forwarded.
-- Prompts are sent through stdin, not shell interpolation.
-- Provider stdout/stderr have finite byte caps.
-- Plan runs have finite wall-clock timeout.
-- Active plan child process is terminated when the local bridge shuts down.
-- On timeout the owned provider process tree is terminated.
-- Only one provider planning process is admitted concurrently.
-- Provider planning does not acquire local GPU `ResourceLease`; local media workers will use the native runtime separately.
+- no Make & Watch credential custody for local-client OAuth;
+- raw CLI auth/status text is not forwarded to React;
+- prompt travels over stdin;
+- stdout/stderr have finite byte caps;
+- plan process has finite wall-clock timeout;
+- one planning process maximum;
+- active provider child is owned by the bridge and terminated during shutdown/timeout;
+- provider reasoning does not acquire GPU `ResourceLease`; local media generation remains a separate native runtime responsibility;
+- provider result still passes the same typed/native safety boundaries as any future provider.
 
-## What remains to validate locally
+## Product-machine validation
 
-CI can validate bridge syntax, context-budget regression checks, TypeScript build and native tests, but GitHub Actions does not carry the user's authenticated first-party Codex/Claude session.
+CI cannot contain the user's authenticated subscription state. Windows validation must therefore prove the supported Codex path:
 
-Windows product-machine validation must therefore prove:
+1. Codex CLI is discovered;
+2. `Connect Codex officially` launches first-party login if needed;
+3. ChatGPT-authenticated status is detected without credential custody;
+4. one Assist-mode Director objective returns schema-valid JSON;
+5. live native revision validation passes;
+6. context estimate remains within budget;
+7. provider planning does not mutate native project state;
+8. shutting down the bridge during planning leaves no orphan provider child.
 
-1. installed CLI is discovered;
-2. first-party login launches correctly;
-3. ChatGPT or Claude subscription status is detected without credential custody;
-4. one Assist-mode plan returns schema-valid JSON;
-5. context stats stay within budget;
-6. bridge shutdown while a provider is running leaves no orphan provider child;
-7. native semantic project revision remains unchanged by connection-phase Assist planning.
+Claude should appear **API required for product** unless the explicit developer-preview environment flag is set.
