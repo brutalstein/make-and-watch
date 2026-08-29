@@ -6,9 +6,17 @@ import { fileURLToPath } from 'node:url';
 
 import { CodexAppServerClient } from './codex-app-server.mjs';
 import { CodexChatSession } from './codex-chat-session.mjs';
+import {
+  appendCompatibilityTranscript,
+  CodexExecRuntime,
+  extractUserMessage,
+  parseCodexExecHelp,
+  parseCodexLoginStatus,
+} from './codex-exec-runtime.mjs';
 import { discoverProviderExecutable, spawnProviderExecutable } from './provider-executable.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const directorRuntimeRoot = resolve(root, 'tools', 'director', 'runtime');
 const planSchemaPath = resolve(root, 'schemas', 'v1', 'director-autopilot-plan.schema.json');
 
 const STATUS_TIMEOUT_MS = 5_000;
@@ -22,11 +30,22 @@ const EXPERIMENTAL_CLAUDE_CODE = process.env.MAKEWATCH_ENABLE_EXPERIMENTAL_CLAUD
 
 let activeRun = null;
 let activePlanChild = null;
+let activeLoginChild = null;
 let codexClient = null;
 let codexClientPath = '';
 let codexChat = null;
+let codexExecRuntime = null;
+let codexExecRuntimePath = '';
 let claudeSchemaPromise = null;
 const conversations = new Map();
+const codexStaticProbeCache = new Map();
+const claudeStaticProbeCache = new Map();
+const codexAppServerFailures = new Map();
+
+function boundedText(value, maximum = 500) {
+  const text = String(value ?? '').replace(/[\r\n\t]+/g, ' ').trim();
+  return text.length <= maximum ? text : `${text.slice(0, Math.max(0, maximum - 1))}…`;
+}
 
 function terminateProcessTree(child) {
   if (!child || child.exitCode !== null || child.killed) return;
@@ -135,7 +154,7 @@ function runBounded(executable, args, {
 }
 
 function compactVersion(result) {
-  return String(result.stdout || result.stderr || '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, 160);
+  return boundedText(result.stdout || result.stderr || '', 160);
 }
 
 function unavailableStatus(provider, policy, integration, detail) {
@@ -143,6 +162,7 @@ function unavailableStatus(provider, policy, integration, detail) {
     provider,
     policy,
     integration,
+    runtimeMode: 'none',
     installed: false,
     authenticated: false,
     authMethod: '',
@@ -165,9 +185,17 @@ function resetCodexConversationState() {
   codexChat = null;
 }
 
+async function resetCodexClient() {
+  const client = codexClient;
+  codexClient = null;
+  codexClientPath = '';
+  codexChat = null;
+  if (client) await client.shutdown().catch(() => undefined);
+}
+
 async function clientForCodex(executable) {
   if (codexClient && codexClientPath === executable.path) return codexClient;
-  if (codexClient) await codexClient.shutdown().catch(() => undefined);
+  await resetCodexClient();
   resetCodexConversationState();
   codexClient = new CodexAppServerClient({ executable });
   codexClientPath = executable.path;
@@ -180,6 +208,70 @@ async function chatForCodex(executable) {
   return codexChat;
 }
 
+function execRuntimeForCodex(executable) {
+  if (codexExecRuntime && codexExecRuntimePath === executable.path) return codexExecRuntime;
+  codexExecRuntime = new CodexExecRuntime({
+    executable,
+    runBounded,
+    schemaPath: planSchemaPath,
+    cwd: directorRuntimeRoot,
+    timeoutMs: PLAN_TIMEOUT_MS,
+    maxOutputBytes: MAX_PLAN_PROCESS_BYTES,
+  });
+  codexExecRuntimePath = executable.path;
+  return codexExecRuntime;
+}
+
+function codexStaticProbe(executable) {
+  const cached = codexStaticProbeCache.get(executable.path);
+  if (cached) return cached;
+  const probe = (async () => {
+    const versionResult = await runBounded(executable, ['--version']);
+    if (versionResult.code !== 0) throw new Error('codex --version failed');
+    const [appServerHelp, execHelp] = await Promise.all([
+      runBounded(executable, ['app-server', '--help']).catch((error) => ({ code: -1, stdout: '', stderr: String(error) })),
+      runBounded(executable, ['exec', '--help']).catch((error) => ({ code: -1, stdout: '', stderr: String(error) })),
+    ]);
+    return {
+      version: compactVersion(versionResult),
+      appServerAdvertised: appServerHelp.code === 0,
+      appServerHelpDetail: boundedText(appServerHelp.stderr || appServerHelp.stdout, 220),
+      exec: parseCodexExecHelp(execHelp),
+    };
+  })();
+  codexStaticProbeCache.set(executable.path, probe);
+  return probe;
+}
+
+function claudeStaticProbe(executable) {
+  const cached = claudeStaticProbeCache.get(executable.path);
+  if (cached) return cached;
+  const probe = (async () => {
+    const [versionResult, helpResult] = await Promise.all([
+      runBounded(executable, ['--version']),
+      runBounded(executable, ['--help']).catch(() => ({ code: -1, stdout: '', stderr: '' })),
+    ]);
+    if (versionResult.code !== 0) throw new Error('claude --version failed');
+    const help = `${helpResult.stdout}\n${helpResult.stderr}`;
+    return {
+      version: compactVersion(versionResult),
+      technicallyCapable: helpResult.code === 0
+        && help.includes('--output-format')
+        && help.includes('--max-turns')
+        && help.includes('--permission-mode')
+        && help.includes('--json-schema')
+        && help.includes('--tools'),
+    };
+  })();
+  claudeStaticProbeCache.set(executable.path, probe);
+  return probe;
+}
+
+async function codexCliLoginState(executable) {
+  const result = await runBounded(executable, ['login', 'status']).catch((error) => ({ code: -1, stdout: '', stderr: String(error) }));
+  return parseCodexLoginStatus(result);
+}
+
 async function codexStatus() {
   const policy = 'supported_local_client';
   const integration = 'codex_app_server';
@@ -188,11 +280,9 @@ async function codexStatus() {
     return unavailableStatus('codex', policy, integration, 'Codex CLI was not found in PATH or common user CLI locations');
   }
 
-  let version = '';
+  let probe;
   try {
-    const versionResult = await runBounded(executable, ['--version']);
-    if (versionResult.code !== 0) throw new Error('codex --version failed');
-    version = compactVersion(versionResult);
+    probe = await codexStaticProbe(executable);
   } catch {
     return {
       ...unavailableStatus('codex', policy, integration, 'Codex CLI was found but could not be launched by the local bridge'),
@@ -202,64 +292,82 @@ async function codexStatus() {
     };
   }
 
-  let client;
-  let accountState;
-  try {
-    client = await clientForCodex(executable);
-    accountState = await client.accountRead();
-  } catch {
-    return {
-      provider: 'codex',
-      policy,
-      integration,
-      installed: true,
-      authenticated: false,
-      authMethod: '',
-      planType: '',
-      version,
-      capable: false,
-      loginAvailable: false,
-      planningAvailable: false,
-      chatAvailable: false,
-      loginPending: false,
-      executableName: executable.name,
-      discovery: executable.discovery,
-      capabilityIssues: ['Codex app-server is unavailable; update the official Codex client'],
-      detail: 'Codex CLI is detected, but its product-embedding app-server could not be initialized',
-    };
+  if (probe.appServerAdvertised && !codexAppServerFailures.has(executable.path)) {
+    try {
+      const client = await clientForCodex(executable);
+      const accountState = await client.accountRead();
+      const account = accountState.account;
+      const chatGptConnected = account?.type === 'chatgpt';
+      const planType = chatGptConnected ? String(account.planType ?? '').slice(0, 40) : '';
+      const authMethod = account?.type ? String(account.type).slice(0, 60) : '';
+      const capabilityIssues = [];
+      if (account && account.type !== 'chatgpt') {
+        capabilityIssues.push('Codex is authenticated with a non-ChatGPT credential; connect ChatGPT to use subscription access');
+      }
+      return {
+        provider: 'codex',
+        policy,
+        integration,
+        runtimeMode: 'app_server',
+        installed: true,
+        authenticated: chatGptConnected,
+        authMethod: chatGptConnected ? 'chatgpt' : authMethod,
+        planType,
+        version: probe.version,
+        capable: true,
+        loginAvailable: !chatGptConnected,
+        planningAvailable: chatGptConnected,
+        chatAvailable: chatGptConnected,
+        loginPending: Boolean(client.loginState && !client.loginState.failed),
+        executableName: executable.name,
+        discovery: executable.discovery,
+        capabilityIssues,
+        detail: chatGptConnected
+          ? `Codex App Server is connected through ChatGPT${planType ? ` · ${planType}` : ''} and ready for Director chat + planning`
+          : account
+            ? 'Codex App Server is ready; connect ChatGPT to switch this Director to subscription access'
+            : 'Codex App Server is ready for first-party ChatGPT sign-in',
+      };
+    } catch (error) {
+      const detail = boundedText(error instanceof Error ? error.message : error, 240);
+      codexAppServerFailures.set(executable.path, detail);
+      await resetCodexClient();
+    }
   }
 
-  const account = accountState.account;
-  const chatGptConnected = account?.type === 'chatgpt';
-  const planType = chatGptConnected ? String(account.planType ?? '').slice(0, 40) : '';
-  const authMethod = account?.type ? String(account.type).slice(0, 60) : '';
+  const login = await codexCliLoginState(executable);
   const capabilityIssues = [];
-  if (account && account.type !== 'chatgpt') {
-    capabilityIssues.push('Codex is authenticated with a non-ChatGPT credential; connect ChatGPT to use subscription access');
-  }
+  const appServerFailure = codexAppServerFailures.get(executable.path);
+  if (appServerFailure) capabilityIssues.push(`App Server unavailable; using official Codex CLI compatibility mode. ${appServerFailure}`);
+  else if (!probe.appServerAdvertised) capabilityIssues.push('This Codex build does not advertise App Server; using official Codex CLI compatibility mode.');
+  if (!probe.exec.chatAvailable) capabilityIssues.push('Codex exec must support read-only sandbox + final-message output for compatibility chat.');
+  if (!probe.exec.planAvailable) capabilityIssues.push('Codex exec must support output-schema for typed Director plan previews.');
 
+  const capable = probe.exec.chatAvailable;
+  const authenticated = login.authenticated;
   return {
     provider: 'codex',
     policy,
     integration,
+    runtimeMode: capable ? 'exec_fallback' : 'none',
     installed: true,
-    authenticated: chatGptConnected,
-    authMethod: chatGptConnected ? 'chatgpt' : authMethod,
-    planType,
-    version,
-    capable: true,
-    loginAvailable: !chatGptConnected,
-    planningAvailable: chatGptConnected,
-    chatAvailable: chatGptConnected,
-    loginPending: Boolean(client.loginState && !client.loginState.failed),
+    authenticated,
+    authMethod: login.authMethod,
+    planType: '',
+    version: probe.version,
+    capable,
+    loginAvailable: capable && !authenticated,
+    planningAvailable: capable && authenticated && probe.exec.planAvailable,
+    chatAvailable: capable && authenticated,
+    loginPending: Boolean(activeLoginChild && activeLoginChild.exitCode === null),
     executableName: executable.name,
     discovery: executable.discovery,
     capabilityIssues,
-    detail: chatGptConnected
-      ? `Codex App Server is connected through ChatGPT${planType ? ` · ${planType}` : ''} and ready for Director chat + planning`
-      : account
-        ? 'Codex App Server is ready; connect ChatGPT to switch this Director to subscription access'
-        : 'Codex App Server is ready for first-party ChatGPT sign-in',
+    detail: capable
+      ? authenticated
+        ? 'Codex is connected through the official CLI session. Make & Watch is using bounded read-only exec compatibility mode because App Server is unavailable.'
+        : 'Codex compatibility runtime is ready; complete the official Codex ChatGPT sign-in to enable Director chat.'
+      : 'Codex CLI is detected, but neither App Server nor the bounded exec compatibility runtime is usable in this installed build.',
   };
 }
 
@@ -278,11 +386,9 @@ async function claudeStatus() {
     );
   }
 
-  let version = '';
+  let probe;
   try {
-    const versionResult = await runBounded(executable, ['--version']);
-    if (versionResult.code !== 0) throw new Error('claude --version failed');
-    version = compactVersion(versionResult);
+    probe = await claudeStaticProbe(executable);
   } catch {
     return {
       ...unavailableStatus('claude', policy, integration, 'Claude CLI was found but could not be launched by the local bridge'),
@@ -292,18 +398,9 @@ async function claudeStatus() {
     };
   }
 
-  const cliHelp = await runBounded(executable, ['--help']).catch(() => ({ code: -1, stdout: '', stderr: '' }));
-  const help = `${cliHelp.stdout}\n${cliHelp.stderr}`;
-  const technicallyCapable = cliHelp.code === 0
-    && help.includes('--output-format')
-    && help.includes('--max-turns')
-    && help.includes('--permission-mode')
-    && help.includes('--json-schema')
-    && help.includes('--tools');
-
   let authenticated = false;
   let authMethod = '';
-  if (EXPERIMENTAL_CLAUDE_CODE && technicallyCapable) {
+  if (EXPERIMENTAL_CLAUDE_CODE && probe.technicallyCapable) {
     try {
       const status = await runBounded(executable, ['auth', 'status']);
       const text = `${status.stdout}\n${status.stderr}`.trim();
@@ -323,27 +420,28 @@ async function claudeStatus() {
 
   const capabilityIssues = [];
   if (!EXPERIMENTAL_CLAUDE_CODE) capabilityIssues.push('Public product integration requires an Anthropic API/Console provider');
-  else if (!technicallyCapable) capabilityIssues.push('Claude Code must be updated for bounded structured-output planning');
+  else if (!probe.technicallyCapable) capabilityIssues.push('Claude Code must be updated for bounded structured-output planning');
 
   return {
     provider: 'claude',
     policy,
     integration,
+    runtimeMode: 'none',
     installed: true,
     authenticated: EXPERIMENTAL_CLAUDE_CODE && authenticated,
     authMethod: EXPERIMENTAL_CLAUDE_CODE ? authMethod : '',
     planType: '',
-    version,
-    capable: EXPERIMENTAL_CLAUDE_CODE && technicallyCapable,
-    loginAvailable: EXPERIMENTAL_CLAUDE_CODE && technicallyCapable && !authenticated,
-    planningAvailable: EXPERIMENTAL_CLAUDE_CODE && technicallyCapable && authenticated,
+    version: probe.version,
+    capable: EXPERIMENTAL_CLAUDE_CODE && probe.technicallyCapable,
+    loginAvailable: EXPERIMENTAL_CLAUDE_CODE && probe.technicallyCapable && !authenticated,
+    planningAvailable: EXPERIMENTAL_CLAUDE_CODE && probe.technicallyCapable && authenticated,
     chatAvailable: false,
     loginPending: false,
     executableName: executable.name,
     discovery: executable.discovery,
     capabilityIssues,
     detail: EXPERIMENTAL_CLAUDE_CODE
-      ? technicallyCapable
+      ? probe.technicallyCapable
         ? authenticated
           ? 'Developer-preview Claude Code bridge is authenticated for bounded plan previews; chat is not enabled in this product path'
           : 'Developer-preview Claude Code bridge is ready for first-party sign-in'
@@ -369,27 +467,74 @@ export async function launchProviderLogin(provider) {
   if (provider === 'codex') {
     const executable = discoverProviderExecutable('codex');
     if (!executable) throw new Error('Codex official client is not installed');
-    const client = await clientForCodex(executable);
-    const result = await client.startChatGptLogin();
-    if (result.alreadyConnected) {
+    const status = await codexStatus();
+    if (status.authenticated) {
       return {
         provider: 'codex',
         launched: false,
-        command: 'codex app-server',
-        loginMode: 'browser',
+        command: status.runtimeMode === 'app_server' ? 'codex app-server' : 'codex login status',
+        loginMode: 'none',
         loginId: null,
         authUrl: null,
-        message: 'Codex is already connected through ChatGPT.',
+        message: 'Codex is already connected through the official local ChatGPT session.',
       };
     }
+
+    if (status.runtimeMode === 'app_server') {
+      const client = await clientForCodex(executable);
+      const result = await client.startChatGptLogin();
+      if (result.alreadyConnected) {
+        return {
+          provider: 'codex',
+          launched: false,
+          command: 'codex app-server',
+          loginMode: 'browser',
+          loginId: null,
+          authUrl: null,
+          message: 'Codex is already connected through ChatGPT.',
+        };
+      }
+      return {
+        provider: 'codex',
+        launched: true,
+        command: 'codex app-server · account/login/start',
+        loginMode: 'browser',
+        loginId: result.loginId,
+        authUrl: result.authUrl,
+        message: 'Continue in the official ChatGPT sign-in page. Codex App Server owns and refreshes the OAuth session; Make & Watch never receives the token.',
+      };
+    }
+
+    if (!status.capable) throw new Error(status.detail);
+    if (activeLoginChild && activeLoginChild.exitCode === null) {
+      return {
+        provider: 'codex',
+        launched: true,
+        command: 'codex login',
+        loginMode: 'cli',
+        loginId: null,
+        authUrl: null,
+        message: 'Official Codex ChatGPT sign-in is already in progress.',
+      };
+    }
+    const child = spawnProviderExecutable(executable, ['login'], {
+      cwd: root,
+      windowsHide: false,
+      stdio: 'ignore',
+      env: process.env,
+    });
+    activeLoginChild = child;
+    child.once('close', () => {
+      if (activeLoginChild === child) activeLoginChild = null;
+    });
     return {
       provider: 'codex',
       launched: true,
-      command: 'codex app-server · account/login/start',
-      loginMode: 'browser',
-      loginId: result.loginId,
-      authUrl: result.authUrl,
-      message: 'Continue in the official ChatGPT sign-in page. Codex App Server owns and refreshes the OAuth session; Make & Watch never receives the token.',
+      command: 'codex login',
+      loginMode: 'cli',
+      loginId: null,
+      authUrl: null,
+      message: 'The official Codex CLI sign-in flow was started. Complete the ChatGPT browser flow; Make & Watch never receives the credential.',
     };
   }
 
@@ -450,11 +595,14 @@ async function claudeSchemaString() {
   return claudeSchemaPromise;
 }
 
-async function invokeCodex(prompt) {
+async function invokeCodex(prompt, status) {
   const executable = discoverProviderExecutable('codex');
   if (!executable) throw new Error('Codex official client is no longer available');
-  const client = await clientForCodex(executable);
-  return client.runDirectorPlan(prompt);
+  if (status.runtimeMode === 'app_server') {
+    const client = await clientForCodex(executable);
+    return client.runDirectorPlan(prompt);
+  }
+  return execRuntimeForCodex(executable).plan(prompt);
 }
 
 async function invokeClaude(prompt) {
@@ -504,7 +652,7 @@ export async function invokeDirectorPlan(provider, prompt) {
   const run = { provider, kind: 'plan', startedAt: Date.now() };
   activeRun = run;
   try {
-    const plan = provider === 'codex' ? await invokeCodex(prompt) : await invokeClaude(prompt);
+    const plan = provider === 'codex' ? await invokeCodex(prompt, status) : await invokeClaude(prompt);
     if (plan.provider !== provider) {
       throw new Error(`Director plan provider mismatch: expected ${provider}, got ${String(plan.provider)}`);
     }
@@ -514,30 +662,37 @@ export async function invokeDirectorPlan(provider, prompt) {
   }
 }
 
-async function evictOldestConversation(chat) {
+async function disposeConversation(conversation) {
+  if (!conversation?.threadId || conversation.mode !== 'app_server') return;
+  const executable = discoverProviderExecutable('codex');
+  if (!executable) return;
+  const chat = await chatForCodex(executable);
+  await chat.deleteThread(conversation.threadId).catch(() => undefined);
+}
+
+async function evictOldestConversation() {
   if (conversations.size < MAX_DIRECTOR_CONVERSATIONS) return;
   const oldest = [...conversations.values()].sort((left, right) => left.lastUsedAt - right.lastUsedAt)[0];
   if (!oldest) return;
   conversations.delete(oldest.id);
-  await chat.deleteThread(oldest.threadId).catch(() => undefined);
+  await disposeConversation(oldest);
 }
 
 export async function invokeDirectorChat(provider, prompt, conversationId = null) {
   if (provider !== 'codex') {
     enforceProviderPolicy(provider);
-    throw new Error('Director chat is currently implemented for the supported Codex App Server path; Claude chat will use the future supported Anthropic API provider');
+    throw new Error('Director chat is currently implemented for the supported Codex local-client path; Claude chat will use the future supported Anthropic API provider');
   }
   if (activeRun) throw new Error(`Director provider is busy with ${activeRun.provider}`);
 
   const status = await codexStatus();
   if (!status.chatAvailable) {
-    if (status.loginAvailable) throw new Error('Codex App Server is ready but ChatGPT sign-in is required before chat');
+    if (status.loginAvailable) throw new Error('Codex is ready but ChatGPT sign-in is required before chat');
     throw new Error(`Codex is not ready for Director chat: ${status.detail}`);
   }
 
   const executable = discoverProviderExecutable('codex');
   if (!executable) throw new Error('Codex official client is no longer available');
-  const chat = await chatForCodex(executable);
 
   let conversation = conversationId ? conversations.get(conversationId) : null;
   if (conversationId && !conversation) throw new Error('Director conversation is no longer active; start a new chat');
@@ -545,15 +700,21 @@ export async function invokeDirectorChat(provider, prompt, conversationId = null
 
   let created = false;
   if (!conversation) {
-    await evictOldestConversation(chat);
+    await evictOldestConversation();
     conversation = {
       id: randomUUID(),
       provider,
-      threadId: await chat.createThread(),
+      mode: status.runtimeMode,
+      threadId: null,
+      transcript: [],
       turnCount: 0,
       createdAt: Date.now(),
       lastUsedAt: Date.now(),
     };
+    if (conversation.mode === 'app_server') {
+      const chat = await chatForCodex(executable);
+      conversation.threadId = await chat.createThread();
+    }
     conversations.set(conversation.id, conversation);
     created = true;
   }
@@ -561,17 +722,36 @@ export async function invokeDirectorChat(provider, prompt, conversationId = null
   const run = { provider, kind: 'chat', startedAt: Date.now() };
   activeRun = run;
   try {
-    const rawReply = await chat.send(conversation.threadId, prompt);
+    let rawReply;
+    if (conversation.mode === 'app_server') {
+      try {
+        const chat = await chatForCodex(executable);
+        rawReply = await chat.send(conversation.threadId, prompt);
+      } catch (error) {
+        const probe = await codexStaticProbe(executable);
+        if (!probe.exec.chatAvailable) throw error;
+        conversation.mode = 'exec_fallback';
+        conversation.threadId = null;
+        codexAppServerFailures.set(executable.path, boundedText(error instanceof Error ? error.message : error, 240));
+        await resetCodexClient();
+        rawReply = await execRuntimeForCodex(executable).chat(prompt, conversation.transcript);
+      }
+    } else {
+      rawReply = await execRuntimeForCodex(executable).chat(prompt, conversation.transcript);
+    }
+
     const reply = rawReply.length <= MAX_CHAT_REPLY_CHARS
       ? rawReply
       : `${rawReply.slice(0, MAX_CHAT_REPLY_CHARS - 1)}…`;
+    conversation.transcript = appendCompatibilityTranscript(conversation.transcript, 'user', extractUserMessage(prompt));
+    conversation.transcript = appendCompatibilityTranscript(conversation.transcript, 'assistant', reply);
     conversation.turnCount += 1;
     conversation.lastUsedAt = Date.now();
     return { conversationId: conversation.id, provider, reply, turnCount: conversation.turnCount };
   } catch (error) {
     if (created) {
       conversations.delete(conversation.id);
-      await chat.deleteThread(conversation.threadId).catch(() => undefined);
+      await disposeConversation(conversation);
     }
     throw error;
   } finally {
@@ -585,14 +765,7 @@ export async function closeDirectorConversation(provider, conversationId) {
   if (!conversation) return { closed: false };
   if (conversation.provider !== provider) throw new Error('Director conversation provider mismatch');
   conversations.delete(conversationId);
-
-  if (provider === 'codex') {
-    const executable = discoverProviderExecutable('codex');
-    if (executable) {
-      const chat = await chatForCodex(executable);
-      await chat.deleteThread(conversation.threadId).catch(() => undefined);
-    }
-  }
+  await disposeConversation(conversation);
   return { closed: true };
 }
 
@@ -601,22 +774,30 @@ export async function shutdownDirectorProviders() {
   if (chat) {
     await chat.shutdown().catch(() => undefined);
     for (const conversation of conversations.values()) {
-      await chat.deleteThread(conversation.threadId).catch(() => undefined);
+      if (conversation.mode === 'app_server' && conversation.threadId) {
+        await chat.deleteThread(conversation.threadId).catch(() => undefined);
+      }
     }
   }
   conversations.clear();
   codexChat = null;
 
-  const client = codexClient;
-  codexClient = null;
-  codexClientPath = '';
-  if (client) await client.shutdown().catch(() => undefined);
+  await resetCodexClient();
+  codexExecRuntime = null;
+  codexExecRuntimePath = '';
 
-  const child = activePlanChild;
-  if (child) {
-    terminateProcessTree(child);
-    await waitForProcessExit(child, PROVIDER_SHUTDOWN_WAIT_MS);
+  const planChild = activePlanChild;
+  if (planChild) {
+    terminateProcessTree(planChild);
+    await waitForProcessExit(planChild, PROVIDER_SHUTDOWN_WAIT_MS);
   }
-  if (activePlanChild === child) activePlanChild = null;
+  if (activePlanChild === planChild) activePlanChild = null;
+
+  const loginChild = activeLoginChild;
+  if (loginChild) {
+    terminateProcessTree(loginChild);
+    await waitForProcessExit(loginChild, PROVIDER_SHUTDOWN_WAIT_MS);
+  }
+  if (activeLoginChild === loginChild) activeLoginChild = null;
   activeRun = null;
 }
