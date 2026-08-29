@@ -13,7 +13,7 @@ This folder is the canonical context handoff for **Make & Watch**. A new enginee
 7. `WORKSPACE_LAYOUT.md` — draggable workflow presentation-state boundary.
 8. `AUTOPILOT.md` — exact virtual-pointer pick-and-place protocol, typed takeover, interaction ownership, and safety boundaries.
 9. `AI_DIRECTOR_CONTEXT.md` — compact stable creative-Director policy.
-10. `DIRECTOR_PROVIDERS.md` — Codex/Claude provider policy, process and context-budget boundary.
+10. `DIRECTOR_PROVIDERS.md` — Codex App Server / Claude provider policy, process and context-budget boundary.
 11. `AUTH_AND_AI_DIRECTOR.md` — authentication invariants and provider authority.
 12. `RUNTIME_FOUNDATION.md` — native resource admission and lifecycle safety layer.
 13. `BACKGROUND_JOBS.md` — bounded job ownership, cancellation, and deterministic one-at-a-time shutdown contract.
@@ -30,13 +30,15 @@ Make & Watch is a local-first desktop series-production studio where a user dire
 
 ## Current stage
 
-**Foundation v1 / Interactive Native Studio + exact Autopilot pointer + policy-aware Director link + bounded background lifecycle.** The repository has a transactional C++ project graph, SQLite schema-v2 snapshot/journal persistence, guarded resource admission, bounded background-job ownership, versioned native IPC, a persist-before-live-commit application session, interactive Studio, and a typed Autopilot executor whose visible pointer finds/grabs/places displaced nodes while the viewport follows the held cursor/node through a deterministic 30 FPS presentation ceiling.
+**Foundation v1 / Interactive Native Studio + exact Autopilot pointer + Codex App Server Director link + bounded background lifecycle.** The repository has a transactional C++ project graph, SQLite schema-v2 snapshot/journal persistence, guarded resource admission, bounded background-job ownership, versioned native IPC, persist-before-live-commit application session, interactive Studio, and a typed Autopilot executor whose visible pointer finds/grabs/places displaced nodes while the viewport follows the held cursor/node through a deterministic 30 FPS presentation ceiling.
 
-The Director provider surface now has an explicit policy boundary. Codex is the primary local-client path to validate with official ChatGPT sign-in; Make & Watch owns no Codex OAuth credential. Claude Code is detected but public-product subscription routing is disabled by default because Anthropic's current third-party policy requires a supported API/Console/cloud-provider path. Claude Code remains an explicit developer-preview adapter only, never a silent shipping default.
+Codex is now integrated through the official **Codex App Server** product-embedding interface. The local bridge owns one bounded JSONL App Server session, uses ChatGPT-managed authentication without OAuth credential custody, separates CLI/App Server/account/planning readiness, requests schema-constrained read-only Director turns, and deletes completed planning threads. The Director Link is mounted inside the left AI Director sidebar and must never overlay workflow space.
 
-The Director context compiler is project-specific and bounded rather than repo-dump based: it uses project instructions, a canonical policy hash, live native revision, compact graph state, JSON Schema output and a conservative <=4K-token context budget.
+Claude Code can be detected, but public-product subscription routing remains disabled by default because Anthropic's current third-party policy requires a supported API/Console/cloud-provider path. Claude Code remains an explicit developer-preview adapter only.
 
-No heavyweight image/video/voice model is a hard dependency yet. `BackgroundJobRuntime` owns bounded lifecycle/resource accounting but does not launch media workers; concrete WorkerSupervisor remains the next native runtime layer.
+The Director context compiler is project-specific and bounded rather than repo-dump based. It uses a policy hash, live native revision, compact graph state and a conservative <=4K-token budget. Budget reduction is deterministic and preserves valid JSON rather than truncating serialized state.
+
+No heavyweight image/video/voice model is a hard dependency yet. `BackgroundJobRuntime` owns bounded lifecycle/resource accounting but does not launch media workers; concrete WorkerSupervisor remains the next native runtime layer after the current Director live gate.
 
 Provider planning, worker processes and model execution must build on these validated boundaries rather than bypassing them.
 
