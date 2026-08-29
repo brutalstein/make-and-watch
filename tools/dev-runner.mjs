@@ -3,9 +3,10 @@ import { resolve } from 'node:path';
 
 const root = process.cwd();
 const isWindows = process.platform === 'win32';
+const bridgeBaseUrl = `http://127.0.0.1:${process.env.MAKEWATCH_BRIDGE_PORT ?? 4177}`;
 
 console.log('\n  MAKE & WATCH  /  STUDIO RUNTIME');
-console.log('  Native engine + local bridge + Studio\n');
+console.log('  Native engine + local bridge + Director + Studio\n');
 
 const nativeBuild = spawnSync(
   'cmake',
@@ -46,9 +47,11 @@ bridge.on('exit', (code) => {
 });
 
 async function waitForBridge() {
-  for (let attempt = 0; attempt < 60; attempt += 1) {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
     try {
-      const response = await fetch('http://127.0.0.1:4177/api/health');
+      const response = await fetch(`${bridgeBaseUrl}/api/health`, {
+        signal: AbortSignal.timeout(1_000),
+      });
       if (response.ok) return;
     } catch {
       // Startup race: bridge is still opening the native project database.
@@ -58,8 +61,37 @@ async function waitForBridge() {
   throw new Error('local native bridge did not become ready');
 }
 
+async function warmDirectorRuntime() {
+  console.log('  [dev] Preparing Codex Director service…');
+  try {
+    const response = await fetch(`${bridgeBaseUrl}/api/director/providers`, {
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!response.ok) throw new Error(`provider warm-up returned HTTP ${response.status}`);
+    const payload = await response.json();
+    const codex = payload?.result?.providers?.find((provider) => provider.provider === 'codex');
+    if (!codex) {
+      console.log('  [dev] Director warm-up completed without a Codex slot');
+      return;
+    }
+    if (codex.chatAvailable) {
+      console.log(`  [dev] Codex Director ready${codex.planType ? ` · ${codex.planType}` : ''}`);
+      return;
+    }
+    if (codex.loginAvailable) {
+      console.log('  [dev] Codex App Server ready · ChatGPT sign-in will open automatically on first Send');
+      return;
+    }
+    console.log(`  [dev] Codex Director: ${codex.detail}`);
+  } catch (error) {
+    // Director is optional for project access. Studio still opens and explains the exact readiness issue.
+    console.warn(`  [dev] Director warm-up deferred: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 try {
   await waitForBridge();
+  await warmDirectorRuntime();
 } catch (error) {
   console.error(`[dev] ${error instanceof Error ? error.message : String(error)}`);
   shutdown(1);
