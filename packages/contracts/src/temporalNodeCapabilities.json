@@ -1,0 +1,125 @@
+{
+  "shot": {
+    "invariants": [
+      "Temporal generation must resolve concrete input/reference Assets before expensive execution.",
+      "Queued temporal work must fail closed if the Shot revision changes before commit."
+    ],
+    "fields": [
+      {
+        "key": "generationStrategy",
+        "label": "Generation strategy",
+        "type": "enum",
+        "scope": "production",
+        "description": "Concrete media synthesis mode. I2V animates a start/hero frame; FLF2V constrains both endpoints; VIDEO is provider-native temporal synthesis.",
+        "options": [
+          "STILL_MOTION",
+          "T2I",
+          "I2V",
+          "FLF2V",
+          "VIDEO",
+          "COMPOSITE"
+        ],
+        "defaultValue": "STILL_MOTION",
+        "requiredFor": "preview"
+      },
+      {
+        "key": "heroFrameAssetId",
+        "label": "Hero frame Asset",
+        "type": "text",
+        "scope": "production",
+        "description": "Optional explicit image Asset id used as the canonical first frame for I2V/FLF2V. If empty, the latest ready Shot image generation may be used."
+      },
+      {
+        "key": "endFrameAssetId",
+        "label": "End frame Asset",
+        "type": "text",
+        "scope": "production",
+        "description": "Explicit image Asset id constraining the final frame for FLF2V."
+      },
+      {
+        "key": "temporalPrompt",
+        "label": "Temporal action prompt",
+        "type": "multiline",
+        "scope": "creative",
+        "description": "Chronological motion/action direction for the video model. Falls back to Subject action when empty."
+      },
+      {
+        "key": "temporalProvider",
+        "label": "Temporal provider",
+        "type": "text",
+        "scope": "runtime",
+        "description": "Explicit temporal provider id. Provider choice stays explicit in the public architecture; no hidden adaptive model selection."
+      }
+    ]
+  },
+  "character": {
+    "invariants": [
+      "Accepted identity reference Assets are durable cross-episode anchors and must never be inferred from arbitrary output files."
+    ],
+    "fields": [
+      {
+        "key": "canonicalImageAssetIds",
+        "label": "Canonical image Assets",
+        "type": "multiline",
+        "scope": "production",
+        "description": "JSON array or comma/newline-separated image Asset ids approved as canonical visual identity references."
+      },
+      {
+        "key": "acceptedReferenceAssetIds",
+        "label": "Accepted reference Assets",
+        "type": "multiline",
+        "scope": "production",
+        "description": "Additional approved image/video Asset ids that may condition later shots without replacing the canonical identity set."
+      },
+      {
+        "key": "continuityPolicy",
+        "label": "Continuity policy",
+        "type": "enum",
+        "scope": "production",
+        "description": "How strongly temporal/image providers must use accepted reference Assets.",
+        "options": [
+          "prompt-only",
+          "prefer-reference",
+          "require-reference",
+          "identity-locked"
+        ],
+        "defaultValue": "prefer-reference"
+      }
+    ]
+  },
+  "location": {
+    "invariants": [
+      "Accepted environment reference Assets persist across Scenes/Episodes and remain semantic anchors rather than copied prompt text."
+    ],
+    "fields": [
+      {
+        "key": "canonicalImageAssetIds",
+        "label": "Canonical image Assets",
+        "type": "multiline",
+        "scope": "production",
+        "description": "JSON array or comma/newline-separated image Asset ids defining canonical environment geometry, materials and palette."
+      },
+      {
+        "key": "acceptedReferenceAssetIds",
+        "label": "Accepted reference Assets",
+        "type": "multiline",
+        "scope": "production",
+        "description": "Additional approved environment image/video Asset ids available to later Shot generations."
+      },
+      {
+        "key": "continuityPolicy",
+        "label": "Continuity policy",
+        "type": "enum",
+        "scope": "production",
+        "description": "How strongly generation must condition on location reference Assets.",
+        "options": [
+          "prompt-only",
+          "prefer-reference",
+          "require-reference",
+          "geometry-locked"
+        ],
+        "defaultValue": "prefer-reference"
+      }
+    ]
+  }
+}
