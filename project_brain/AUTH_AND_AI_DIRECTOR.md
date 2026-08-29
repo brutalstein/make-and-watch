@@ -2,7 +2,7 @@
 
 ## Product requirement
 
-The user chooses one AI Director. Media generation remains local and provider-independent.
+The user chooses one AI Director. Authoritative project state and media generation remain local and provider-independent.
 
 Current product integration policy:
 
@@ -13,6 +13,8 @@ Current product integration policy:
 
 Make & Watch must not impersonate official clients, scrape credentials, copy token caches, collect session tokens, or invent a provider OAuth exchange.
 
+The supported Codex path stores **zero Codex secrets in Make & Watch**. Codex owns credential persistence and refresh.
+
 ## Codex authentication ownership
 
 Preferred path:
@@ -22,6 +24,8 @@ runtime warm-up
  -> local bridge
  -> codex app-server
  -> initialize / initialized
+ -> permissionProfile/list
+ -> select allowed :read-only
  -> account/read
 
 user Send when auth is required
@@ -45,13 +49,99 @@ Both paths rely on the official Codex client owning credentials. Make & Watch ne
 
 The compatibility runtime intentionally does **not** treat a generic/API-key login as ChatGPT subscription access. If `codex login status` does not identify a ChatGPT session, product chat remains unavailable until official ChatGPT sign-in is completed.
 
-## User-gesture and queued-message rule
+## User gesture and queued-message rule
 
-The composer itself is never credential-gated. The user may type before account/runtime readiness.
+The composer is never credential-gated. The user may type before account/runtime readiness.
 
 If authentication is required, the first **Send** keeps the message visibly queued and starts the policy-permitted official Codex sign-in flow. App Server mode uses its returned browser `authUrl`; compatibility mode launches the official `codex login` flow. The queued message is submitted only after sanitized provider status reports chat readiness.
 
 If connection fails before submission, the text is restored to the composer. A failure after a provider turn may have started must not cause automatic blind replay.
+
+## Durable conversation ownership
+
+Make & Watch owns a provider-agnostic local conversation archive under `.makewatch/conversations/`. That directory is ignored by Git and contains no provider credentials.
+
+Each product conversation stores only bounded product data:
+
+- product conversation ID and title;
+- provider/runtime label;
+- provider thread handle when one exists;
+- user/assistant/system transcript entries;
+- timestamps, turn count and native project revision references;
+- archive/failure state.
+
+The provider thread handle is an opaque continuation token, not a credential.
+
+### App Server lifecycle
+
+A Director conversation uses a persistent Codex thread:
+
+```text
+new conversation
+ -> thread/start (persistent; never ephemeral)
+ -> repeated turn/start
+
+switch/new conversation
+ -> thread/unsubscribe only
+ -> product conversation remains on disk
+
+application restart / session switch
+ -> read Make & Watch archive
+ -> thread/resume(threadId)
+ -> continue the same provider conversation
+
+archive
+ -> product archive flag
+ -> best-effort thread/archive
+
+restore
+ -> best-effort thread/unarchive
+ -> thread/resume on next use
+
+hard delete
+ -> explicit user action only
+ -> best-effort thread/delete
+ -> delete Make & Watch archive file
+```
+
+Bridge shutdown interrupts active work and releases subscriptions/processes but **never deletes persisted conversations**.
+
+### Exec fallback lifecycle
+
+`codex exec` has no provider-native multi-turn thread ownership. The compatibility path therefore reconstructs bounded context from the durable Make & Watch transcript instead of pretending to own a native Codex thread.
+
+If an App Server conversation temporarily falls back to exec, its existing provider thread handle is retained. A later App Server-capable runtime can resume the original thread rather than losing the continuation handle.
+
+## Chat operator authority
+
+Director chat is no longer advisory-only.
+
+When the user explicitly asks to create, edit, delete, load, save, reset, approve, lock or otherwise apply a project/workflow change, Codex may invoke the host-provided `makewatch.*` dynamic tools directly.
+
+Important rules:
+
+- Codex remains in `:read-only` provider sandbox mode;
+- it may not edit project files or use shell commands as a substitute for product operations;
+- project mutations are possible only through the typed Make & Watch capability registry;
+- every mutation crosses native validation and optimistic `expectedProjectRevision` checks;
+- locks, dependency invariants, persistence and journal provenance remain authoritative in native C++;
+- a tool failure or revision conflict must be surfaced; Codex must never claim a change succeeded without a successful tool result;
+- ordinary brainstorming/discussion must not mutate the project merely because tools exist.
+
+Current project/workflow capabilities include bounded project read/query/history/impact/apply plus workflow new/save/list/load/delete. Future media capabilities must follow the same host-tool/native-authority pattern.
+
+## Planning versus chat
+
+`/api/director/plan` remains a separate schema-constrained `AutopilotPlan` surface. A generated plan is still a typed proposal until Studio validation and the relevant execution boundary accept it.
+
+Chat and plan are therefore distinct:
+
+```text
+chat discussion          -> conversation only
+chat explicit operation  -> makewatch.* tool -> native ProjectSession
+plan generation           -> typed AutopilotPlan proposal
+plan execution            -> Studio/native execution boundary
+```
 
 ## Claude policy
 
@@ -65,41 +155,33 @@ Therefore:
 - shipping Claude chat/planning must use a supported Anthropic API/Console/cloud-provider path;
 - Make & Watch must not route Free/Pro/Max credentials through the product on the user's behalf.
 
-## Studio/provider flow
-
-1. dev-runner starts the native engine and bridge;
-2. before Studio starts, it warms provider status and selects the best available Codex runtime;
-3. runtime status is one of `app_server`, `exec_fallback`, or `none`;
-4. Studio receives sanitized typed readiness;
-5. user can type immediately regardless of provider readiness;
-6. `/api/director/chat` handles bounded conversation using native App Server threads or bounded compatibility transcript state;
-7. `/api/director/connect` is used automatically by first Send when needed or manually from Connections;
-8. `/api/director/plan` remains a separate schema-constrained Assist planning surface;
-9. chat/planning output cannot mutate semantic project state directly.
+The product conversation archive is intentionally provider-agnostic so a future supported Claude/API implementation can reuse the same session/archive UX without changing native project authority.
 
 ## Context and process bounds
 
-App Server mode owns real Codex thread IDs and deletes them on New conversation/close/shutdown.
-
-Compatibility mode cannot pretend to own provider-native thread history. It stores only a bounded in-memory recent transcript, sends bounded prompts through stdin, uses read-only sandboxing, collects only the bounded final message, and removes temporary output files after every turn.
-
-Static CLI version/help capability probes are cached for the bridge lifetime so status polling does not continuously spawn probe processes. Account/login readiness remains live.
+- first successful chat turn receives bounded live-project context;
+- later App Server turns rely primarily on provider thread history plus current native revision;
+- if the first provider turn failed, the retry is still treated as a first successful turn and receives full bounded first-turn context;
+- compatibility mode rebuilds only bounded transcript context;
+- static CLI capability probes are cached for the bridge lifetime;
+- one provider run is active at a time;
+- prompt/reply/protocol sizes and timeouts are bounded;
+- provider processes remain bridge-owned and are drained/terminated on shutdown without deleting conversation history.
 
 ## Project specialization versus fine-tuning
 
-Codex/Claude are not retrained for this repository. Make-&-Watch specialization is provided by:
+Codex/Claude are not retrained for this repository. Make & Watch specialization is provided by:
 
-- tiny provider-native runtime instructions;
-- bounded native graph context;
-- bounded conversation context;
+- small provider-native runtime instructions;
+- bounded live graph context;
+- durable bounded conversation context;
+- typed `makewatch.*` capabilities;
 - schema-constrained planning;
-- native revision/lock/capability validation before any later execution.
+- native revision/lock/capability validation.
 
 ## Credential storage
 
-The supported Codex path stores **zero Codex secrets in Make & Watch**.
-
-Future direct Anthropic/OpenAI API or enterprise credentials must use an OS-backed secret abstraction such as Windows Credential Manager, macOS Keychain, or Linux Secret Service. Never persist secrets in project files, SQLite project metadata, logs, shipping `.env` defaults or Director context packs.
+Future direct Anthropic/OpenAI API or enterprise credentials must use an OS-backed secret abstraction such as Windows Credential Manager, macOS Keychain, or Linux Secret Service. Never persist secrets in project files, SQLite project metadata, logs, conversation archives, shipping `.env` defaults or Director context packs.
 
 ## Failure behavior
 
@@ -108,25 +190,24 @@ Future direct Anthropic/OpenAI API or enterprise credentials must use an OS-back
 - Compatibility runtime missing required bounded/read-only flags: report unavailable rather than run an unsafe path.
 - App Server ready but no ChatGPT account: composer stays writable; first Send initiates official sign-in.
 - Compatibility mode without ChatGPT login: composer stays writable; first Send starts `codex login` and keeps the message queued.
-- Popup blocked in App Server mode: preserve queued text and expose the official auth URL as recovery.
-- Login pending: preserve one owned login flow and poll boundedly.
+- Popup blocked: preserve queued text and expose the official auth URL as recovery.
 - Connection failure before chat submission: restore text to composer.
-- Possible failure after chat submission: do not blindly auto-replay and risk a duplicate turn.
-- Policy-disallowed provider: explain supported API requirement.
+- Possible failure after chat submission: record failure state and do not blindly auto-replay.
+- Corrupt unrelated local conversation file: isolate it so the archive picker remains usable.
 - Concurrent Director inference: reject overlap.
-- Turn/process timeout: interrupt or terminate only the owned provider work.
-- Bridge shutdown: drain App Server threads, active exec turn, and active login child before exit.
-- Invalid plan schema/stale revision: reject before native mutation.
+- Turn/process timeout: interrupt or terminate only owned provider work.
+- Bridge shutdown: stop active provider/native work without deleting conversations.
+- Invalid command/plan/stale project revision: reject before native mutation.
 
 ## Authority boundary
 
-Conversation history is not a project database.
+Conversation history is durable creative context, but it is not the project database.
 
 ```text
-chat = creative context
-plan = typed proposal
-ProjectSession = authoritative semantic commit boundary
-SQLite/journal = durable project truth/history
+conversation archive = durable creative/session context
+makewatch.* tools     = typed project-operation capability surface
+ProjectSession        = authoritative semantic commit boundary
+SQLite/journal        = durable project truth/history
 ```
 
-Guided/Director semantic execution must continue to reuse this boundary. Native C++ `ProjectSession` remains authoritative regardless of provider.
+Native C++ `ProjectSession` remains authoritative regardless of provider or conversation state.
