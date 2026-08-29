@@ -137,13 +137,38 @@ function quoteCmdArgument(value) {
   return `"${escaped}"`;
 }
 
+export function buildWindowsCmdCommand(executable, args) {
+  if (!executable?.path) throw new Error('provider executable is not resolved');
+  const inner = [quoteCmdArgument(executable.path), ...args.map(quoteCmdArgument)].join(' ');
+  // cmd.exe /S /C requires the outer quote pair when the command starts with a quoted path.
+  // Example raw command line:
+  //   cmd.exe /d /s /c ""C:\\Users\\me\\AppData\\Roaming\\npm\\codex.cmd" "--version""
+  return `"${inner}"`;
+}
+
+export function providerLaunchSummary(executable) {
+  if (!executable) return 'unresolved';
+  return executable.commandShellRequired
+    ? `${executable.name} via cmd.exe (${executable.discovery})`
+    : `${executable.name} direct (${executable.discovery})`;
+}
+
 export function spawnProviderExecutable(executable, args, options = {}) {
   if (!executable) throw new Error('provider executable is not resolved');
   if (!executable.commandShellRequired) return spawn(executable.path, args, options);
 
   const env = options.env ?? process.env;
   const comspec = env.ComSpec ?? env.COMSPEC ?? process.env.ComSpec ?? process.env.COMSPEC ?? 'cmd.exe';
-  const inner = [quoteCmdArgument(executable.path), ...args.map(quoteCmdArgument)].join(' ');
-  // cmd.exe /S /C requires the extra outer quote when the executable path itself is quoted.
-  return spawn(comspec, ['/d', '/s', '/c', `"${inner}"`], options);
+  const command = buildWindowsCmdCommand(executable, args);
+
+  // Critical on Windows: Node's default argument escaping would quote/escape the
+  // already-composed /C command string a second time. For npm .cmd shims this can
+  // make a perfectly valid PowerShell command fail only when launched by Node.
+  // The command is safe to pass verbatim because every argument is internally
+  // generated and quoteCmdArgument escapes cmd expansion characters; user text is
+  // always supplied over stdin, never interpolated into this command line.
+  return spawn(comspec, ['/d', '/s', '/c', command], {
+    ...options,
+    windowsVerbatimArguments: true,
+  });
 }
