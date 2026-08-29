@@ -10,7 +10,7 @@ The important principle is:
 
 > The AI does not gain an unrestricted desktop mouse. It receives a typed plan and the Studio projects that plan through a controlled virtual cursor.
 
-This provides the visual feeling of an expert operating the application without sacrificing deterministic execution, testability, or native safety boundaries.
+This provides the visual feeling of an expert operating the application without sacrificing deterministic execution, testability, native safety, or UI responsiveness.
 
 ## Architecture
 
@@ -58,66 +58,63 @@ Current step vocabulary:
 - `checkpoint`
 - `wait`
 
-A plan also carries:
-
-- plan ID;
-- provider identity;
-- autonomy mode;
-- expected native project revision;
-- bounded ordered steps.
-
-Unknown or unsafe plans are rejected before execution.
+A plan also carries plan ID, provider identity, autonomy mode, expected native project revision, and bounded ordered steps. Unknown or unsafe plans are rejected before execution.
 
 ## Validation boundary
 
-`autopilotValidation.ts` currently enforces:
+`autopilotValidation.ts` currently enforces supported schema, exact expected project revision, bounded step/command counts, unique step IDs, known targets, finite/bounded coordinates and durations, dependency endpoints, and Assist-mode prohibition on semantic mutation.
 
-- supported plan schema;
-- exact expected project revision;
-- bounded step count;
-- unique step IDs;
-- known node targets;
-- finite/bounded coordinates;
-- bounded waits and animation durations;
-- bounded command counts;
-- known dependency endpoints;
-- no semantic mutation in Assist mode.
+A Claude/Codex response is never trusted merely because it came from a model.
 
-Future provider-generated plans must pass the same validation. A Claude/Codex response is never trusted merely because it came from a model.
+## Deterministic presentation governor
+
+Hands-on use showed that visually updating cursor, node state, React Flow camera, and the entire Studio tree at display refresh rate can make an otherwise lightweight workflow feel too fast or temporarily freeze on high-refresh displays.
+
+The presentation runtime now has an explicit performance budget:
+
+- cursor/node presentation cadence is fixed at **24 FPS**;
+- motion progress is frame-index based rather than wall-clock catch-up based;
+- pause or background-tab stalls slow the presentation instead of teleporting it forward;
+- cursor travel duration is distance-aware and bounded;
+- visible node drags are deliberately slower and readable;
+- the virtual cursor uses an external `useSyncExternalStore` presentation store, so cursor frames do **not** re-render the full `App`, Inspector, telemetry, and controlled workflow host;
+- stale edge animation is suspended while Autopilot owns the workflow;
+- camera DOM observation and React Flow reads are sampled at the same 24 FPS budget, even on 144/165 Hz displays;
+- at most one React Flow viewport write may be outstanding;
+- pan/zoom steps are bounded and damped;
+- the deterministic workspace demo physically moves at most five representative displaced nodes and settles repetitive remainder as one presentation-only layout pass.
+
+This presentation budget is not semantic project state and is intentionally independent from native revision/resource accounting.
 
 ## Execution liveness
 
-A visually impressive automation that can remain stuck forever is not acceptable product behavior.
+A visually impressive automation that can remain stuck forever is unacceptable.
 
-The executor therefore applies a bounded execution deadline to **presentation and read-only workflow actions**. Focus, drag, impact preview, arrange, and fit steps must either complete within their execution budget or fail safely. Explicit user approval checkpoints are intentionally unbounded because waiting for the user is the requested behavior.
+Presentation/read-only actions have bounded execution deadlines. Focus, drag, impact preview, arrange, and fit must complete within budget or fail safely. Explicit user approval checkpoints remain unbounded because waiting for the user is intended.
 
-Authoritative semantic `applyCommands` is deliberately different. It is not wrapped in a second UI-only race timeout that could report failure while a native transaction is still completing. Transport correlation, localhost RPC timeout policy, `ProjectSession`, and transactional persistence own that boundary. This prevents the UI from inventing a split-brain success/failure state around a real commit.
+Authoritative semantic `applyCommands` is deliberately different. It is not wrapped in a second UI-only race timeout that could report failure while a native transaction is still completing. Transport correlation, localhost RPC timeout policy, `ProjectSession`, and transactional persistence own that boundary.
 
-A timed-out presentation step cancels the execution control and becomes a visible failed Autopilot state rather than leaving the Studio interaction lock active indefinitely.
-
-The deterministic workspace demo also limits repetitive visible cursor work. It physically demonstrates a bounded number of meaningful node moves; if a large graph contains more displaced nodes, the remaining presentation-only layout is settled as one deterministic dependency-layout operation. This keeps the interaction understandable on both 8-node and future 800-node projects.
+A timed-out presentation step cancels execution control and becomes a visible failed state rather than retaining interaction ownership forever.
 
 ## Autonomy modes
 
 ### Assist
 
-Presentation and inspection only. It may organize the canvas, focus nodes, inspect dependency impact, and explain what it is doing. It cannot issue semantic project mutations.
-
-The current deterministic **AI Workspace Drive** demo intentionally uses Assist mode.
+Presentation and inspection only. It may organize the canvas, focus nodes, inspect dependency impact, and explain work. It cannot issue semantic project mutations. The bundled **AI Workspace Drive** uses this mode.
 
 ### Guided
 
-May prepare and execute typed semantic operations but must stop at configured creative checkpoints for user approval.
+May prepare and execute typed semantic operations but stops at configured creative checkpoints for user approval.
 
 ### Director
 
-May execute a user-authorized plan over a broader scope while still respecting native locks, revisions, resource limits, and explicit stop controls. Critical policies may still force checkpoints.
+May execute a user-authorized plan over broader scope while still respecting native locks, revisions, resource limits, typed policy, and explicit takeover controls.
 
 The distinction is a capability policy, not merely a UI label.
 
 ## Virtual cursor
 
-`VirtualCursor.tsx` is a Studio overlay, not an operating-system cursor injection system.
+`VirtualCursor.tsx` is a Studio overlay, not operating-system cursor injection.
 
 Reasons:
 
@@ -125,73 +122,47 @@ Reasons:
 - does not steal the user's real mouse;
 - cross-platform;
 - cannot click arbitrary desktop applications;
-- motion can be cinematic and consistent;
-- actions remain tied to typed Studio entities instead of screen coordinates alone.
+- motion is controllable and cinematic;
+- actions remain tied to typed Studio entities.
 
-The cursor supports visible movement, press state, click ripple, glow/trail, AI identity badge, and contextual activity labels.
+The cursor supports travel, press state, ripple, glow/trail, AI badge, contextual labels, and is rendered from its own external presentation store so high-frequency cursor updates stay isolated from the application tree.
 
 ## Cinematic workflow camera
 
-`AutopilotCameraFollower.tsx` owns presentation-only camera follow while the AI cursor is actively searching or dragging.
+`AutopilotCameraFollower.tsx` owns presentation-only camera follow while the cursor is actively searching or dragging.
 
 Rules:
 
-- the camera uses a dead/safe frame rather than permanently centering the cursor;
-- when the AI is travelling to find a distant node, the composition gradually widens;
-- when the AI presses and manipulates a node, the composition tightens slightly;
-- cursor and selected node remain inside the visible safe frame while the workflow pans beneath them;
-- pan and zoom are damped and bounded per animation frame;
-- camera ownership is transient and is released as soon as cursor motion settles;
-- explicit `fitView` / focus commands are therefore free to run without fighting a second camera controller;
-- initial takeover choreography does not move the graph until the cursor actually enters the workflow;
-- label placement flips near viewport edges so cursor explanations remain visible.
+- dead/safe frame instead of permanent centering;
+- composition widens during search and tightens gently during manipulation;
+- cursor and selected node remain inside the visible safe frame while the workflow moves beneath them;
+- pan/zoom are bounded;
+- DOM/React Flow observation is capped at 24 FPS;
+- only one viewport mutation may be pending;
+- ownership is transient and yields to explicit fit/focus operations;
+- takeover startup does not move the graph before the cursor enters the workflow;
+- labels flip near frame edges.
 
-Camera motion never changes semantic state or saved node coordinates. It is a pure projection of what the AI is currently doing.
+Camera motion never changes semantic state or saved node coordinates.
 
 ## Interaction ownership
 
-While Autopilot is planning/executing/paused/waiting for approval:
+While Autopilot is planning/executing/paused/waiting for approval, manual workflow dragging, node selection, Scene Strip mutation and native mutation buttons are disabled.
 
-- manual workflow dragging is disabled;
-- node selection is disabled;
-- scene strip interaction is disabled;
-- manual native mutation buttons are disabled;
-- Studio places a takeover interaction layer over normal controls.
+The user must never be trapped:
 
-The user must **never** be trapped by automation. The following remain authoritative:
-
-- `Esc` — immediately take back control;
-- **Take back control** — visible stop action;
-- `Space` — pause/resume while not at an approval checkpoint;
-- explicit approval continuation when a Guided/Director plan requests it.
+- `Esc` immediately takes control back;
+- **Take back control** is always visible during takeover;
+- `Space` pauses/resumes except at an approval checkpoint;
+- Guided/Director checkpoints expose explicit continuation.
 
 A cancelled plan cannot continue executing later steps.
 
 ## Presentation versus semantic actions
 
-### Presentation-only
+Presentation-only actions include drag, arrange, fit, focus and cinematic pan/zoom. They must not advance native revision, invalidate dependencies, change locks/approval, create semantic events or start generation.
 
-Examples:
-
-- drag node;
-- arrange graph;
-- fit viewport;
-- center/focus node;
-- cinematic pan/zoom camera motion.
-
-These update Studio workspace state only. They must not:
-
-- advance native project revision;
-- invalidate dependencies;
-- change approvals/locks;
-- create native semantic events;
-- start generation.
-
-### Semantic
-
-`applyCommands` is the only Autopilot step that may change authoritative project truth.
-
-It routes through the same path as human-authorized mutations:
+`applyCommands` is the only Autopilot step that may change authoritative project truth:
 
 ```text
 Autopilot executor
@@ -200,63 +171,65 @@ Autopilot executor
       -> JSONL IPC
       -> ProjectSession
       -> staged ProjectEngine
-      -> transactional persistence
+      -> transactional persistence + journal
       -> live commit
 ```
 
-No Autopilot feature may mutate SQLite, project files, or native graph state by DOM manipulation or direct filesystem access.
+No Autopilot feature may mutate SQLite/project files by DOM manipulation or direct filesystem access.
 
-## Provenance direction
+## Durable provenance
 
-Studio and bridge already carry commit context fields for semantic AI actions:
+The attribution path is now complete through protocol v1.
+
+Semantic commits may carry:
 
 - actor (`user`, `ai_director`, `system`);
+- source;
 - plan ID;
-- reason/source context.
+- reason.
 
-`ProjectSession` supports durable commit context and encodes it into the committed transaction event using the versioned `mwctx1` detail representation, without requiring a new SQLite schema merely for provenance.
+The native dispatcher validates/bounds that context, `ProjectSession` persists it in the versioned `mwctx1` transaction detail, and native `project.history` parses it back into typed structured fields. Studio therefore does not parse the storage encoding.
 
-The final IPC context parser / user-facing History presentation belongs to the bounded-history milestone. Until that parser is wired, provider-driven semantic Autopilot must not be advertised as fully actor-attributed end to end.
+The Activity surface can distinguish human, AI Director, and system commits. Older transactions created before full attribution may legitimately appear as system/unattributed history.
 
 ## Current deterministic demo
 
-The current Studio button **Let AI drive this workflow** builds a deterministic Assist-mode plan against the live native snapshot.
+**Let AI drive this workflow** builds a deterministic Assist-mode plan against the live native snapshot. It:
 
-It:
-
-1. validates the exact native project revision;
-2. widens the camera and scans the production graph;
-3. identifies nodes displaced from deterministic dependency-aware layout;
-4. visibly finds and drags a bounded set of representative nodes;
-5. periodically reframes the workflow rather than mechanically traversing cards forever;
-6. settles any repetitive remainder as one presentation-only dependency-layout pass;
-7. persists only workspace positions;
+1. validates exact native revision;
+2. frames and briefly scans the graph;
+3. identifies displaced nodes;
+4. finds and visibly drags at most five representative nodes with distance-aware pacing;
+5. periodically reframes instead of mechanically racing across cards;
+6. settles repetitive remainder as one presentation-only dependency layout;
+7. saves workspace coordinates only;
 8. focuses a review-relevant scene/shot;
 9. requests native dependency impact;
-10. explicitly reports completion and returns control without a final competing camera pass;
-11. finishes without mutating semantic project state.
+10. explicitly completes and returns control;
+11. never mutates semantic project state.
 
-This is not pretending Claude/Codex is connected. It is a real execution harness that future providers can feed.
+This is not pretending Claude/Codex is connected. It is a real validated execution harness for future plan producers.
 
 ## Non-negotiable invariants
 
-- Never simulate AI authority by directly calling arbitrary DOM click handlers from provider text.
+- Never directly map provider text to arbitrary DOM click handlers.
 - Never give a model unrestricted OS mouse/keyboard access as the normal product design.
 - Never allow Assist mode to change semantic state.
 - Never disable emergency takeover.
-- Never leave an ordinary Autopilot presentation/read-only step unbounded indefinitely.
+- Never leave ordinary presentation/read-only steps unbounded.
 - Never add a UI-only race timeout around an authoritative semantic commit.
-- Never bypass native locks/revisions because an Autopilot plan requested it.
-- Never let animation or camera state become project truth.
-- Never hide a semantic commit behind a cosmetic drag operation.
-- Never execute a plan created against an obsolete project revision.
-- Never call provider output trusted until it passes plan validation.
+- Never bypass native locks/revisions.
+- Never let animation/camera state become project truth.
+- Never hide a semantic commit behind cosmetic drag.
+- Never execute a plan against obsolete project revision.
+- Never trust provider output before typed validation.
+- Never drive presentation at unrestricted display refresh rate when a bounded cadence is sufficient.
 
 ## Next evolution
 
-1. bounded native `project.history` IPC with parsed commit provenance;
-2. premium Activity/Changes panel distinguishing human, AI, and system commits;
-3. Claude/Codex plan-producer adapters after supported authentication is verified;
-4. Guided checkpoints and semantic plan preview cards;
-5. provider worker actions expressed as typed jobs rather than raw shell control;
-6. replayable visual explanation driven from recorded plan/action metadata where useful.
+1. checkpoint/recovery policy on top of snapshot + journal;
+2. content-addressed asset/provenance storage;
+3. native bounded job queue and worker supervisor using scoped resource leases;
+4. Claude/Codex plan-producer adapters after supported authentication is verified;
+5. Guided semantic plan preview/checkpoints;
+6. replayable visual explanations driven from recorded plan/action metadata where useful.
