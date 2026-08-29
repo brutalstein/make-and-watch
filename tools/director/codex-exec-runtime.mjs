@@ -15,11 +15,12 @@ function boundedText(value, maximum) {
 export function parseCodexLoginStatus(result) {
   const text = `${result?.stdout ?? ''}\n${result?.stderr ?? ''}`.replace(/[\r\n\t]+/g, ' ').trim();
   const signedOut = /not\s+logged|logged\s*out|sign\s*in\s+required|no\s+active/i.test(text);
-  const chatgpt = /chatgpt/i.test(text);
-  const authenticated = Number(result?.code) === 0 && !signedOut && (chatgpt || /logged\s+in|authenticated/i.test(text));
+  const anyLogin = Number(result?.code) === 0 && !signedOut && /logged\s+in|authenticated|chatgpt|api\s*key/i.test(text);
+  const chatgpt = anyLogin && /chatgpt/i.test(text);
   return {
-    authenticated,
-    authMethod: authenticated && chatgpt ? 'chatgpt' : authenticated ? 'codex-cli' : '',
+    authenticated: chatgpt,
+    otherAuthenticated: anyLogin && !chatgpt,
+    authMethod: chatgpt ? 'chatgpt' : anyLogin ? 'other' : '',
     detail: boundedText(text, 220),
   };
 }
