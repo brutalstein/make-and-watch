@@ -18,6 +18,7 @@ enum class EventType {
   kApprovalChanged,
   kFreshnessChanged,
   kDependentsInvalidated,
+  kProjectRestored,
   kTransactionCommitted,
 };
 
