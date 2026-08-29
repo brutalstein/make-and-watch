@@ -7,137 +7,135 @@ Foundation work is on `foundation/series-engine-v0` and tracked by draft PR #1.
 The current foundation includes:
 
 - C++20 transactional semantic project graph with typed commands/events, revisions, locks, approvals, staleness, dependency invalidation, impact preview, snapshots and guarded hydration;
-- SQLite schema v2 with WAL, foreign keys, atomic snapshot + append-only journal persistence and v1 migration;
+- SQLite schema v2 with atomic snapshot + append-only journal persistence;
 - `ProjectSession` persist-before-live-commit semantics;
-- durable commit provenance and bounded native `project.history`;
 - JSONL IPC v1 + real `makewatch_engine_host` process;
-- localhost bridge and native-driven React/TypeScript Studio;
-- presentation-only workflow layout separated from semantic state;
-- Durable Activity backed by native history;
-- generic native `ResourceManager` plus bounded `BackgroundJobRuntime` lifecycle ownership;
-- typed AI Director Autopilot with exact-revision validation, pause/resume/cancel/checkpoints and emergency takeover;
-- exact workflow pointer pick-and-place for every displaced node;
-- cursor-centric drag camera with deterministic 30 FPS presentation ceiling;
-- supported Codex App Server Director bridge with ChatGPT-managed authentication and zero OAuth credential custody;
-- default-gated Claude product policy (`api_required`);
-- deterministic bounded Director context compiler with valid JSON under budget reduction;
-- Studio Director Link integrated into the AI Director sidebar rather than overlaying the workflow.
+- native-driven React/TypeScript Studio;
+- exact-pointer AI Autopilot with pause/resume/cancel/checkpoints;
+- `ResourceManager` + bounded `BackgroundJobRuntime` lifecycle/resource ownership;
+- supported Codex App Server integration with ChatGPT-managed authentication and zero OAuth credential custody;
+- bounded multi-turn Codex Director chat;
+- cinematic toggleable Director Chat sidecar with persisted open/closed presentation preference;
+- first-Send automatic secure Codex connection flow;
+- cross-episode canonical character continuity compiler;
+- deterministic native episode video render-plan compiler;
+- public-repository IP boundary that keeps adaptive representation-selection/scheduling algorithms out of this tree.
 
-## Exact pointer / camera milestone
+## Director Chat — current product behavior
 
-Canonical interaction: `apps/studio/src/director/workflowPointerInteraction.ts`.
+The previous readiness-gated composer was removed. A provider that is still starting must never make the text area untypeable.
 
-```text
-pan workspace -> find node -> exact hover -> press ->
-held node + cursor enter focal point -> canvas follows underneath ->
-release -> verify -> next node
-```
-
-Do not reintroduce an independent camera follower. Pointer/node geometry owns the camera during a held drag. Presentation remains capped at 30 FPS, independent of monitor refresh.
-
-## Codex Director milestone
-
-Read `DIRECTOR_PROVIDERS.md`, `AUTH_AND_AI_DIRECTOR.md`, and `AI_DIRECTOR_CONTEXT.md` before changing provider code.
-
-The supported product path is **Codex App Server**:
+Current UX contract:
 
 ```text
-local bridge
- -> codex app-server
- -> initialize/initialized
- -> account/read
- -> account/login/start(type=chatgpt) if required
- -> account/login/completed + account/updated
- -> thread/start
- -> turn/start(outputSchema, read-only, approvalPolicy=never)
- -> item/completed / turn/completed
- -> thread/delete
+start dev runtime
+ -> native engine builds/starts
+ -> localhost bridge starts
+ -> dev-runner warms /api/director/providers
+ -> owned codex app-server initializes before Studio opens when available
+ -> Studio opens
+ -> user can type immediately
+ -> first Send:
+      already authenticated -> message sends
+      auth required -> official ChatGPT auth URL opens -> message remains queued locally
+                       -> sanitized status polling -> queued message sends after connection
 ```
 
-Key rules:
+Important details:
 
-- Codex owns ChatGPT OAuth persistence/refresh; Make & Watch never receives the token;
-- account email is stripped before status leaves the App Server client;
-- CLI/App Server/account/planning readiness are separate typed states;
-- login is not incorrectly hidden behind planning capability;
-- one owned App Server session per bridge;
-- one active Director turn maximum;
-- early completion notifications cannot race ahead of turn waiter setup;
-- timeout/error/shutdown interrupt active turns;
-- successful turns are not unnecessarily interrupted after completion;
-- every Director thread is deleted after use to avoid hidden transcript accumulation;
-- read access is restricted to `tools/director/runtime` during Director turns;
-- provider output remains only a proposal and must pass live revision + Autopilot validation.
+- the composer is writable regardless of `chatAvailable` readiness;
+- the user message is not shown as submitted until it is actually handed to the provider;
+- before provider submission, a failed connection restores the text to the composer;
+- after a possible provider submission, the UI does not blindly retry and risk duplicate turns;
+- Codex App Server is warmed in `tools/dev-runner.mjs` before Vite Studio starts;
+- manual `Connect` remains available inside the Connections drawer as a recovery/control surface, not a mandatory normal step;
+- chat conversation threads are bounded and owned by the bridge;
+- chat does not mutate native semantic project truth;
+- Claude remains `api_required` for shipping product chat until a supported Anthropic provider exists.
 
-Claude remains `api_required` in the public product. The Claude Code adapter is developer-preview only behind `MAKEWATCH_ENABLE_EXPERIMENTAL_CLAUDE_CODE=1`.
+## Toggle / cinematic sidecar
 
-## Director Link UX
+`DirectorProviderDock` inserts one real sidecar before the workflow canvas.
 
-`DirectorProviderDock` is mounted through a portal into a real `.director-provider-slot` immediately after the Autopilot card inside the left AI Director panel.
+It has two visual states:
 
-It must never use a fixed page overlay again.
+```text
+OPEN   : Creative Control | Director Chat | Workflow | Inspector
+CLOSED : Creative Control | 62px Chat rail | wider Workflow | Inspector
+```
 
-The sidebar owns its own scroll; the workflow canvas size must not change because Director Link expands. Global document scrolling is disabled by `layout-safety.css`; Director and Inspector panels scroll internally.
+- open/closed state is a presentation preference stored in local storage;
+- panel width animates through CSS grid columns;
+- panel entrance/messages/connection drawer have subtle motion;
+- `prefers-reduced-motion` removes non-essential animations;
+- connection diagnostics live behind a `Connections` drawer instead of occupying the conversation permanently;
+- closing chat never destroys native project state or provider credentials.
 
-Codex readiness is shown as four stages:
+## Autopilot interaction ownership
 
-1. CLI;
-2. APP SERVER;
-3. ACCOUNT;
-4. PLAN.
+Autopilot must own workflow geometry without disabling conversation.
 
-When ChatGPT login is required, Studio opens the official App Server `authUrl` from the user's click and boundedly polls sanitized status. Objective/plan controls appear only when planning is actually available.
+A previous full-viewport interaction veil could block Director Chat. Current CSS scopes the effective lock to the live workflow canvas bounds while the chat sidecar remains interactive. ReactFlow also independently disables node dragging/selection during Autopilot.
 
-## Context economy
+Do not restore a full-screen pointer-stealing overlay.
 
-Runtime prompts do not resend the repository/project brain/journal. Hard bounds remain:
+## Native media foundation
 
-- <=16,000 characters;
-- conservative <=4,000 tokens;
-- <=3,000 objective characters;
-- <=72 nodes before reduction;
-- <=120 edges before reduction;
-- allow-listed bounded metadata only.
+Read `MEDIA_PIPELINE.md` before changing continuity/video planning.
 
-If needed, the compiler reduces dependency/node/objective/metadata scope deterministically. It never slices JSON mid-string. CI asserts deterministic output, valid JSON after reduction, selected-node retention and hard budget compliance.
+### Series continuity
 
-## Background runtime milestone
+`SeriesContinuityCompiler` uses one canonical Character node across episodes. It now also detects invalid ownership such as one scene under multiple episodes or one shot under multiple scenes in the same series and avoids creating duplicate continuity bindings.
 
-`BackgroundJobRuntime` sits above `ResourceManager`; it does not launch model/media workers yet.
+Final readiness considers canonical series/character approval, freshness and identity lock state.
 
-Rules:
+### Video compiler
 
-- fixed queued+running capacity;
-- duplicate IDs rejected;
-- resource-aware ready scan prevents safe CPU work from being blocked behind unavailable GPU work;
-- cancel request does not release a running worker's VRAM/RAM/CPU lease;
-- shutdown stops admission, clears queued work and drains one running target at a time;
-- wrong-target confirmation fails closed;
-- lease releases only after confirmed stop.
+`VideoPipelineCompiler` creates a deterministic per-episode DAG:
 
-Concrete WorkerSupervisor remains the next native process layer after the new Director live gate.
+```text
+shot synthesize -> shot composite --+
+shot synthesize -> shot composite --+--> episode assemble
+```
 
-## CI / audit state
+Hardening now includes:
 
-Repository tree and PR changed-file inventory were audited across Studio, Director/bridge, contracts/schemas, native engine/runtime/tests, scripts/build config and canonical docs. High-risk runtime/provider/UI/native boundaries were deep-read. Do not represent this as a mathematical guarantee of zero defects; CI + product-machine evidence remain required.
+- finite/bounded profile dimensions and FPS;
+- finite positive shot durations (`nan`/overflow rejected as invalid metadata);
+- exact metadata index parsing;
+- exactly one Series dependency for an Episode;
+- Episode/Scene/Shot approval + stale validation;
+- empty Scene/zero-shot detection;
+- bounded explicit `generationStrategy` metadata;
+- duplicate shot ownership detection without duplicate task IDs;
+- finite accumulated episode duration;
+- canonical character continuity readiness.
 
-CI now uses Node-24-generation GitHub Actions (`checkout@v7`, `setup-node@v7`, `pnpm/action-setup@v6`). The repository currently has no committed `pnpm-lock.yaml`, so install intentionally remains `--no-frozen-lockfile`; adding a committed lockfile is a separate reproducibility improvement.
+The public compiler still does **not** implement patent-sensitive automatic strategy selection.
 
-Current gates include:
+## Runtime safety hardening
 
-- seed and bridge syntax;
-- Director context hard-budget/valid-JSON regression;
-- Windows provider executable discovery simulation;
-- Codex App Server protocol fake-process test;
-- provider policy/status sanitization checks;
+`ResourceManager::try_acquire_scoped` now stages the lease identity before resource accounting is mutated, closing a post-acquire allocation-failure window.
+
+`BackgroundJobRuntime::start_one_ready` stages queue data before resource admission and commits `running_` before erasing the queued source. If a later map/value allocation throws, the RAII lease releases and the original queued request remains available rather than disappearing.
+
+The invariant remains: a running worker lease is released only after actual stop/completion confirmation.
+
+## Current code validation
+
+Latest code-level CI after the Director UX + media/runtime hardening is green:
+
+- Bridge and Director checks;
 - strict TypeScript;
-- Vite production build;
+- Studio production build;
 - strict native configure/build;
 - complete CTest suite.
 
+This is not the Windows/NVIDIA product-machine gate.
+
 ## Immediate Windows gate
 
-Fully stop the old dev runtime first, then:
+Fully stop any old dev runtime, then:
 
 ```powershell
 git pull
@@ -145,51 +143,55 @@ git pull
 .\dev.ps1
 ```
 
-### Director Link / Codex
+Expected terminal startup:
 
-1. Director Link must appear inside the left AI Director panel directly under the Autopilot card; it must not cover or resize the workflow canvas.
-2. The browser page itself must not gain a vertical scrollbar; Director/Inspector panels scroll internally.
-3. Codex should show CLI -> APP SERVER readiness.
-4. If ACCOUNT is not ready, **Connect Codex officially** must be actionable.
-5. The user click opens the official ChatGPT sign-in URL returned by App Server.
-6. After sign-in, ACCOUNT and PLAN should become ready without restarting Studio.
-7. Objective input should appear only when PLAN is ready.
-8. Submit a small objective and confirm a schema-valid Assist-plan preview plus bounded context stats.
-9. Planning alone must not change native semantic revision.
-10. Stop `dev.ps1` during an active turn and verify no orphan `codex app-server` process remains.
-11. Claude should show its CLI if installed but remain **API required for product** by default.
+- native engine builds/starts;
+- bridge becomes healthy;
+- dev-runner prints `Preparing Codex Director service…`;
+- if already authenticated: `Codex Director ready ...`;
+- if auth is required: App Server is still prepared and Studio explains that first Send will complete secure sign-in.
 
-### Pointer
+### Director Chat live test
 
-Retest exact cursor/node alignment, focal camera follow, pause and Esc cancellation after the layout changes. Director Link must not affect workflow geometry.
+1. Collapse Director Chat; confirm it becomes a narrow vertical rail and the workflow expands smoothly.
+2. Reopen it; confirm no workflow overlap/global page scrollbar.
+3. **Before touching Connect**, click the composer and type. It must accept text immediately.
+4. Press Send.
+5. If ChatGPT is already connected, the message should send directly.
+6. If authentication is required, the official ChatGPT sign-in flow should open from that Send gesture; the unsent message remains visibly queued and sends automatically after status becomes ready.
+7. Send a second message; it must continue the same Codex thread.
+8. Open/close `Connections`; provider diagnostics should not disturb the conversation layout.
+9. Start Autopilot and verify Director Chat remains typeable while the workflow canvas itself stays protected from manual geometry interaction.
+10. Stop `dev.ps1` during an active Director turn and verify no orphan `codex app-server` remains.
+11. Restart and confirm the Chat open/closed presentation preference is restored.
 
-Any unusable readiness state, popup/login dead-end, workflow overlap, global scrolling, pointer drift, credential custody, stale-revision acceptance, unbounded context or orphan process is a failed live gate.
+Any disabled composer before a message is in-flight, login dead-end, workflow interaction leak during Autopilot, duplicate first-Send message, orphan provider process, overlay, global scrolling, or layout break is a failed live gate.
 
-## Next engineering sequence
+## Next engineering sequence after this live gate
 
-1. after live Codex validation, execute provider-generated **Assist** plans through the existing exact Autopilot runtime;
-2. add Guided plan preview/checkpoint UX before semantic AI mutation;
-3. implement concrete cross-platform WorkerSupervisor over `BackgroundJobRuntime`;
-4. graceful stop -> bounded wait -> one-process escalation -> actual exit confirmation -> lease release;
-5. typed worker health/capability handshake and bounded logs;
-6. checkpoint/recovery policy;
-7. content-addressed asset/provenance storage;
-8. hardware profile probing/calibration;
-9. first lightweight local voice/storyboard workers;
-10. production Claude provider through a supported Anthropic API path.
+1. concrete cross-platform WorkerSupervisor over `BackgroundJobRuntime`;
+2. graceful stop -> bounded wait -> one-process escalation -> actual exit confirmation -> lease release;
+3. typed worker capability/health handshake + bounded stdout/stderr;
+4. content-addressed generated-asset/provenance store;
+5. checkpoint/recovery policy;
+6. first lightweight local storyboard/image worker;
+7. first local voice worker;
+8. FFmpeg/native composite + episode assembly execution;
+9. one licensed local video/I2V worker behind the explicit render plan;
+10. scale benchmarks: 30 s -> 2 min -> 5 min -> 10 min -> 20 min.
 
 ## Do not
 
-- reintroduce a fixed Director Link overlay over workflow space;
-- reintroduce a separate hidden Autopilot camera follower;
+- re-disable the chat textarea based on provider readiness;
+- require manual provider connection as the normal happy path;
+- let a global Autopilot overlay steal Director Chat pointer input;
 - copy/read provider credential caches;
-- route Claude subscription OAuth as a public-product provider;
-- accumulate hidden Codex planning threads;
-- send the full repo/project journal per Director request;
-- let provider output bypass typed/native validation;
-- release running worker resources before actual stop confirmation;
+- route Claude subscription OAuth as a shipping product provider;
+- let chat/provider output bypass typed native validation;
+- duplicate canonical characters per episode;
+- release worker resources before actual process stop confirmation;
 - weaken strict compiler/type/test gates;
-- expose patent-sensitive adaptive synthesis-selection logic while the repo is public.
+- expose patent-sensitive adaptive synthesis-selection logic while the repository is public.
 
 ## Quality bar
 
