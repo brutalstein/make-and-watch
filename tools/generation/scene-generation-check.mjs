@@ -40,13 +40,13 @@ class FakeBridge {
           this.state.dependencies.push({ dependent: command.dependent, dependency: command.dependency });
         }
       } else if (command.type === 'node.patch') {
-        const node = this.state.nodes.find((candidate) => candidate.id === command.id);
-        if (!node) throw new Error('fake patch target missing');
-        node.metadata = { ...node.metadata, ...(command.metadataUpdates ?? {}) };
-        node.revision += 1;
+        const target = this.state.nodes.find((candidate) => candidate.id === command.id);
+        if (!target) throw new Error('fake patch target missing');
+        target.metadata = { ...target.metadata, ...(command.metadataUpdates ?? {}) };
+        target.revision += 1;
       } else if (command.type === 'node.markFresh') {
-        const node = this.state.nodes.find((candidate) => candidate.id === command.id);
-        if (node) node.stale = false;
+        const target = this.state.nodes.find((candidate) => candidate.id === command.id);
+        if (target) target.stale = false;
       }
     }
     this.state.projectRevision += 1;
@@ -87,14 +87,14 @@ try {
   const bridge = new FakeBridge();
   const service = new SceneGenerationService({ bridge, comfy: new FakeComfy(), artifactRoot: directory });
   const queued = await service.startScene('scene.001');
-  assert.equal(queued.status, 'queued');
+  assert.ok(['queued', 'running'].includes(queued.status), 'accepted job may start immediately');
   const completed = await waitFor(service, queued.id);
   assert.equal(completed.status, 'completed', completed.error);
   assert.equal(completed.completedShots, 1);
   assert.equal(completed.artifacts.length, 1);
   assert.equal(completed.artifacts[0].shotId, 'shot.001');
 
-  const generation = bridge.state.nodes.find((node) => node.id === 'generation.preview.shot.001');
+  const generation = bridge.state.nodes.find((candidate) => candidate.id === 'generation.preview.shot.001');
   assert.ok(generation, 'generation node should be durable project state');
   assert.equal(generation.metadata.status, 'ready');
   assert.equal(generation.metadata.provider, 'comfyui');
