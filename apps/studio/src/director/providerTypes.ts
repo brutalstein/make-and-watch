@@ -14,6 +14,8 @@ export interface DirectorProviderStatus {
   authMethod: string;
   version: string;
   capable: boolean;
+  executableName: string;
+  discovery: '' | 'override' | 'path' | 'known-user-bin';
   detail: string;
 }
 
