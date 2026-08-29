@@ -61,15 +61,15 @@ import {
 } from './director/autopilotTypes';
 import { validateAutopilotPlan } from './director/autopilotValidation';
 import {
-  animateCursor,
-  durationForDistance,
-  runDeterministicAnimation,
-} from './director/cinematicMotion';
-import {
   INITIAL_VIRTUAL_CURSOR_STATE,
   setVirtualCursorState,
   VirtualCursor,
 } from './director/VirtualCursor';
+import {
+  dragWorkflowNodeWithPointer,
+  pointCursorAtWorkflowNode,
+  type WorkflowPointerContext,
+} from './director/workflowPointerInteraction';
 import {
   defaultWorkflowPositions,
   resolveWorkflowPositions,
@@ -357,7 +357,7 @@ export function App() {
     setFlowNodes((nodes) => nodes.map((node) => ({ ...node, selected: node.id === id })));
 
     if (!center || !flowInstance) return;
-    const target = flowNodes.find((node) => node.id === id);
+    const target = flowInstance.getNode(id) ?? flowNodes.find((node) => node.id === id);
     if (!target) return;
     await flowInstance.setCenter(target.position.x + 118, target.position.y + 42, {
       zoom,
@@ -429,30 +429,33 @@ export function App() {
     });
   }, [applyCommands, selected]);
 
-  const locateNodeCenter = useCallback((nodeId: string) => {
-    const escaped = CSS.escape(nodeId);
-    const element = document.querySelector<HTMLElement>(`.react-flow__node[data-id="${escaped}"]`);
-    if (!element) return null;
-    const rect = element.getBoundingClientRect();
-    return { x: rect.left + rect.width * 0.52, y: rect.top + Math.min(34, rect.height * 0.42) };
-  }, []);
+  const pointerContext = useCallback((control: AutopilotExecutionControl): WorkflowPointerContext => {
+    if (!flowInstance) throw new Error('workflow viewport is not ready');
+    const surface = document.querySelector<HTMLElement>('.flow-surface');
+    if (!surface) throw new Error('workflow surface is not available');
+    return {
+      control,
+      flow: flowInstance,
+      surface,
+      getNode: (nodeId) => flowInstance.getNode(nodeId),
+      updateNodePosition: (nodeId, position, dragging) => {
+        setFlowNodes((nodes) => nodes.map((node) => node.id === nodeId
+          ? { ...node, position, dragging }
+          : node));
+      },
+      getCursor: () => cursorRef.current,
+      setCursor: updateCursor,
+    };
+  }, [flowInstance, setFlowNodes, updateCursor]);
 
-  const moveCursorToNode = useCallback(async (nodeId: string, label: string, duration?: number) => {
+  const autopilotPointToNode = useCallback(async (nodeId: string, label: string) => {
     const control = autopilotControlRef.current;
     if (!control) throw new AutopilotCancelledError();
-    const center = locateNodeCenter(nodeId);
-    if (!center) throw new Error(`workflow node ${nodeId} is not visible`);
-    const start = cursorRef.current.visible
-      ? cursorRef.current
-      : { ...cursorRef.current, visible: true, x: window.innerWidth * 0.56, y: 82, label };
-    const travel = Math.hypot(center.x - start.x, center.y - start.y);
-    const travelDuration = duration ?? durationForDistance(travel, {
-      speedPxPerSecond: 470,
-      minimumMs: 520,
-      maximumMs: 1450,
-    });
-    await animateCursor(start, center, travelDuration, label, control, updateCursor);
-  }, [locateNodeCenter, updateCursor]);
+    setSelectedId(nodeId);
+    setImpact(null);
+    setFlowNodes((nodes) => nodes.map((node) => ({ ...node, selected: node.id === nodeId })));
+    await pointCursorAtWorkflowNode(pointerContext(control), nodeId, label);
+  }, [pointerContext, setFlowNodes]);
 
   const autopilotDragNode = useCallback(async (
     nodeId: string,
@@ -462,76 +465,47 @@ export function App() {
   ) => {
     const control = autopilotControlRef.current;
     if (!control) throw new AutopilotCancelledError();
-    await focusNode(nodeId, false);
-    await controlledDelay(control, 100);
-    await moveCursorToNode(nodeId, label);
 
-    const source = flowNodes.find((node) => node.id === nodeId);
-    if (!source) throw new Error(`workflow node ${nodeId} does not exist`);
-
-    let previousPosition = source.position;
-    updateCursor({
-      ...cursorRef.current,
-      visible: true,
-      pressed: true,
-      pulse: cursorRef.current.pulse + 1,
-      label,
-    });
-
-    await runDeterministicAnimation(durationMs, control, (eased) => {
-      const nextPosition = {
-        x: source.position.x + (to.x - source.position.x) * eased,
-        y: source.position.y + (to.y - source.position.y) * eased,
-      };
-      const zoom = flowInstance?.getViewport().zoom ?? 1;
-      const delta = {
-        x: nextPosition.x - previousPosition.x,
-        y: nextPosition.y - previousPosition.y,
-      };
-      previousPosition = nextPosition;
-
-      setFlowNodes((nodes) => nodes.map((node) => node.id === nodeId ? { ...node, position: nextPosition } : node));
-      updateCursor({
-        ...cursorRef.current,
-        visible: true,
-        pressed: true,
-        x: cursorRef.current.x + delta.x * zoom,
-        y: cursorRef.current.y + delta.y * zoom,
-        label,
-      });
-    });
+    setSelectedId(nodeId);
+    setImpact(null);
+    setFlowNodes((nodes) => nodes.map((node) => ({ ...node, selected: node.id === nodeId })));
+    await dragWorkflowNodeWithPointer(pointerContext(control), nodeId, to, durationMs, label);
 
     if (layoutKey) {
       setFlowNodes((nodes) => {
-        const next = nodes.map((node) => node.id === nodeId ? { ...node, position: to } : node);
+        const next = nodes.map((node) => node.id === nodeId
+          ? { ...node, position: to, dragging: false }
+          : node);
         saveWorkflowLayout(layoutKey, positionsFromNodes(next));
         return next;
       });
+      setLayoutStatus('AI placement saved locally');
     }
-    updateCursor({ ...cursorRef.current, pressed: false, pulse: cursorRef.current.pulse + 1, label });
-    await controlledDelay(control, 240);
-  }, [flowInstance, flowNodes, focusNode, layoutKey, moveCursorToNode, setFlowNodes, updateCursor]);
+    await controlledDelay(control, 120);
+  }, [layoutKey, pointerContext, setFlowNodes]);
 
   const stopAutopilot = useCallback(() => {
     checkpointResolverRef.current?.(false);
     checkpointResolverRef.current = null;
     autopilotControlRef.current?.cancel();
     autopilotControlRef.current = null;
+    document.querySelector<HTMLElement>('.flow-surface')?.classList.remove('flow-surface--ai-panning');
     updateCursor({ ...cursorRef.current, visible: false, pressed: false, label: '' });
+    setFlowNodes((nodes) => nodes.map((node) => node.dragging ? { ...node, dragging: false } : node));
     setAutopilot((current) => ({
       ...current,
       status: 'cancelled',
       activity: 'Control returned to you',
       error: null,
     }));
-  }, [updateCursor]);
+  }, [setFlowNodes, updateCursor]);
 
   const pauseAutopilot = useCallback(() => {
     const control = autopilotControlRef.current;
     if (!control || control.isPaused) return;
     control.pause();
     setAutopilot((current) => ({ ...current, status: 'paused', activity: 'AI Director paused safely' }));
-    updateCursor({ ...cursorRef.current, pressed: false, label: 'Paused' });
+    updateCursor({ ...cursorRef.current, label: 'Paused' });
   }, [updateCursor]);
 
   const resumeAutopilot = useCallback(() => {
@@ -567,10 +541,12 @@ export function App() {
       activity: 'Validating the workflow and preparing a safe execution path',
       error: null,
     });
+
+    const surfaceRect = document.querySelector<HTMLElement>('.flow-surface')?.getBoundingClientRect();
     updateCursor({
       visible: true,
-      x: window.innerWidth * 0.56,
-      y: 82,
+      x: surfaceRect ? surfaceRect.left + Math.min(120, surfaceRect.width * 0.18) : window.innerWidth * 0.5,
+      y: surfaceRect ? surfaceRect.top + Math.min(96, surfaceRect.height * 0.18) : 120,
       pressed: false,
       pulse: cursorRef.current.pulse,
       label: 'AI Director',
@@ -578,32 +554,32 @@ export function App() {
 
     const runtime: AutopilotRuntime = {
       announce: (message) => updateCursor({ ...cursorRef.current, label: message }),
-      focusNode: async (nodeId, zoom) => {
-        await focusNode(nodeId, true, zoom ?? 1.04);
-        await controlledDelay(control, 180);
-        await moveCursorToNode(nodeId, `Inspecting ${snapshot.nodes.find((node) => node.id === nodeId)?.title ?? nodeId}`);
+      focusNode: async (nodeId) => {
+        const title = snapshot.nodes.find((node) => node.id === nodeId)?.title ?? nodeId;
+        await autopilotPointToNode(nodeId, `Inspecting ${title}`);
         updateCursor({ ...cursorRef.current, pulse: cursorRef.current.pulse + 1, pressed: false });
       },
       dragNode: autopilotDragNode,
       previewImpact: async (nodeId) => {
-        await moveCursorToNode(nodeId, 'Checking dependency impact');
+        await autopilotPointToNode(nodeId, 'Checking dependency impact');
         updateCursor({ ...cursorRef.current, pressed: true, pulse: cursorRef.current.pulse + 1 });
+        await controlledDelay(control, 120);
         const report = await previewImpactFor(nodeId);
         updateCursor({ ...cursorRef.current, pressed: false, pulse: cursorRef.current.pulse + 1, label: `${report.affected.length} downstream entities checked` });
-        await controlledDelay(control, 640);
+        await controlledDelay(control, 480);
         return report;
       },
       arrangeWorkflow: async () => {
         updateCursor({ ...cursorRef.current, label: 'Applying dependency-aware layout' });
         await controlledDelay(control, 180);
         await arrangeWorkflow();
-        await controlledDelay(control, 520);
+        await controlledDelay(control, 420);
       },
       fitWorkflow: async () => {
         updateCursor({ ...cursorRef.current, label: 'Framing the full workflow' });
         await controlledDelay(control, 150);
         await fitWorkflow();
-        await controlledDelay(control, 300);
+        await controlledDelay(control, 260);
       },
       applyCommands: async (commands, context) => {
         await applyCommands(commands, {
@@ -624,15 +600,19 @@ export function App() {
       void executeAutopilotPlan(plan, runtime, control)
         .then(() => {
           if (autopilotControlRef.current === control) autopilotControlRef.current = null;
-          window.setTimeout(() => updateCursor({ ...cursorRef.current, visible: false, pressed: false, label: '' }), 650);
+          document.querySelector<HTMLElement>('.flow-surface')?.classList.remove('flow-surface--ai-panning');
+          setFlowNodes((nodes) => nodes.map((node) => node.dragging ? { ...node, dragging: false } : node));
+          window.setTimeout(() => updateCursor({ ...cursorRef.current, visible: false, pressed: false, label: '' }), 500);
         })
         .catch((reason) => {
           if (!(reason instanceof AutopilotCancelledError)) setError(reason instanceof Error ? reason.message : String(reason));
           if (autopilotControlRef.current === control) autopilotControlRef.current = null;
+          document.querySelector<HTMLElement>('.flow-surface')?.classList.remove('flow-surface--ai-panning');
+          setFlowNodes((nodes) => nodes.map((node) => node.dragging ? { ...node, dragging: false } : node));
           updateCursor({ ...cursorRef.current, visible: false, pressed: false, label: '' });
         });
-    }, 260);
-  }, [applyCommands, arrangeWorkflow, autopilotBlocking, autopilotDragNode, fitWorkflow, flowInstance, flowNodes, focusNode, moveCursorToNode, previewImpactFor, snapshot, updateCursor]);
+    }, 220);
+  }, [applyCommands, arrangeWorkflow, autopilotBlocking, autopilotDragNode, autopilotPointToNode, fitWorkflow, flowInstance, flowNodes, previewImpactFor, setFlowNodes, snapshot, updateCursor]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -750,10 +730,10 @@ export function App() {
                   <span>Let the AI Director take the controls.</span>
                 </div>
               </div>
-              <p>It can focus, inspect and physically organize nodes with a visible virtual cursor. Your semantic project stays protected unless a validated native operation is explicitly part of the plan.</p>
+              <p>It finds each displaced node by panning the workflow, moves the visible cursor onto the node, grabs it, and places it step by step. Semantic project state remains protected.</p>
               <div className="autopilot-card__trust">
                 <span><ShieldCheck size={11} /> typed plan</span>
-                <span><MousePointer2 size={11} /> visible actions</span>
+                <span><MousePointer2 size={11} /> exact pointer</span>
                 <span><CircleStop size={11} /> instant takeover</span>
               </div>
               <button className="autopilot-start" onClick={startWorkspaceAutopilot} disabled={!snapshot || !health || autopilotBlocking}>
