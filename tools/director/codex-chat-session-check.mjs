@@ -29,7 +29,11 @@ class FakeClient extends EventEmitter {
   async request(method, params) {
     this.requests.push({ method, params });
     if (method === 'thread/start') return { thread: { id: 'chat-thread-1' } };
-    if (method === 'thread/delete' || method === 'turn/interrupt') return {};
+    if (method === 'thread/resume') return { thread: { id: params.threadId, turns: [] } };
+    if (method === 'thread/read') return { thread: { id: params.threadId, turns: params.includeTurns ? [{ id: 'old-turn' }] : [] } };
+    if (method === 'thread/unarchive') return { thread: { id: params.threadId } };
+    if (method === 'thread/delete' || method === 'thread/archive' || method === 'thread/unsubscribe'
+        || method === 'thread/name/set' || method === 'turn/interrupt') return {};
     if (method === 'turn/start') {
       if (this.failNextTurnStart) {
         this.failNextTurnStart = false;
@@ -57,6 +61,7 @@ assert.ok(threadStart, 'chat must create a Codex thread');
 assert.equal(threadStart.params.approvalPolicy, 'never');
 assert.equal(threadStart.params.permissions, ':read-only');
 assert.equal(Object.prototype.hasOwnProperty.call(threadStart.params, 'sandbox'), false);
+assert.equal(Object.prototype.hasOwnProperty.call(threadStart.params, 'ephemeral'), false, 'Director chat threads must be persistent for archive/resume');
 assert.deepEqual(threadStart.params.dynamicTools, client.tools, 'chat thread must advertise only host-provided Make & Watch dynamic tools');
 
 assert.equal(await chat.send(threadId, 'first message'), 'reply 1');
@@ -64,21 +69,50 @@ assert.equal(await chat.send(threadId, 'second message'), 'reply 2');
 const turns = client.requests.filter((request) => request.method === 'turn/start');
 assert.equal(turns.length, 2);
 assert.equal(turns[0].params.threadId, turns[1].params.threadId, 'multi-turn chat must keep one Codex thread');
-assert.equal(turns[0].params.approvalPolicy, 'never');
-assert.equal(turns[0].params.permissions, ':read-only');
-assert.equal(Object.prototype.hasOwnProperty.call(turns[0].params, 'sandboxPolicy'), false);
-assert.equal(Object.prototype.hasOwnProperty.call(turns[0].params, 'dynamicTools'), false, 'dynamic tools are thread capabilities and must not be redundantly sent on every turn');
+assert.equal(client.requests.filter((request) => request.method === 'thread/resume').length, 0, 'freshly started attached thread must not pay a redundant resume round-trip');
+
+await chat.nameThread(threadId, 'Mira continuity');
+const nameRequest = client.requests.find((request) => request.method === 'thread/name/set');
+assert.equal(nameRequest.params.name, 'Mira continuity');
+const read = await chat.readThread(threadId, true);
+assert.equal(read.id, threadId);
+
+await chat.unsubscribeThread(threadId);
+assert.ok(client.requests.some((request) => request.method === 'thread/unsubscribe'));
+
+// Simulate a process/UI session returning later: a fresh chat wrapper must resume the
+// exact persisted thread instead of creating a new one or replaying the transcript.
+const resumedChat = new CodexChatSession(client);
+assert.equal(await resumedChat.send(threadId, 'after restart'), 'reply 3');
+const resumeRequest = client.requests.find((request) => request.method === 'thread/resume');
+assert.ok(resumeRequest, 'stored Director sessions must use the official thread/resume path');
+assert.equal(resumeRequest.params.threadId, threadId);
+assert.equal(resumeRequest.params.excludeTurns, true, 'resume should avoid retransmitting old turns when supported');
+assert.equal(resumeRequest.params.permissions, ':read-only');
+
+await resumedChat.archiveThread(threadId);
+assert.ok(client.requests.some((request) => request.method === 'thread/archive'));
+await resumedChat.unarchiveThread(threadId);
+assert.ok(client.requests.some((request) => request.method === 'thread/unarchive'));
 
 const unhandled = [];
 const onUnhandled = (reason) => unhandled.push(reason);
 process.on('unhandledRejection', onUnhandled);
 client.failNextTurnStart = true;
-await assert.rejects(chat.send(threadId, 'failing message'), /simulated chat turn\/start failure/);
+await assert.rejects(resumedChat.send(threadId, 'failing message'), /simulated chat turn\/start failure/);
 await new Promise((resolvePromise) => setImmediate(resolvePromise));
 process.off('unhandledRejection', onUnhandled);
 assert.equal(unhandled.length, 0, 'chat turn/start rejection must never terminate the bridge through an orphaned promise');
 
-await chat.deleteThread(threadId);
-assert.ok(client.requests.some((request) => request.method === 'thread/delete'));
+const deletesBeforeShutdown = client.requests.filter((request) => request.method === 'thread/delete').length;
+await resumedChat.shutdown();
+assert.equal(
+  client.requests.filter((request) => request.method === 'thread/delete').length,
+  deletesBeforeShutdown,
+  'bridge/session shutdown must never delete persisted Director conversations',
+);
+
+await resumedChat.deleteThread(threadId);
+assert.equal(client.requests.filter((request) => request.method === 'thread/delete').length, deletesBeforeShutdown + 1, 'hard delete must remain explicit');
 
 console.log('codex chat-session check: passed');
