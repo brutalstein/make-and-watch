@@ -149,6 +149,38 @@ export interface EpisodeCompositionManifest {
   ready: boolean;
 }
 
+export interface EpisodeRenderArtifact {
+  generationNodeId: string;
+  assetNodeId: string;
+  filename: string;
+  relativePath: string;
+  contentType: 'video/mp4';
+  sha256: string;
+  durationSeconds: number;
+  width: number;
+  height: number;
+  fps: number;
+  renderer: string;
+  cachedScenes: number;
+}
+
+export interface EpisodeRenderJob {
+  id: string;
+  episodeId: string;
+  episodeTitle: string;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  progress: number;
+  sceneCount: number;
+  completedScenes: number;
+  cachedScenes: number;
+  currentSceneId: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  error: string;
+  artifact: EpisodeRenderArtifact | null;
+}
+
 interface Envelope<T> {
   ok: boolean;
   result?: T;
@@ -186,6 +218,7 @@ export const generationClient = {
   audioProvider: () => request<AudioProviderStatus>('/audio/provider'),
   jobs: (limit = 20) => request<{ jobs: SceneGenerationJob[] }>(`/jobs?limit=${encodeURIComponent(String(limit))}`),
   audioJobs: (limit = 20) => request<{ jobs: AudioGenerationJob[] }>(`/audio/jobs?limit=${encodeURIComponent(String(limit))}`),
+  renderJobs: (limit = 20) => request<{ jobs: EpisodeRenderJob[] }>(`/render/jobs?limit=${encodeURIComponent(String(limit))}`),
   startScene: (sceneId: string) => request<{ job: SceneGenerationJob }>('/scenes', {
     method: 'POST',
     body: JSON.stringify({ sceneId }),
@@ -194,9 +227,14 @@ export const generationClient = {
     method: 'POST',
     body: JSON.stringify({ audioId }),
   }),
+  startEpisodeRender: (episodeId: string) => request<{ job: EpisodeRenderJob }>(`/render/episodes/${encodeURIComponent(episodeId)}`, {
+    method: 'POST',
+  }),
   job: (jobId: string) => request<{ job: SceneGenerationJob }>(`/jobs/${encodeURIComponent(jobId)}`),
   audioJob: (jobId: string) => request<{ job: AudioGenerationJob }>(`/audio/jobs/${encodeURIComponent(jobId)}`),
+  renderJob: (jobId: string) => request<{ job: EpisodeRenderJob }>(`/render/jobs/${encodeURIComponent(jobId)}`),
   composition: (episodeId: string) => request<{ manifest: EpisodeCompositionManifest }>(`/composition/episodes/${encodeURIComponent(episodeId)}`),
   artifactUrl: (jobId: string, shotId: string) => `${GENERATION_BASE}/artifacts/${encodeURIComponent(jobId)}/${encodeURIComponent(shotId)}`,
   audioArtifactUrl: (jobId: string) => `${GENERATION_BASE}/audio/artifacts/${encodeURIComponent(jobId)}`,
+  renderArtifactUrl: (jobId: string) => `${GENERATION_BASE}/render/artifacts/${encodeURIComponent(jobId)}`,
 };
