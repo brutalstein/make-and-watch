@@ -2,12 +2,10 @@
 
 ## Purpose
 
-The runtime must provide hard safety guarantees below any future synthesis scheduler. A provider, model or AI Director may request work, but it cannot bypass native resource accounting or create unbounded detached background jobs.
-
-The current public safety stack is:
+The runtime provides hard safety guarantees below future media workers/schedulers. A provider, model or AI Director cannot bypass native resource accounting or create unbounded detached background work.
 
 ```text
-provider estimate
+provider/work request
       |
       v
 BackgroundJobRuntime
@@ -22,49 +20,63 @@ future WorkerSupervisor
  actual process lifetime / health / stop confirmation
 ```
 
-The adaptive representation/synthesis planner remains separate and is intentionally not implemented in this public layer.
+Adaptive representation/synthesis planning remains separate and intentionally absent from the public safety layer.
 
 ## ResourceManager guarantees
 
-- explicit total and reserved VRAM/RAM budgets;
-- CPU-thread admission budget;
+- explicit total/reserved VRAM and RAM budgets;
+- CPU-thread budget;
 - thread-safe accounting;
-- duplicate workload IDs rejected;
-- exclusive GPU workloads conflict only with other GPU work;
-- CPU-only work may continue alongside an exclusive GPU workload if CPU/RAM fit;
-- reconfiguration rejected while resources are active;
-- overflow-safe capacity checks;
-- non-mutating `preview_admission()` using the same admission policy as real acquisition;
-- projected post-admission usage/headroom;
-- current and high-water VRAM/RAM/CPU telemetry;
-- admission/rejection counters;
-- move-only `ResourceLease` for scoped ownership.
+- duplicate workload rejection;
+- GPU exclusivity rules;
+- protected headroom previews using the same policy as acquisition;
+- peak/current telemetry and admission/rejection counters;
+- move-only scoped `ResourceLease` ownership;
+- no reconfiguration while workloads are active.
 
-`ResourceManager` is the hard capacity boundary. Scheduler policy never bypasses it.
+### Scoped acquisition commit safety
+
+`try_acquire_scoped` stages the lease `EntityId` before it mutates resource accounting. This closes a post-acquire allocation window: if identity copying allocates and fails, no workload has been committed yet. After successful admission the staged ID is moved into the lease.
+
+The ResourceManager must outlive every lease it creates.
 
 ## BackgroundJobRuntime guarantees
 
-`BackgroundJobRuntime` now exists directly above resource admission.
-
-It provides:
-
-- fixed outstanding-job capacity for queued + running jobs;
+- fixed outstanding queued+running capacity;
 - duplicate job rejection;
 - deterministic queue order;
-- resource-aware ready scanning;
-- no GPU head-of-line blocking for later CPU-only work when it can safely run;
-- scoped `ResourceLease` ownership for every running job;
-- explicit cancellation-requested state;
-- queued cancellation without acquiring resources;
-- running cancellation that **retains resource accounting until real stop confirmation**;
-- stop-new-work shutdown transition;
-- immediate cancellation of queued work during shutdown;
-- deterministic oldest-running-first shutdown target;
-- exactly one exposed shutdown target at a time;
-- wrong-target stop confirmation rejected fail-closed;
-- resource release exactly one worker at a time as stops are confirmed.
+- first resource-admissible ready scan;
+- blocked GPU work does not unnecessarily block later safe CPU-only work;
+- every running job owns a `ResourceLease`;
+- cancel request is distinct from confirmed completion;
+- a running cancellation retains resources until actual stop confirmation;
+- shutdown stops admission, clears queued work and drains one running target at a time;
+- wrong-target stop confirmation fails closed.
 
-See `BACKGROUND_JOBS.md` for the full lifecycle contract.
+### Queue -> running commit safety
+
+`start_one_ready` now stages queue-owned request data **before** resource admission. After admission it commits the `running_` entry before erasing the queued source.
+
+Therefore:
+
+```text
+copy/stage queued request
+      |
+      | allocation failure -> queue unchanged, no resource acquired
+      v
+ResourceLease acquire
+      |
+      v
+running_ map commit
+      |
+      | allocation/value construction failure
+      | -> temporary/acquired RAII lease releases
+      | -> original queued request still exists
+      v
+erase queued source
+```
+
+A queue item cannot silently disappear because a post-admission map allocation failed.
 
 ## Critical cancellation rule
 
@@ -74,76 +86,67 @@ A cancellation request is not a completion event.
 RUNNING worker
    |
 request_cancel
-   |
    v
 CANCELLATION_REQUESTED
    |        resources remain reserved
-   |
 actual worker exits
    |
 finish / confirm_shutdown_target_stopped
-   |
    v
 ResourceLease released
 ```
 
-This prevents false-free resource accounting while an OS process may still own CUDA/RAM allocations.
+This prevents false-free capacity while an external process may still own CUDA/RAM allocations.
 
 ## Sequential application shutdown direction
 
-The native lifecycle layer defines the order for the future worker supervisor:
+The future WorkerSupervisor must follow:
 
 1. stop new job admission;
-2. discard queued jobs;
-3. select one running job;
-4. ask that worker to stop;
-5. wait for actual exit;
-6. release only that job's resources;
-7. select the next running job;
-8. repeat until zero live jobs/resources.
+2. cancel/discard queued work;
+3. choose the oldest running shutdown target;
+4. request graceful stop for that worker;
+5. wait boundedly;
+6. escalate that one process if required;
+7. confirm actual process exit;
+8. release that job's native lease;
+9. advance to the next worker;
+10. finish only when no live jobs/resources remain.
 
-A future supervisor may escalate one stuck worker from graceful stop to termination after a bounded grace interval, but it must still confirm process exit before releasing the native lease or advancing to the next shutdown target.
-
-## Lifetime ownership
-
-`ResourceManager` must outlive leases. `BackgroundJobRuntime` owns the leases for background jobs and therefore must outlive concrete workers. The future worker supervisor must make this ownership order explicit in application startup/shutdown.
-
-Do not interpret C++ object destruction/RAII cleanup as proof that an external worker process stopped.
+Do not interpret C++ object destruction alone as proof that an external worker stopped.
 
 ## Validation
 
-Strict native tests cover both resource admission and background lifecycle behavior, including:
+Strict native tests currently cover:
 
-- previews and protected headroom;
-- peak/high-water metrics and counters;
-- GPU exclusivity vs CPU-only coexistence;
-- scoped lease release and move semantics;
-- bounded job capacity;
-- duplicate jobs;
+- budget validation and headroom previews;
+- high-water resource metrics;
+- GPU exclusivity/CPU-only coexistence;
+- scoped lease release/move semantics;
+- bounded job capacity and duplicate IDs;
 - ready scanning around blocked GPU work;
-- cancellation retaining active VRAM/RAM/CPU accounting;
-- sequential shutdown 3 -> 2 -> 1 -> 0 active workloads;
-- exactly one shutdown target at a time;
-- wrong-target confirmation preserving resources;
-- zero active resource leases after final confirmed shutdown.
+- cancellation retaining resource accounting;
+- sequential shutdown and one-target-at-a-time ownership;
+- wrong-target failure;
+- final zero active leases.
+
+The allocation-failure ordering hardening is structural/RAII code review plus warning-clean CI; deterministic out-of-memory fault injection is not implemented yet and should be added when a native fault-injection harness exists.
 
 ## What is not implemented yet
 
-The current background layer does **not** launch Python/model processes. Do not claim a worker supervisor exists yet.
+The current background layer does **not** launch Python/model processes.
 
-The next runtime milestone is a concrete cross-platform worker supervisor with:
+The next runtime milestone is a concrete cross-platform WorkerSupervisor with:
 
-- process handles;
+- concrete process handles;
 - typed capability/health handshake;
-- graceful-stop request;
+- graceful-stop protocol;
 - bounded grace timeout;
-- one-process-at-a-time escalation/termination;
-- actual exit confirmation;
+- one-process escalation/termination;
+- real exit confirmation;
 - crash detection;
 - lifecycle completion routed back into `BackgroundJobRuntime`;
-- stdout/stderr limits and structured worker status rather than unbounded log accumulation.
-
-After that, hardware probing/calibration and the first lightweight local providers can safely sit on top.
+- bounded stdout/stderr and structured status.
 
 ## IP boundary
 
