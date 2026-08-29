@@ -14,12 +14,18 @@ import {
   configureMakeWatchToolRuntime,
 } from '../director/makewatch-tool-runtime.mjs';
 import {
+  archiveDirectorConversation,
   closeDirectorConversation,
+  deleteDirectorConversation,
   invokeDirectorChat,
   invokeDirectorPlan,
   launchProviderLogin,
+  listDirectorConversations,
   providerStatuses,
+  readDirectorConversation,
+  renameDirectorConversation,
   shutdownDirectorProviders,
+  unarchiveDirectorConversation,
 } from '../director/provider-manager.mjs';
 import { DEV_SEED_COMMANDS, DEV_SEED_VERSION } from './dev-seed.mjs';
 import { WorkflowService } from './workflow-service.mjs';
@@ -204,6 +210,15 @@ function boundedHistoryLimit(value) {
   return parsed;
 }
 
+function boundedConversationLimit(value) {
+  if (value === null) return 100;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 500) {
+    throw new Error('conversation limit must be an integer between 1 and 500');
+  }
+  return parsed;
+}
+
 function expectedProjectRevision(value) {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new Error('expectedProjectRevision must be a non-negative integer');
@@ -242,7 +257,9 @@ function directorChatMessage(value) {
 
 function optionalConversationId(value) {
   if (value === undefined || value === null || value === '') return null;
-  if (typeof value !== 'string' || value.length > 128) throw new Error('Director conversation ID is invalid');
+  if (typeof value !== 'string' || value.length > 128 || !/^[A-Za-z0-9_-]+$/.test(value)) {
+    throw new Error('Director conversation ID is invalid');
+  }
   return value;
 }
 
@@ -390,6 +407,12 @@ const server = createServer(async (request, response) => {
       sendJson(request, response, 200, localSuccess(await providerStatuses()));
       return;
     }
+    if (request.method === 'GET' && url.pathname === '/api/director/conversations') {
+      const archived = url.searchParams.get('archived') === '1';
+      const limit = boundedConversationLimit(url.searchParams.get('limit'));
+      sendJson(request, response, 200, localSuccess(await listDirectorConversations({ archived, limit })));
+      return;
+    }
 
     if (request.method === 'POST' && url.pathname === '/api/workflows/save') {
       const body = await readJsonBody(request);
@@ -454,7 +477,10 @@ const server = createServer(async (request, response) => {
         selectedId: typeof body.selectedId === 'string' ? body.selectedId : null,
         firstTurn,
       });
-      const chat = await invokeDirectorChat(provider, context.prompt, conversationId);
+      const chat = await invokeDirectorChat(provider, context.prompt, conversationId, {
+        userMessage: message,
+        projectRevision: beforeRevision,
+      });
       const liveAfter = await rpc('project.snapshot');
       if (!liveAfter.ok) {
         throw new Error(`native snapshot failed after Director chat: ${liveAfter.error?.message ?? 'unknown error'}`);
@@ -480,6 +506,42 @@ const server = createServer(async (request, response) => {
       sendJson(request, response, 200, localSuccess(
         conversationId ? await closeDirectorConversation(provider, conversationId) : { closed: false },
       ));
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/director/conversations/read') {
+      const body = await readJsonBody(request);
+      const conversationId = optionalConversationId(body.conversationId);
+      if (!conversationId) throw new Error('Director conversation ID is required');
+      sendJson(request, response, 200, localSuccess(await readDirectorConversation(conversationId)));
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/director/conversations/rename') {
+      const body = await readJsonBody(request);
+      const conversationId = optionalConversationId(body.conversationId);
+      if (!conversationId) throw new Error('Director conversation ID is required');
+      const title = boundedWorkflowText(body.title, 'conversation title', 120, { required: true });
+      sendJson(request, response, 200, localSuccess(await renameDirectorConversation(conversationId, title)));
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/director/conversations/archive') {
+      const body = await readJsonBody(request);
+      const conversationId = optionalConversationId(body.conversationId);
+      if (!conversationId) throw new Error('Director conversation ID is required');
+      sendJson(request, response, 200, localSuccess(await archiveDirectorConversation(conversationId)));
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/director/conversations/unarchive') {
+      const body = await readJsonBody(request);
+      const conversationId = optionalConversationId(body.conversationId);
+      if (!conversationId) throw new Error('Director conversation ID is required');
+      sendJson(request, response, 200, localSuccess(await unarchiveDirectorConversation(conversationId)));
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/director/conversations/delete') {
+      const body = await readJsonBody(request);
+      const conversationId = optionalConversationId(body.conversationId);
+      if (!conversationId) throw new Error('Director conversation ID is required');
+      sendJson(request, response, 200, localSuccess(await deleteDirectorConversation(conversationId)));
       return;
     }
     if (request.method === 'POST' && url.pathname === '/api/director/plan') {
@@ -560,6 +622,7 @@ server.listen(bridgePort, '127.0.0.1', () => {
   console.log(`[bridge] native project bridge ready at http://127.0.0.1:${bridgePort}`);
   console.log(`[bridge] project database: ${databasePath}`);
   console.log(`[bridge] saved workflows: ${workflowDirectory}`);
+  console.log('[bridge] Director conversations persist under .makewatch/conversations');
 });
 
 function waitForNativeExit(timeoutMs) {
