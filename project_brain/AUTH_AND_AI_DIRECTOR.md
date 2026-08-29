@@ -2,51 +2,71 @@
 
 ## Product requirement
 
-The user chooses one AI director connection. The first supported targets are Codex and Claude Code. Media generation remains local and does not depend on that provider.
+The user chooses one AI Director connection. The first supported targets are **Codex** and **Claude Code**. Media generation remains local and does not depend on that provider.
 
-## Security rule
+## Non-negotiable security rule
 
-Make & Watch must not impersonate official clients, scrape credentials, copy subscription tokens, or route third-party traffic through credentials in a way the provider does not support.
+Make & Watch must not impersonate official clients, scrape credentials, copy subscription token caches, or invent a third-party OAuth exchange for subscription model access.
 
-## Preferred subscription-friendly integration
-
-For personal/local use, the clean integration path is an **official local-client bridge**:
+The implemented local subscription path is:
 
 ```text
-Make & Watch
+Make & Watch Studio
    |
-   +--> Codex bridge ------> official Codex client ------> ChatGPT sign-in
+   +--> local bridge --> official Codex CLI  --> ChatGPT browser sign-in
    |
-   +--> Claude bridge -----> official Claude Code client -> Claude subscription sign-in
+   +--> local bridge --> official Claude Code -> Claude.ai/Pro/Max sign-in
 ```
 
-The official client owns browser authentication and token storage. Make & Watch discovers client availability, launches the supported login flow when necessary, and exchanges only supported command/request/output data with that client.
+The first-party client owns authentication and credential storage. Make & Watch owns only sanitized status probing, bounded process invocation, context compilation, plan validation and native project execution.
 
-This preserves several architectural properties:
+## Official behavior verified 2026-08-29
 
-- Make & Watch does not store subscription OAuth credentials.
-- Provider authentication can change without changing project files.
-- Manual Studio operation remains available when no director is connected.
-- A future API-key/enterprise provider can implement the same `DirectorProvider` contract.
+OpenAI's current Codex authentication documentation states that Codex supports **Sign in with ChatGPT for subscription access**, and documents `codex login` as the Codex CLI browser-login entry point. The Codex CLI reference documents stable non-interactive `codex exec`, read-only sandboxing, ephemeral sessions, JSON Schema output and final-message file output. Codex also officially loads project-scoped `AGENTS.md` instructions.
 
-## Provider-policy reality
+Anthropic's current Claude Code setup documentation supports Claude App Pro/Max login and states that Claude Code stores its credentials. The current CLI reference documents print mode, JSON output, one-turn bounds, plan permission mode, tool restriction and `--json-schema` structured output. Claude project instructions are represented by `CLAUDE.md`.
 
-Anthropic's current guidance states that subscription authentication is intended for native Anthropic applications including Claude Code, while third-party products should use supported API authentication rather than repurposing subscription OAuth tokens. Therefore Make & Watch must not implement its own Claude-subscription OAuth client unless Anthropic later publishes a supported third-party flow.
+Canonical official links and the exact bridge contract are recorded in `DIRECTOR_PROVIDERS.md`.
 
-OpenAI's Codex clients support signing in with a ChatGPT account. A third-party `Sign in with ChatGPT` identity flow, where available, should not be confused with authorization to consume Codex subscription usage. For the local subscription path, bridge the authenticated official Codex client rather than assuming identity OAuth grants model access.
+## Implemented Studio flow
+
+1. `GET /api/director/providers` probes official client/version/auth/capability state.
+2. React receives only sanitized typed state; raw status output is not exposed.
+3. `POST /api/director/connect` launches the first-party login command.
+4. The browser/official client completes OAuth; Make & Watch never receives the token.
+5. `POST /api/director/plan` compiles bounded Make-&-Watch-specific context and starts one first-party provider process.
+6. Provider output must match `AutopilotPlan` schema and then pass the existing Studio validator/live revision check.
+7. The initial provider connection phase remains Assist-only: it proves real planning without silently granting semantic write authority.
+
+## Project specialization versus fine-tuning
+
+Codex/Claude are not actually retrained for this repository. They are specialized through:
+
+- root `AGENTS.md` for Codex;
+- root `CLAUDE.md` for Claude;
+- canonical `project_brain/AI_DIRECTOR_CONTEXT.md` policy;
+- deterministic bounded live-project context;
+- typed output schema;
+- exact native project revision and validation.
+
+This is preferred to repeatedly dumping the repository into the context window. It is cheaper, more deterministic, easier to version, and does not create a second hidden project state.
 
 ## Credential storage
 
-When Make & Watch eventually owns credentials for supported API/enterprise integrations, secrets must use OS-backed secure storage (Windows Credential Manager / macOS Keychain / Linux Secret Service or equivalent abstraction). Never persist secrets inside Make & Watch project files.
+The subscription path stores **zero provider secrets in Make & Watch**.
 
-## UI behavior
+If Make & Watch later adds direct API-key/enterprise providers, secrets must use an OS-backed secret abstraction such as Windows Credential Manager, macOS Keychain, or Linux Secret Service. Never persist provider secrets inside project files, SQLite project metadata, `.env` shipping defaults, logs or Director context packs.
 
-The Studio may present a polished `Connect Codex` or `Connect Claude` flow, but the technical implementation must accurately describe what happens:
+## Failure behavior
 
-1. detect the official client;
-2. install/open instructions if missing;
-3. launch the provider-supported sign-in flow;
-4. verify connection state;
-5. return to Studio with a provider capability/status card.
+- Missing client: report not installed; do not fake connection.
+- Old client lacking required safe flags: require official client update.
+- Unauthenticated client: offer first-party login.
+- Provider already busy: reject the second concurrent planning request.
+- Timeout/output overflow: terminate the owned provider process tree.
+- Bridge shutdown: terminate any request-scoped provider plan child.
+- Invalid structured output or stale project revision: reject before native mutation.
 
-The application must not claim OAuth ownership when authentication actually belongs to the official local client.
+## Future provider modes
+
+Guided/Director semantic execution will reuse the same provider/validator boundary, but must add explicit plan preview, capability grant and approval UX before enabling broader mutation. The native C++ engine and `ProjectSession` remain authoritative regardless of provider.
