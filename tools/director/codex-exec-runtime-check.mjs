@@ -12,6 +12,9 @@ const login = parseCodexLoginStatus({ code: 0, stdout: 'Logged in using ChatGPT'
 assert.equal(login.authenticated, true);
 assert.equal(login.authMethod, 'chatgpt');
 assert.equal(parseCodexLoginStatus({ code: 1, stdout: 'Not logged in', stderr: '' }).authenticated, false);
+const apiLogin = parseCodexLoginStatus({ code: 0, stdout: 'Logged in using API key', stderr: '' });
+assert.equal(apiLogin.authenticated, false, 'usage-based API auth must not masquerade as ChatGPT subscription access');
+assert.equal(apiLogin.otherAuthenticated, true);
 
 const help = parseCodexExecHelp({
   code: 0,
