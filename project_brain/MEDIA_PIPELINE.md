@@ -4,8 +4,6 @@
 
 Long-form Make & Watch projects are not one-shot video prompts. A series is compiled from canonical semantic entities into bounded per-shot work and an episode assembly DAG.
 
-This foundation deliberately separates **semantic continuity** from **media execution**:
-
 ```text
 canonical Series / Episode / Scene / Shot / Character graph
                          |
@@ -26,68 +24,94 @@ canonical Series / Episode / Scene / Shot / Character graph
         future WorkerSupervisor/providers/render
 ```
 
+Semantic continuity and media execution remain separate.
+
 ## Cross-episode character identity
 
-Characters are not copied per episode. A single canonical `character` node is referenced by scenes and/or shots in every episode where that character appears.
+Characters are not copied per episode. A single canonical `character` node is referenced everywhere that character appears.
 
-`SeriesContinuityCompiler` projects those references into a `SeriesContinuityManifest` containing:
+`SeriesContinuityCompiler` projects:
 
-- canonical character ID;
-- canonical native node revision;
+- canonical character ID/revision;
 - approval/lock/stale state;
 - every episode using the character;
 - whether the anchor crosses episode boundaries;
-- every shot-to-character continuity binding.
+- shot-to-character continuity bindings.
 
-A character revision is therefore the semantic identity version for the current foundation. If the canonical character changes, normal native dependency invalidation can mark dependent work stale across all affected episodes instead of silently creating divergent copies.
+A canonical Character revision is therefore the current semantic identity version. A change can invalidate dependent work across episodes through the native graph instead of creating silent divergent copies.
 
-Final-synthesis readiness currently requires referenced character anchors to be locked, fresh and approved/locked by native approval semantics.
+### Ownership hardening
+
+Continuity compilation now rejects ambiguous topology as readiness issues rather than emitting duplicate bindings:
+
+- one Scene appearing under multiple Episodes in the same Series;
+- one Shot appearing under multiple Scenes in the same Series.
+
+Duplicate ownership is skipped deterministically after being reported.
+
+Series readiness itself also participates: stale or non-final-approved Series state prevents final-synthesis readiness. Referenced Character anchors must remain identity-locked, fresh and approved/locked.
 
 ## Video render-plan compiler
 
-`VideoPipelineCompiler` compiles one episode into a deterministic `VideoRenderPlan`.
+`VideoPipelineCompiler` compiles one Episode into a deterministic `VideoRenderPlan`.
 
-For every shot it creates:
+For every valid uniquely-owned Shot it creates:
 
-1. a `kSynthesizeShot` task;
-2. a `kCompositeShot` task depending on that synthesis task;
-3. one final `kAssembleEpisode` task depending on all shot composites.
+1. `kSynthesizeShot`;
+2. `kCompositeShot` depending on synthesis;
+3. one `kAssembleEpisode` depending on all composites.
 
-The plan records:
+The plan records project revision, output profile, duration, explicit generation strategy, continuity Character IDs, task dependencies and readiness issues.
 
-- native project revision;
-- episode ID;
-- explicit output profile;
-- total shot duration;
-- continuity character IDs;
-- deterministic task dependencies;
-- explicit `generationStrategy` copied from shot metadata;
-- readiness issues.
+## Video compiler hard bounds
+
+The compiler now fails closed or reports not-ready state for malformed media inputs:
+
+- width/height must be non-zero and <= 16384;
+- FPS must be finite, positive and <= 240;
+- Shot `durationSeconds` must parse completely to a finite positive number; `nan`, infinity, range overflow and malformed suffixes are invalid;
+- accumulated Episode duration must remain finite;
+- metadata index parsing requires full-string consumption;
+- an Episode must depend on exactly one Series;
+- Episode, Scene and Shot stale/approval state participates in final readiness;
+- a Scene with no Shots is an issue;
+- an Episode with zero Shots is an issue;
+- explicit `generationStrategy` is required and length-bounded;
+- a Shot reachable through multiple Scenes does not create duplicate render task IDs;
+- referenced continuity anchors must be ready for final synthesis.
+
+A plan may still be returned with issues for inspection/repair, but `ready_for_final_synthesis` is true only when the issue list is empty.
 
 ## Public-repository IP boundary
 
-The compiler does **not** choose a generation representation automatically. `generationStrategy` must be explicit project metadata.
+The compiler does **not** choose a generation representation automatically. `generationStrategy` remains explicit project metadata.
 
 Patent-sensitive adaptive representation selection, quality/resource control loops and unpublished scheduling heuristics remain intentionally excluded from this public repository until IP strategy is settled.
 
-## What is implemented versus not implemented
+## Current tests
 
-Implemented now:
+Native tests cover:
 
-- native cross-episode continuity projection;
-- canonical character revision anchors;
-- deterministic episode render DAG compilation;
-- explicit shot strategy requirement;
-- readiness validation;
-- warning-clean native unit tests for continuity and video planning.
+- canonical cross-episode Character reuse and revision propagation;
+- identity lock readiness;
+- stale Series readiness;
+- duplicate Shot ownership in continuity;
+- deterministic Shot synthesis/composite/Episode assembly dependencies;
+- NaN FPS rejection;
+- NaN Shot duration handling;
+- stale Scene and draft Episode readiness;
+- duplicate Shot task suppression;
+- missing explicit strategy readiness.
 
-Not implemented yet:
+The native build remains warning-clean under the repository compiler policy.
 
-- OS/Python WorkerSupervisor;
+## What is not implemented yet
+
+- concrete OS/Python WorkerSupervisor;
 - actual image/video model process launch;
 - content-addressed generated-asset/provenance store;
 - FFmpeg execution/compositing worker;
 - checkpoint/resume for active media jobs;
 - adaptive strategy selection.
 
-The next media-runtime milestone must connect this deterministic plan to the existing `BackgroundJobRuntime` through a concrete WorkerSupervisor and typed capability handshake. Resource leases must remain owned until the real worker confirms stop/completion.
+The next media-runtime milestone must connect this deterministic plan to `BackgroundJobRuntime` through a concrete WorkerSupervisor and typed capability handshake. Resource leases must remain owned until the real worker confirms stop/completion.
