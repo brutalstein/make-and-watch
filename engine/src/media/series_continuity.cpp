@@ -57,7 +57,7 @@ int metadata_index(const Node& node) {
   const auto* begin = iterator->second.data();
   const auto* end = begin + iterator->second.size();
   const auto result = std::from_chars(begin, end, value);
-  return result.ec == std::errc{} ? value : 0;
+  return result.ec == std::errc{} && result.ptr == end ? value : 0;
 }
 
 void sort_nodes(std::vector<const Node*>& nodes) {
@@ -93,9 +93,15 @@ core::Status SeriesContinuityCompiler::compile(
 
   output.project_revision = snapshot.project_revision;
   output.series_id = series_id;
+  if (series->stale) output.issues.push_back("series " + series_id.value() + " is stale");
+  if (!domain::allows_final_synthesis(series->approval)) {
+    output.issues.push_back("series " + series_id.value() + " is not approved for final synthesis");
+  }
 
   std::map<std::string, std::set<std::string>> character_episodes;
   std::map<std::string, const Node*> character_nodes;
+  std::map<std::string, std::string> scene_owner_episode;
+  std::map<std::string, std::string> shot_owner_scene;
 
   auto episodes = direct_dependents(snapshot, series_id, NodeKind::kEpisode);
   sort_nodes(episodes);
@@ -107,6 +113,13 @@ core::Status SeriesContinuityCompiler::compile(
     auto scenes = direct_dependents(snapshot, episode->id, NodeKind::kScene);
     sort_nodes(scenes);
     for (const auto* scene : scenes) {
+      const auto [scene_owner, scene_inserted] = scene_owner_episode.emplace(scene->id.value(), episode->id.value());
+      if (!scene_inserted && scene_owner->second != episode->id.value()) {
+        output.issues.push_back(
+            "scene " + scene->id.value() + " belongs to multiple episodes in the same series");
+        continue;
+      }
+
       episode_summary.scene_ids.push_back(scene->id);
       auto scene_characters = direct_dependencies(snapshot, scene->id, NodeKind::kCharacter);
       std::map<std::string, const Node*> inherited;
@@ -115,6 +128,13 @@ core::Status SeriesContinuityCompiler::compile(
       auto shots = direct_dependents(snapshot, scene->id, NodeKind::kShot);
       sort_nodes(shots);
       for (const auto* shot : shots) {
+        const auto [shot_owner, shot_inserted] = shot_owner_scene.emplace(shot->id.value(), scene->id.value());
+        if (!shot_inserted) {
+          output.issues.push_back(
+              "shot " + shot->id.value() + " belongs to multiple scenes in the same series");
+          continue;
+        }
+
         episode_summary.shot_ids.push_back(shot->id);
         ShotContinuityBinding binding;
         binding.shot_id = shot->id;
