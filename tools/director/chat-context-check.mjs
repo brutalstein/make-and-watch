@@ -33,6 +33,8 @@ const continuation = buildDirectorChatTurn({
   selectedId: 'scene.050',
   firstTurn: false,
 });
+const firstPrompt = first.prompt.toLowerCase();
+const continuationPrompt = continuation.prompt.toLowerCase();
 
 assert.equal(first.hash, again.hash, 'same first-turn context must be deterministic');
 assert.ok(first.chars <= 12_000, `first chat prompt exceeded hard budget: ${first.chars}`);
@@ -41,12 +43,13 @@ assert.ok(first.nodeCountIncluded <= 36);
 assert.ok(first.dependencyCountIncluded <= 72);
 assert.ok(first.prompt.includes('scene.050'), 'selected entity must be retained');
 assert.equal(first.prompt.includes('ignoredLargeField'), false, 'irrelevant metadata must not leak');
-assert.ok(first.prompt.includes('use the available makewatch tools directly'), 'Director must be instructed to operate the project when mutation intent is explicit');
-assert.ok(first.prompt.includes('Never claim a project change'), 'Director must not claim tool mutations without host success');
-assert.ok(first.prompt.includes('Never edit project files or use shell commands'), 'project state mutation must remain behind the native capability boundary');
-assert.ok(first.prompt.includes('do not mutate the project merely because the user is brainstorming'), 'discussion must remain non-destructive by default');
+assert.ok(firstPrompt.includes('use the available makewatch tools directly'), 'explicit mutation intent must activate native Make & Watch tools');
+assert.ok(firstPrompt.includes('never claim a project change'), 'Director must not claim tool mutations without host success');
+assert.ok(firstPrompt.includes('never edit project files or use shell commands'), 'project state mutation must remain behind the native capability boundary');
+assert.ok(firstPrompt.includes('do not mutate the project merely because the user is brainstorming'), 'discussion must remain non-destructive by default');
+assert.ok(firstPrompt.includes('revision conflict'), 'tool mutations must carry optimistic native revision control');
 assert.ok(continuation.chars < first.chars, 'continuation should rely on thread history instead of resending full project context');
-assert.ok(continuation.prompt.includes('project revision is 31'));
-assert.ok(continuation.prompt.includes('successful makewatch tool calls do'));
+assert.ok(continuationPrompt.includes('project revision is 31'));
+assert.ok(continuationPrompt.includes('successful makewatch tool calls do'));
 
 console.log(`director chat-context check: passed (${first.nodeCountIncluded} first-turn nodes, ~${first.estimatedTokens} tokens)`);
