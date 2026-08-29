@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://makewatch.local/schemas/v1/director-autopilot-plan.schema.json",
+  "title": "Make & Watch AI Director Autopilot Plan v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "planId", "title", "summary", "mode", "provider", "expectedProjectRevision", "steps"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "planId": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 700 },
+    "mode": { "enum": ["assist", "guided", "director"] },
+    "provider": { "enum": ["demo", "claude", "codex"] },
+    "expectedProjectRevision": { "type": "integer", "minimum": 0 },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "items": { "$ref": "#/$defs/step" }
+    }
+  },
+  "$defs": {
+    "base": {
+      "type": "object",
+      "required": ["id", "type"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 140 },
+        "label": { "type": "string", "maxLength": 220 }
+      }
+    },
+    "step": {
+      "oneOf": [
+        {
+          "allOf": [
+            { "$ref": "#/$defs/base" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "type", "message"],
+              "properties": {
+                "id": { "type": "string" },
+                "type": { "const": "announce" },
+                "label": { "type": "string" },
+                "message": { "type": "string", "minLength": 1, "maxLength": 500 },
+                "holdMs": { "type": "number", "minimum": 0, "maximum": 15000 }
+              }
+            }
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "nodeId"],
+          "properties": {
+            "id": { "type": "string" },
+            "type": { "const": "focusNode" },
+            "label": { "type": "string" },
+            "nodeId": { "type": "string" },
+            "zoom": { "type": "number", "minimum": 0.2, "maximum": 2 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "nodeId", "to"],
+          "properties": {
+            "id": { "type": "string" },
+            "type": { "const": "dragNode" },
+            "label": { "type": "string" },
+            "nodeId": { "type": "string" },
+            "to": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["x", "y"],
+              "properties": {
+                "x": { "type": "number", "minimum": -100000, "maximum": 100000 },
+                "y": { "type": "number", "minimum": -100000, "maximum": 100000 }
+              }
+            },
+            "durationMs": { "type": "number", "minimum": 120, "maximum": 4000 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "nodeId"],
+          "properties": {
+            "id": { "type": "string" },
+            "type": { "const": "previewImpact" },
+            "label": { "type": "string" },
+            "nodeId": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type"],
+          "properties": {
+            "id": { "type": "string" },
+            "type": { "enum": ["arrangeWorkflow", "fitWorkflow"] },
+            "label": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "commands", "reason"],
+          "properties": {
+            "id": { "type": "string" },
+            "type": { "const": "applyCommands" },
+            "label": { "type": "string" },
+            "reason": { "type": "string", "minLength": 1, "maxLength": 500 },
+            "commands": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 48,
+              "items": { "type": "object", "required": ["type"] }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "message"],
+          "properties": {
+            "id": { "type": "string" },
+            "type": { "const": "checkpoint" },
+            "label": { "type": "string" },
+            "message": { "type": "string", "minLength": 1, "maxLength": 500 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "durationMs"],
+          "properties": {
+            "id": { "type": "string" },
+            "type": { "const": "wait" },
+            "label": { "type": "string" },
+            "durationMs": { "type": "number", "minimum": 0, "maximum": 15000 }
+          }
+        }
+      ]
+    }
+  }
+}
