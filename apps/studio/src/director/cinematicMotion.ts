@@ -1,7 +1,7 @@
 import type { CursorVisualState } from './autopilotTypes';
 import { controlledDelay, type AutopilotExecutionControl } from './autopilotControl';
 
-export const AUTOPILOT_PRESENTATION_FPS = 24;
+export const AUTOPILOT_PRESENTATION_FPS = 30;
 const FRAME_INTERVAL_MS = 1000 / AUTOPILOT_PRESENTATION_FPS;
 
 export function easeInOutCubic(value: number) {
@@ -14,29 +14,29 @@ export function durationForDistance(
   distancePx: number,
   options: { speedPxPerSecond?: number; minimumMs?: number; maximumMs?: number } = {},
 ) {
-  const speed = Math.max(120, options.speedPxPerSecond ?? 520);
-  const minimum = Math.max(120, options.minimumMs ?? 420);
-  const maximum = Math.max(minimum, options.maximumMs ?? 1500);
+  const speed = Math.max(160, options.speedPxPerSecond ?? 720);
+  const minimum = Math.max(90, options.minimumMs ?? 220);
+  const maximum = Math.max(minimum, options.maximumMs ?? 950);
   const travel = Number.isFinite(distancePx) ? Math.max(0, distancePx) : 0;
   return Math.round(Math.min(maximum, Math.max(minimum, (travel / speed) * 1000)));
 }
 
 /**
- * Runs a fixed number of presentation updates for a given duration.
+ * Deterministic bounded presentation loop.
  *
- * Progress is frame-index based instead of wall-clock based, so a busy render,
- * pause, or background-tab stall slows the animation rather than skipping
- * forward. The frame callback may be async; this is important for viewport
- * writes because the next presentation frame must never overtake the previous
- * React Flow mutation.
+ * Progress is frame-index based, not wall-clock catch-up based. The callback is
+ * awaited so React Flow viewport writes cannot accumulate behind cursor/node
+ * frames. Thirty FPS is intentionally the ceiling: it is smooth enough for the
+ * visible AI operator while leaving the browser main thread headroom for the
+ * controlled graph, Inspector, telemetry and user takeover controls.
  */
 export async function runDeterministicAnimation(
   durationMs: number,
   control: AutopilotExecutionControl,
   frame: (easedProgress: number, linearProgress: number) => void | Promise<void>,
 ) {
-  const duration = Math.max(160, durationMs);
-  const frameCount = Math.max(4, Math.ceil(duration / FRAME_INTERVAL_MS));
+  const duration = Math.max(100, durationMs);
+  const frameCount = Math.max(3, Math.ceil(duration / FRAME_INTERVAL_MS));
   const frameDelay = duration / frameCount;
 
   await frame(0, 0);
