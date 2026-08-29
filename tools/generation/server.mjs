@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import { resolve } from 'node:path';
 
 import { AudioGenerationService } from '../audio/audio-generation-service.mjs';
+import { compileEpisodeComposition } from '../composition/episode-composition.mjs';
 import { GenerationBridgeClient } from './bridge-client.mjs';
 import { ComfyUiClient } from './comfyui-client.mjs';
 import { GpuExclusiveScheduler } from './gpu-scheduler.mjs';
@@ -112,7 +113,7 @@ const server = createServer(async (request, response) => {
     if (request.method === 'GET' && url.pathname === '/api/health') {
       sendJson(request, response, 200, {
         service: 'makewatch-media-generation',
-        modes: ['storyboard-preview', 'multilingual-voice'],
+        modes: ['storyboard-preview', 'multilingual-voice', 'episode-composition'],
         gpuScheduler: scheduler.status(),
       });
       return;
@@ -145,6 +146,14 @@ const server = createServer(async (request, response) => {
       const body = await readJson(request);
       const job = await audioService.startAudio(boundedId(body.audioId, 'audioId'));
       sendJson(request, response, 202, { job });
+      return;
+    }
+
+    const compositionMatch = /^\/api\/composition\/episodes\/([A-Za-z0-9._:-]+)$/.exec(url.pathname);
+    if (request.method === 'GET' && compositionMatch) {
+      const episodeId = boundedId(compositionMatch[1], 'episodeId');
+      const snapshot = await bridge.snapshot();
+      sendJson(request, response, 200, { manifest: compileEpisodeComposition(snapshot, episodeId) });
       return;
     }
 
