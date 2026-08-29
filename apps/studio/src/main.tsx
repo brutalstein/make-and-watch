@@ -9,8 +9,10 @@ import './director/director-link.css';
 import './activity.css';
 import './layout-safety.css';
 import './premium-ui.css';
+import './panel-controller.css';
 import { App } from './App';
 import { DirectorProviderDock } from './director/DirectorProviderDock';
+import { StudioPanelController } from './StudioPanelController';
 
 const root = document.getElementById('root');
 if (!root) throw new Error('Studio root element was not found.');
@@ -20,6 +22,7 @@ createRoot(root).render(
     <ReactFlowProvider>
       <App />
       <DirectorProviderDock />
+      <StudioPanelController />
     </ReactFlowProvider>
   </StrictMode>,
 );
