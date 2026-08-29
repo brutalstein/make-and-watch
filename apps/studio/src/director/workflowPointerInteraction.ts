@@ -7,11 +7,11 @@ import { animateCursor, durationForDistance, runDeterministicAnimation } from '.
 
 const FALLBACK_NODE_WIDTH = 235;
 const FALLBACK_NODE_HEIGHT = 82;
-const POINTER_SETTLE_MS = 150;
-const PRESS_SETTLE_MS = 145;
-const RELEASE_SETTLE_MS = 180;
-const PAN_GESTURE_GAP_MS = 90;
-const MAX_PAN_GESTURES = 18;
+const POINTER_SETTLE_MS = 72;
+const PRESS_SETTLE_MS = 82;
+const RELEASE_SETTLE_MS = 92;
+const PAN_GESTURE_GAP_MS = 42;
+const MAX_PAN_GESTURES = 14;
 const CURSOR_NODE_EPSILON_PX = 1.5;
 
 export interface WorkflowPointerContext {
@@ -40,6 +40,10 @@ function distance(left: XYPosition, right: XYPosition) {
   return Math.hypot(left.x - right.x, left.y - right.y);
 }
 
+function lerp(from: number, to: number, amount: number) {
+  return from + (to - from) * amount;
+}
+
 function nodeAnchorOffset(node: Node): XYPosition {
   const width = node.measured?.width ?? FALLBACK_NODE_WIDTH;
   const height = node.measured?.height ?? FALLBACK_NODE_HEIGHT;
@@ -59,9 +63,9 @@ function nodeFlowAnchor(node: Node, position = node.position): XYPosition {
 
 function workflowFrame(surface: HTMLElement): ScreenFrame {
   const rect = surface.getBoundingClientRect();
-  const horizontalInset = clamp(rect.width * 0.13, 64, 124);
-  const topInset = clamp(rect.height * 0.15, 58, 104);
-  const bottomInset = clamp(rect.height * 0.20, 78, 132);
+  const horizontalInset = clamp(rect.width * 0.12, 58, 112);
+  const topInset = clamp(rect.height * 0.14, 54, 94);
+  const bottomInset = clamp(rect.height * 0.18, 68, 116);
   const left = rect.left + horizontalInset;
   const right = rect.right - horizontalInset;
   const top = rect.top + topInset;
@@ -72,13 +76,13 @@ function workflowFrame(surface: HTMLElement): ScreenFrame {
     top,
     bottom,
     center: {
-      x: (left + right) * 0.5,
-      y: top + (bottom - top) * 0.46,
+      x: left + (right - left) * 0.52,
+      y: top + (bottom - top) * 0.47,
     },
   };
 }
 
-function pointInsideFrame(point: XYPosition, frame: ScreenFrame, padding = 12) {
+function pointInsideFrame(point: XYPosition, frame: ScreenFrame, padding = 10) {
   return point.x >= frame.left + padding
     && point.x <= frame.right - padding
     && point.y >= frame.top + padding
@@ -97,7 +101,7 @@ function cursorStart(context: WorkflowPointerContext, frame: ScreenFrame, label:
     visible: true,
     pressed: false,
     x: frame.center.x,
-    y: frame.top + 22,
+    y: frame.top + 18,
     label,
   };
 }
@@ -111,9 +115,9 @@ async function moveCursor(
   const frame = workflowFrame(context.surface);
   const start = cursorStart(context, frame, label);
   const duration = durationForDistance(distance(start, target), {
-    speedPxPerSecond: options.speedPxPerSecond ?? 500,
-    minimumMs: options.minimumMs ?? 320,
-    maximumMs: options.maximumMs ?? 1100,
+    speedPxPerSecond: options.speedPxPerSecond ?? 820,
+    minimumMs: options.minimumMs ?? 170,
+    maximumMs: options.maximumMs ?? 680,
   });
   await animateCursor(start, target, duration, label, context.control, context.setCursor);
   context.setCursor({
@@ -133,8 +137,8 @@ async function panGesture(
 ) {
   const frame = workflowFrame(context.surface);
   const startPoint = {
-    x: frame.center.x - delta.x * 0.5,
-    y: frame.center.y - delta.y * 0.5,
+    x: frame.center.x - delta.x * 0.42,
+    y: frame.center.y - delta.y * 0.42,
   };
   const endPoint = {
     x: startPoint.x + delta.x,
@@ -142,11 +146,11 @@ async function panGesture(
   };
 
   await moveCursor(context, startPoint, label, {
-    speedPxPerSecond: 580,
-    minimumMs: 260,
-    maximumMs: 720,
+    speedPxPerSecond: 920,
+    minimumMs: 150,
+    maximumMs: 440,
   });
-  await controlledDelay(context.control, 70);
+  await controlledDelay(context.control, 38);
 
   const startViewport = context.flow.getViewport();
   context.surface.classList.add('flow-surface--ai-panning');
@@ -159,12 +163,12 @@ async function panGesture(
     y: startPoint.y,
     label,
   });
-  await controlledDelay(context.control, PRESS_SETTLE_MS);
+  await controlledDelay(context.control, 58);
 
   const gestureDuration = durationForDistance(distance(startPoint, endPoint), {
-    speedPxPerSecond: 390,
-    minimumMs: 420,
-    maximumMs: 820,
+    speedPxPerSecond: 690,
+    minimumMs: 220,
+    maximumMs: 520,
   });
 
   try {
@@ -201,12 +205,9 @@ async function panGesture(
 }
 
 /**
- * Finds a node the same way a human would when the workspace is larger than
- * the visible viewport: grab empty workflow space, pan it in bounded gestures,
- * release, then move the pointer onto the node itself.
- *
- * No hidden camera follower participates. This makes the visible cursor
- * coordinate and the logical cursor coordinate identical at all times.
+ * Finds an off-screen node using visible bounded workflow-pan gestures, then
+ * lands the logical/rendered virtual pointer on the freshly projected node
+ * anchor. No hidden camera follower and no coordinate clamping participate.
  */
 export async function pointCursorAtWorkflowNode(
   context: WorkflowPointerContext,
@@ -230,8 +231,8 @@ export async function pointCursorAtWorkflowNode(
     const frameWidth = frame.right - frame.left;
     const frameHeight = frame.bottom - frame.top;
     const delta = {
-      x: clamp(required.x, -frameWidth * 0.62, frameWidth * 0.62),
-      y: clamp(required.y, -frameHeight * 0.58, frameHeight * 0.58),
+      x: clamp(required.x, -frameWidth * 0.72, frameWidth * 0.72),
+      y: clamp(required.y, -frameHeight * 0.68, frameHeight * 0.68),
     };
     await panGesture(context, delta, `Finding ${label}`);
   }
@@ -239,18 +240,16 @@ export async function pointCursorAtWorkflowNode(
   const finalNode = context.getNode(nodeId) ?? node;
   const frame = workflowFrame(context.surface);
   const target = projectedNodePoint(context, finalNode);
-  if (!pointInsideFrame(target, frame, 4)) {
+  if (!pointInsideFrame(target, frame, 2)) {
     throw new Error(`workflow node ${nodeId} could not be brought into the visible interaction frame`);
   }
 
   await moveCursor(context, target, label, {
-    speedPxPerSecond: 460,
-    minimumMs: 360,
-    maximumMs: 1180,
+    speedPxPerSecond: 760,
+    minimumMs: 190,
+    maximumMs: 720,
   });
 
-  // Snap to the freshly projected anchor after all viewport writes. This is the
-  // key invariant the previous follower-based design could not guarantee.
   const exactNode = context.getNode(nodeId) ?? finalNode;
   const exactTarget = projectedNodePoint(context, exactNode);
   context.setCursor({
@@ -270,12 +269,13 @@ export async function pointCursorAtWorkflowNode(
 }
 
 /**
- * Full deterministic pick-and-place interaction:
- *   find -> hover -> press -> drag node and pointer together -> release.
+ * Exact cursor-centric pick-and-place.
  *
- * The viewport is intentionally fixed while the node is held. Every drag frame
- * projects the node's exact flow-space anchor back to screen space and places
- * the cursor at that same coordinate, so there is no delta*zoom drift.
+ * After the grab, the camera and graph move with the held node. During the
+ * first part of the drag the held node/cursor smoothly enter the workflow focal
+ * point, then remain there while the canvas travels underneath. Every viewport
+ * write is awaited, and the cursor is reprojected from the exact node flow
+ * anchor after that write, so pointer, node and camera cannot drift apart.
  */
 export async function dragWorkflowNodeWithPointer(
   context: WorkflowPointerContext,
@@ -288,8 +288,11 @@ export async function dragWorkflowNodeWithPointer(
   const source = context.getNode(nodeId);
   if (!source) throw new Error(`workflow node ${nodeId} disappeared before drag`);
   const sourcePosition = { ...source.position };
-
+  const frame = workflowFrame(context.surface);
   const startAnchor = projectedNodePoint(context, source, sourcePosition);
+  const focalPoint = frame.center;
+
+  context.surface.classList.add('flow-surface--ai-drag-follow');
   context.setCursor({
     ...context.getCursor(),
     visible: true,
@@ -301,25 +304,45 @@ export async function dragWorkflowNodeWithPointer(
   });
   await controlledDelay(context.control, PRESS_SETTLE_MS);
 
-  await runDeterministicAnimation(durationMs, context.control, (eased) => {
-    const nextPosition = {
-      x: sourcePosition.x + (to.x - sourcePosition.x) * eased,
-      y: sourcePosition.y + (to.y - sourcePosition.y) * eased,
-    };
-    context.updateNodePosition(nodeId, nextPosition, true);
-    const pointer = projectedNodePoint(context, source, nextPosition);
-    context.setCursor({
-      ...context.getCursor(),
-      visible: true,
-      pressed: true,
-      x: pointer.x,
-      y: pointer.y,
-      label,
+  try {
+    await runDeterministicAnimation(durationMs, context.control, async (eased, linear) => {
+      const nextPosition = {
+        x: sourcePosition.x + (to.x - sourcePosition.x) * eased,
+        y: sourcePosition.y + (to.y - sourcePosition.y) * eased,
+      };
+      context.updateNodePosition(nodeId, nextPosition, true);
+
+      const focusProgress = Math.min(1, linear * 3.6);
+      const desiredScreen = {
+        x: lerp(startAnchor.x, focalPoint.x, focusProgress),
+        y: lerp(startAnchor.y, focalPoint.y, focusProgress),
+      };
+      const anchorFlow = nodeFlowAnchor(source, nextPosition);
+      const projectedBefore = context.flow.flowToScreenPosition(anchorFlow);
+      const viewport = context.flow.getViewport();
+      const nextViewport: Viewport = {
+        x: viewport.x + desiredScreen.x - projectedBefore.x,
+        y: viewport.y + desiredScreen.y - projectedBefore.y,
+        zoom: viewport.zoom,
+      };
+      await context.flow.setViewport(nextViewport);
+
+      const exactPointer = context.flow.flowToScreenPosition(anchorFlow);
+      context.setCursor({
+        ...context.getCursor(),
+        visible: true,
+        pressed: true,
+        x: exactPointer.x,
+        y: exactPointer.y,
+        label,
+      });
     });
-  });
+  } finally {
+    context.surface.classList.remove('flow-surface--ai-drag-follow');
+  }
 
   context.updateNodePosition(nodeId, to, false);
-  const finalPointer = projectedNodePoint(context, source, to);
+  const finalPointer = context.flow.flowToScreenPosition(nodeFlowAnchor(source, to));
   context.setCursor({
     ...context.getCursor(),
     visible: true,
