@@ -154,15 +154,23 @@ export function providerLaunchSummary(executable) {
 }
 
 /**
- * Child-process pipe errors (notably Windows EPIPE when a CLI closes stdin while
- * the parent still has an in-flight write) are EventEmitter `error` events. If a
- * stream has no listener Node terminates the entire bridge process. Provider
- * failure must be isolated from the native project bridge, so every owned stdio
- * pipe gets a passive guard. Higher layers still observe child exit/request
- * timeout and decide whether to retry/fail over.
+ * ChildProcess and stdio `error` events terminate Node when they have no listener.
+ * Director providers are optional subsystems and must never take down the native
+ * project bridge. The passive guards record the latest transport failure while
+ * higher-level request/exit listeners retain authority over retry/failover.
  */
 export function guardProviderStdio(child) {
   if (!child) return child;
+
+  if (typeof child.on === 'function') {
+    child.on('error', (error) => {
+      child.makewatchLastProcessError = {
+        code: typeof error?.code === 'string' ? error.code : '',
+        message: String(error?.message ?? error).slice(0, 300),
+      };
+    });
+  }
+
   for (const [name, stream] of [['stdin', child.stdin], ['stdout', child.stdout], ['stderr', child.stderr]]) {
     if (!stream || typeof stream.on !== 'function') continue;
     stream.on('error', (error) => {
