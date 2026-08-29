@@ -4,82 +4,136 @@ This file records what was actually executed, not what is merely expected to wor
 
 ## Foundation history
 
-The repository has progressively passed isolated native validation, strict GitHub Actions, and an earlier full Windows/NVIDIA quality gate. Validated foundation areas include the transactional semantic graph, SQLite persistence/migration, ProjectSession commit semantics, JSONL IPC, process-boundary host smoke, native-driven Studio state, presentation-only layout, durable history, typed Autopilot, and native ResourceManager.
+The repository has progressively passed isolated native validation, strict GitHub Actions, and an earlier full Windows/NVIDIA quality gate. Validated foundation areas include the transactional semantic graph, SQLite persistence/migration, ProjectSession commit semantics, JSONL IPC, process-boundary host smoke, native-driven Studio state, presentation-only layout, durable history, typed Autopilot, ResourceManager and BackgroundJobRuntime.
 
 The primary Windows development environment previously observed was Node v24.11.0, pnpm 10.15.0, CMake 4.1.2, Ninja 1.13.1, GNU C/C++ 15.2 via MSYS2 UCRT64, and an NVIDIA GeForce RTX 5070 Laptop GPU with 8151 MB reported by system doctor. An earlier full `./verify.ps1` gate passed and live Studio opened successfully.
 
-CI/product testing has repeatedly found real defects; those defects were fixed without weakening warning, type, transaction, lock or persistence rules.
+CI/product testing has repeatedly found real defects; they were fixed without weakening type, warning, transaction, lock, persistence or resource invariants.
 
 ## 2026-08-29 — Durable native history
 
-Protocol v1 supports bounded attributed `project.history`. `project.apply` validates actor/source/plan/reason context and bounded command batches. SQLite transaction provenance remains stored durably and is decoded in native C++ before reaching React.
+Protocol v1 supports bounded attributed `project.history`. `project.apply` validates actor/source/plan/reason context and bounded command batches. SQLite transaction provenance is decoded in native C++ before React.
 
-The real engine-host process smoke performs an attributed mutation and reads the resulting actor/source/reason back over stdin/stdout from SQLite-backed history.
+Real engine-host process smoke performs attributed mutation and reads actor/source/reason back over stdin/stdout from SQLite history.
 
-## 2026-08-29 — Exact pointer pick-and-place redesign
+## 2026-08-29 — Exact pointer redesign and faster cursor-centric camera
 
-Hands-on testing rejected the earlier camera-follower implementation. The visible pointer could diverge from the logical pointer because the target node was measured before later camera motion, the rendered cursor was clamped to a safe frame, and active drag used approximate `delta * zoom` cursor integration.
+Hands-on testing rejected the old independent camera follower because viewport motion, safe-frame rendering clamp and approximate `delta * zoom` integration could separate visible pointer from held node.
 
-The replacement removes `AutopilotCameraFollower.tsx` and introduces `workflowPointerInteraction.ts`.
+The canonical replacement is `workflowPointerInteraction.ts`.
 
-Code-level behavior now enforced:
+Current behavior:
 
-- rendered pointer coordinates are the logical interaction coordinates; no safe-frame clamp;
-- an off-screen node is found through bounded visible workspace pan gestures;
-- every pan viewport write is awaited before the next deterministic frame;
-- target node anchor is freshly reprojected after viewport changes;
-- pointer settles on that exact projected anchor before press;
-- a small epsilon check verifies pre-grab alignment;
-- viewport stays fixed while the node is held;
-- each drag frame computes the node's exact flow-space position and projects the pointer from that same anchor;
-- no `delta * zoom` integration is used;
-- post-drop alignment is verified before the step completes;
-- pause preserves the held presentation state;
-- cancellation removes pan/drag presentation ownership;
-- every displaced node gets an individual drag step; the old five-node/bulk-settle behavior is removed;
-- deterministic 24 FPS presentation remains, with frame-index progress and awaited frame callbacks;
-- step-specific finite liveness budgets remain active.
+- rendered pointer coordinate is the logical interaction coordinate;
+- off-screen nodes are found with visible bounded workspace pan gestures;
+- viewport writes are awaited;
+- node anchor is freshly reprojected after viewport changes;
+- pointer settles on exact node anchor before press;
+- pre-grab/post-drop epsilon checks remain;
+- no `delta * zoom` pointer integration;
+- every displaced node is handled individually;
+- presentation ceiling increased from 24 to **30 FPS** for smoother/faster motion while remaining bounded below display-refresh rate;
+- cursor/pan/press/release durations were reduced substantially;
+- drag duration is distance-aware and bounded roughly 520–980 ms in the deterministic workspace planner;
+- after grab, held node + pointer smoothly enter a workflow focal point;
+- each drag frame computes viewport translation required to keep the exact held flow anchor at that cursor focal point;
+- viewport update is awaited, then cursor is reprojected from the same exact flow anchor;
+- once focused, the node/cursor stay visually anchored while the canvas moves underneath;
+- pause freezes held state rather than teleporting/releasing;
+- cancellation cleans presentation ownership.
 
-Strict Studio TypeScript and Vite production build passed with the exact-pointer implementation.
+Strict Studio TypeScript and Vite production build passed with this code.
 
 ## 2026-08-29 — BackgroundJobRuntime lifecycle gate
 
-A native bounded background lifecycle layer was added above `ResourceManager`.
+Native bounded background lifecycle sits above `ResourceManager`.
 
-Implemented and tested behavior:
+Tests prove:
 
-- fixed capacity covers queued + running jobs;
-- duplicate jobs rejected;
-- resource-aware queue scan starts the first admissible job;
-- a blocked GPU job does not block later CPU-only work when CPU/RAM are safe;
+- fixed queued+running capacity;
+- duplicate rejection;
+- resource-aware first-admissible scan;
+- blocked GPU work does not unnecessarily block safe CPU-only work;
 - every running job owns a scoped `ResourceLease`;
-- requesting cancellation of running work does **not** release its resources;
-- resources remain reserved until actual stop/completion confirmation;
-- shutdown stops new admission and cancels queued work immediately;
-- running shutdown is deterministic oldest-first;
-- exactly one shutdown target is exposed at a time;
-- repeated target reads return the same worker until it is confirmed stopped;
-- wrong-target confirmation fails closed and preserves accounting;
-- active resource count falls exactly one-by-one as workers are confirmed stopped;
-- final shutdown reaches zero running jobs and zero active resource leases.
+- cancel request does not release live resources early;
+- resources remain reserved until confirmed stop/completion;
+- shutdown stops admission and cancels queued work;
+- running shutdown is oldest-first, exactly one target at a time;
+- wrong-target confirmation fails closed;
+- active resource count drains one-by-one to zero.
 
-The current layer is lifecycle/admission ownership only. It does not launch model processes yet; WorkerSupervisor remains the next layer.
+This layer does not launch media/model processes yet. WorkerSupervisor remains next.
 
-## 2026-08-29 — Current code-level CI result
+## 2026-08-29 — Project-scoped Director provider bridge
 
-The exact-pointer + BackgroundJobRuntime implementation passed GitHub Actions code gates before the documentation-only handoff updates:
+A policy-aware local Director bridge and Studio **DIRECTOR LINK** were added.
 
-- bridge/fixture checks: passed;
-- strict shared/Studio TypeScript: passed;
+### Codex
+
+Current official OpenAI docs were checked. Codex documents **Sign in with ChatGPT for subscription access** in local clients and provides the non-interactive `codex exec` flags used here.
+
+Code-level Codex bridge:
+
+- official `codex login` / status;
+- no credential/token reads by Make & Watch;
+- `codex exec` read-only sandbox;
+- ephemeral session;
+- prompt over stdin;
+- JSON Schema final output;
+- temporary final-message file removed after run;
+- finite wall-clock and output-byte bounds;
+- one active planning inference maximum.
+
+### Claude policy correction
+
+Anthropic legal/compliance docs were checked after the initial adapter was written. They state third-party product developers should use Claude Console API keys or supported cloud providers and may not route Free/Pro/Max credentials on behalf of users.
+
+The implementation was corrected rather than hiding that constraint:
+
+- public-product Claude status defaults to `api_required`;
+- Claude subscription connect/inference is rejected by default;
+- existing Claude Code adapter is developer-preview only behind `MAKEWATCH_ENABLE_EXPERIMENTAL_CLAUDE_CODE=1`;
+- CI asserts the default policy gate;
+- production Claude integration remains a future supported API/Console/cloud path.
+
+### Context economy
+
+The Director is project-specialized through root `AGENTS.md` / `CLAUDE.md`, `AI_DIRECTOR_CONTEXT.md`, typed schema and bounded live graph context rather than fine-tuning or whole-repo prompt dumps.
+
+CI regression bounds:
+
+- <=16,000 prompt characters;
+- conservative <=4,000 token estimate;
+- <=3,000 objective characters;
+- <=72 nodes;
+- <=120 included edges;
+- allow-listed compact metadata;
+- deterministic SHA-256 context hash;
+- irrelevant large metadata must not leak into context.
+
+### Process shutdown
+
+Provider status exposed to React is sanitized. Raw auth output is not forwarded.
+
+The bridge now rejects new HTTP work once shutdown starts, terminates an active Director process tree, awaits bounded provider child exit, and only then closes the native host. This is code-level lifecycle ownership; orphan-free behavior with a real authenticated Codex run still requires the Windows live gate.
+
+## 2026-08-29 — Latest code-level CI result
+
+GitHub Actions for code HEAD `ee41476707f8d779803e595d0d72e4a2d9fcba68` completed successfully:
+
+- Studio contracts/build: passed;
+- bridge syntax/checks: passed;
+- Director context-budget check: passed;
+- provider-manager missing-client/sanitized-status/policy check: passed;
+- strict TypeScript: passed;
 - Vite production build: passed;
-- native C/C++ configure: passed;
-- strict native build: passed;
-- complete CTest suite: passed, including `makewatch_background_job_runtime_tests`;
-- existing graph, SQLite, history, ResourceManager and process-smoke tests remained passing.
+- native configure/build: passed;
+- complete CTest: passed;
+- existing graph, SQLite/history, ResourceManager, BackgroundJobRuntime and process-smoke tests remained passing.
 
-Documentation-only commits after that result do not constitute a new product-machine validation. The final branch HEAD should still remain CI-green before handoff.
+Subsequent commits before this record are documentation-only. Final branch HEAD must still remain CI-green before product-machine handoff.
 
-## Required product-machine gate
+## Required Windows product-machine gate
 
 From repository root:
 
@@ -89,40 +143,47 @@ git pull
 .\dev.ps1
 ```
 
-Scatter several workflow nodes far from their canonical positions, including nodes outside the current viewport, then run **Let AI drive this workflow**.
+### Pointer/camera
 
-Verify:
-
-1. cursor visibly pans workflow space to find an off-screen node;
-2. it arrives on the node body, not beside it;
-3. it visibly settles before press;
-4. press occurs while cursor is still exactly on the node;
-5. node and cursor stay locked together for the whole drag;
-6. release occurs at the final node position;
-7. all displaced nodes are handled individually in sequence;
-8. no hidden camera follow fights the pointer;
-9. `Space` pause during a grab freezes rather than releases/teleports;
-10. `Esc` / **Take back control** immediately cancels presentation ownership;
-11. Inspector/topbar remain responsive during motion;
+1. scatter nodes far outside canonical positions;
+2. run **Let AI drive this workflow**;
+3. verify acquisition is materially faster;
+4. cursor lands on the node body exactly;
+5. after press, held node/cursor enter focal point and camera follows them;
+6. once focused, node/cursor remain visually anchored while canvas travels underneath;
+7. release has no visible cursor drift;
+8. every displaced node is processed individually;
+9. `Space` pause mid-grab freezes without teleport;
+10. `Esc` / Take back control cancels immediately;
+11. Inspector/topbar remain responsive;
 12. Assist layout does not advance native semantic revision;
-13. final layout survives restart;
-14. Durable Activity remains correct;
-15. `./verify.ps1` passes the new background lifecycle test under the Windows toolchain.
+13. layout persists across restart.
 
-Any pointer/node mismatch or freeze is a failed product gate and must be fixed before model/provider work.
+### Codex Director
 
-## Next gate after live pointer validation
+1. inspect **DIRECTOR LINK**;
+2. refresh provider state;
+3. Codex should be actionable if current official CLI is installed;
+4. if unauthenticated, click **Connect Codex officially** and complete first-party login;
+5. refresh until authenticated/capable;
+6. submit a small objective;
+7. confirm a schema-valid Assist plan preview returns;
+8. context estimate must remain <=4K tokens;
+9. planning alone must not change native revision;
+10. stop `./dev.ps1` while a Codex plan is running and verify no orphan Codex process remains;
+11. Claude should display **API required for product** by default.
 
-Build the concrete WorkerSupervisor on top of `BackgroundJobRuntime`:
+Any cursor drift/freeze, credential custody, provider-policy bypass, unbounded context, orphan process, stale-revision acceptance or resource-accounting regression is a failed product gate.
 
-```text
-graceful stop request
- -> bounded grace wait
- -> terminate one stuck worker if necessary
- -> wait for actual process exit
- -> confirm stopped to BackgroundJobRuntime
- -> release that worker's ResourceLease
- -> advance to next worker
-```
+## Next after that gate
 
-Then add typed worker health/capability handshake, bounded logging, checkpoint/recovery, content-addressed asset provenance, hardware probing/calibration, and lightweight local media providers.
+1. execute provider-generated **Assist** plans through the existing exact Autopilot runtime;
+2. Guided plan preview/checkpoint UX before semantic AI mutation;
+3. concrete WorkerSupervisor on top of BackgroundJobRuntime;
+4. graceful stop -> bounded wait -> one-process escalation -> confirmed exit -> lease release;
+5. worker health/capability contract and bounded logs;
+6. checkpoint/recovery;
+7. content-addressed asset provenance;
+8. hardware profile/calibration;
+9. lightweight local storyboard/voice workers;
+10. production Claude provider through supported Anthropic API/Console/cloud authentication.
