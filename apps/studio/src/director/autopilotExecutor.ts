@@ -3,8 +3,6 @@ import type { ImpactReport, ProjectCommand } from '@makewatch/contracts';
 import { AutopilotCancelledError, AutopilotExecutionControl, controlledDelay } from './autopilotControl';
 import type { AutopilotPlan, AutopilotStep, AutopilotUiState } from './autopilotTypes';
 
-const PRESENTATION_STEP_DEADLINE_MS = 10_000;
-
 class AutopilotStepTimeoutError extends Error {
   constructor(stepId: string, timeoutMs: number) {
     super(`autopilot step ${stepId} exceeded ${timeoutMs} ms execution budget`);
@@ -39,16 +37,28 @@ function stepActivity(step: AutopilotStep) {
   }
 }
 
+function presentationDeadlineMs(step: AutopilotStep) {
+  switch (step.type) {
+    case 'dragNode': return 30_000;
+    case 'focusNode': return 24_000;
+    case 'previewImpact': return 24_000;
+    case 'arrangeWorkflow': return 14_000;
+    case 'fitWorkflow': return 14_000;
+    default: return 10_000;
+  }
+}
+
 async function runBoundedPresentationStep(
   step: AutopilotStep,
   control: AutopilotExecutionControl,
   action: () => Promise<void>,
 ) {
+  const deadlineMs = presentationDeadlineMs(step);
   let timeoutId = 0;
   const timeout = new Promise<never>((_, reject) => {
     timeoutId = window.setTimeout(
-      () => reject(new AutopilotStepTimeoutError(step.id, PRESENTATION_STEP_DEADLINE_MS)),
-      PRESENTATION_STEP_DEADLINE_MS,
+      () => reject(new AutopilotStepTimeoutError(step.id, deadlineMs)),
+      deadlineMs,
     );
   });
 
@@ -104,7 +114,7 @@ export async function executeAutopilotPlan(
           await runBoundedPresentationStep(step, control, () => runtime.focusNode(step.nodeId, step.zoom));
           break;
         case 'dragNode':
-          await runBoundedPresentationStep(step, control, () => runtime.dragNode(step.nodeId, step.to, step.durationMs ?? 680, activity));
+          await runBoundedPresentationStep(step, control, () => runtime.dragNode(step.nodeId, step.to, step.durationMs ?? 980, activity));
           break;
         case 'previewImpact':
           await runBoundedPresentationStep(step, control, async () => {
