@@ -193,8 +193,22 @@ function providerSpawnOptions(options) {
 }
 
 function markOwnedProcessGroup(child, options) {
-  if (process.platform !== 'win32' && options.detached === true) {
+  if (process.platform !== 'win32' && options.detached === true && child?.pid) {
     child.makewatchOwnProcessGroup = true;
+    const directKill = child.kill.bind(child);
+    child.makewatchDirectKill = directKill;
+    child.kill = (signal = 'SIGTERM') => {
+      try {
+        process.kill(-child.pid, signal);
+        return true;
+      } catch (error) {
+        if (error?.code === 'ESRCH') return false;
+        // Fall back to the leader if platform/runtime policy unexpectedly
+        // rejects group signalling. The higher-level bounded lifecycle still
+        // observes the real exit and can report failure rather than guessing.
+        return directKill(signal);
+      }
+    };
   }
   return guardProviderStdio(child);
 }
