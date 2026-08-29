@@ -5,6 +5,10 @@ import { dirname, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
+import {
+  configuredMakeWatchDynamicToolSpecs,
+  handleConfiguredMakeWatchToolCall,
+} from './makewatch-tool-runtime.mjs';
 import { spawnProviderExecutable } from './provider-executable.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -130,12 +134,12 @@ function withTimeout(promise, timeoutMs, message) {
 }
 
 export class CodexAppServerClient extends EventEmitter {
-  constructor({ executable, processFactory = null, dynamicTools = [], dynamicToolHandler = null } = {}) {
+  constructor({ executable, processFactory = null, dynamicTools = null, dynamicToolHandler = null } = {}) {
     super();
     if (!executable) throw new Error('Codex app-server requires a resolved executable');
     this.executable = executable;
     this.processFactory = processFactory;
-    this.dynamicTools = Array.isArray(dynamicTools) ? dynamicTools : [];
+    this.dynamicTools = Array.isArray(dynamicTools) ? dynamicTools : null;
     this.dynamicToolHandler = typeof dynamicToolHandler === 'function' ? dynamicToolHandler : null;
     this.child = null;
     this.reader = null;
@@ -164,7 +168,8 @@ export class CodexAppServerClient extends EventEmitter {
   }
 
   dynamicToolSpecs() {
-    return this.dynamicToolHandler ? this.dynamicTools : [];
+    if (this.dynamicTools) return this.dynamicToolHandler ? this.dynamicTools : [];
+    return configuredMakeWatchDynamicToolSpecs();
   }
 
   readOnlyThreadSecurityParams() {
@@ -333,7 +338,8 @@ export class CodexAppServerClient extends EventEmitter {
   }
 
   async #handleServerRequest(message) {
-    if (message.method !== 'item/tool/call' || !this.dynamicToolHandler) {
+    const handler = this.dynamicToolHandler ?? handleConfiguredMakeWatchToolCall;
+    if (message.method !== 'item/tool/call' || this.dynamicToolSpecs().length === 0) {
       try {
         this.#write({
           id: message.id,
@@ -361,7 +367,7 @@ export class CodexAppServerClient extends EventEmitter {
 
     try {
       const text = await withTimeout(
-        this.dynamicToolHandler(call),
+        handler(call),
         TOOL_TIMEOUT_MS,
         `Codex dynamic tool timed out after ${TOOL_TIMEOUT_MS} ms`,
       );
