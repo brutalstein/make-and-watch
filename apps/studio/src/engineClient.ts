@@ -16,6 +16,10 @@ import type {
   DirectorChatRequest,
   DirectorChatResult,
   DirectorConnectResult,
+  DirectorConversationDeleteResult,
+  DirectorConversationListResult,
+  DirectorConversationMutationResult,
+  DirectorConversationReadResult,
   DirectorPlanRequest,
   DirectorPlanResult,
   DirectorProviderId,
@@ -166,6 +170,10 @@ async function directorChat(input: DirectorChatRequest) {
   return result;
 }
 
+function conversationMutation<T>(path: string, body: Record<string, unknown>) {
+  return request<T>(path, { method: 'POST', body: JSON.stringify(body) });
+}
+
 export const engineClient = {
   health: () => request<EngineHealth>('/health'),
   snapshot: () => request<ProjectGraphSnapshot>('/project'),
@@ -192,6 +200,24 @@ export const engineClient = {
     method: 'POST',
     body: JSON.stringify({ provider, conversationId }),
   }),
+  directorConversations: (archived = false, limit = 100) => request<DirectorConversationListResult>(
+    `/director/conversations?archived=${archived ? '1' : '0'}&limit=${encodeURIComponent(String(limit))}`,
+  ),
+  readDirectorConversation: (conversationId: string) => conversationMutation<DirectorConversationReadResult>(
+    '/director/conversations/read', { conversationId },
+  ),
+  renameDirectorConversation: (conversationId: string, title: string) => conversationMutation<DirectorConversationMutationResult>(
+    '/director/conversations/rename', { conversationId, title },
+  ),
+  archiveDirectorConversation: (conversationId: string) => conversationMutation<DirectorConversationMutationResult>(
+    '/director/conversations/archive', { conversationId },
+  ),
+  unarchiveDirectorConversation: (conversationId: string) => conversationMutation<DirectorConversationMutationResult>(
+    '/director/conversations/unarchive', { conversationId },
+  ),
+  deleteDirectorConversation: (conversationId: string) => conversationMutation<DirectorConversationDeleteResult>(
+    '/director/conversations/delete', { conversationId },
+  ),
   directorPlan: (input: DirectorPlanRequest) => request<DirectorPlanResult>('/director/plan', {
     method: 'POST',
     body: JSON.stringify(input),
