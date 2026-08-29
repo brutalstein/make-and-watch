@@ -36,7 +36,7 @@ assert.equal(threadId, 'chat-thread-1');
 const threadStart = client.requests.find((request) => request.method === 'thread/start');
 assert.ok(threadStart, 'chat must create a Codex thread');
 assert.equal(threadStart.params.approvalPolicy, 'never');
-assert.equal(threadStart.params.sandbox, 'read-only', 'App Server sandbox enum must use the documented wire value');
+assert.equal(threadStart.params.sandbox, 'read-only', 'thread/start sandbox uses the CLI-style kebab-case wire enum');
 
 assert.equal(await chat.send(threadId, 'first message'), 'reply 1');
 assert.equal(await chat.send(threadId, 'second message'), 'reply 2');
@@ -44,7 +44,7 @@ const turns = client.requests.filter((request) => request.method === 'turn/start
 assert.equal(turns.length, 2);
 assert.equal(turns[0].params.threadId, turns[1].params.threadId, 'multi-turn chat must keep one Codex thread');
 assert.equal(turns[0].params.approvalPolicy, 'never');
-assert.equal(turns[0].params.sandboxPolicy.type, 'read-only', 'turn sandbox enum must use the documented wire value');
+assert.equal(turns[0].params.sandboxPolicy.type, 'readOnly', 'turn/start sandboxPolicy uses the App Server camelCase policy enum');
 assert.equal(turns[0].params.sandboxPolicy.access.type, 'restricted');
 await chat.deleteThread(threadId);
 assert.ok(client.requests.some((request) => request.method === 'thread/delete'));
