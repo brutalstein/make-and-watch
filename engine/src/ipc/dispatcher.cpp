@@ -319,7 +319,7 @@ Json history_json(const std::vector<project::Event>& events, std::size_t transac
   bool has_current = false;
   bool has_commit_marker = false;
 
-  const auto flush = [&]() mutable {
+  auto flush = [&]() {
     if (!has_current || !has_commit_marker || transactions.size() >= transaction_limit) return;
     transactions.push_back(std::move(current));
   };
