@@ -65,9 +65,9 @@ Implemented and tested behavior:
 
 The current layer is lifecycle/admission ownership only. It does not launch model processes yet; WorkerSupervisor remains the next layer.
 
-## 2026-08-29 — Current CI result
+## 2026-08-29 — Current code-level CI result
 
-The exact-pointer + BackgroundJobRuntime branch state passed GitHub Actions code gates:
+The exact-pointer + BackgroundJobRuntime implementation passed GitHub Actions code gates before the documentation-only handoff updates:
 
 - bridge/fixture checks: passed;
 - strict shared/Studio TypeScript: passed;
@@ -77,7 +77,7 @@ The exact-pointer + BackgroundJobRuntime branch state passed GitHub Actions code
 - complete CTest suite: passed, including `makewatch_background_job_runtime_tests`;
 - existing graph, SQLite, history, ResourceManager and process-smoke tests remained passing.
 
-This is code-level validation. The new pointer choreography is not yet claimed as hands-on Windows validated.
+Documentation-only commits after that result do not constitute a new product-machine validation. The final branch HEAD should still remain CI-green before handoff.
 
 ## Required product-machine gate
 
