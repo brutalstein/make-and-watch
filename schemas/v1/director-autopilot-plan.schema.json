@@ -21,6 +21,107 @@
     }
   },
   "$defs": {
+    "approval": {
+      "enum": ["draft", "review", "approved", "locked", "invalidated", "failed"]
+    },
+    "nodeKind": {
+      "enum": ["series", "episode", "scene", "shot", "character", "location", "asset", "audio", "generation"]
+    },
+    "expectedRevision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "command": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "node"],
+          "properties": {
+            "type": { "const": "node.create" },
+            "node": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "kind", "title"],
+              "properties": {
+                "id": { "type": "string", "minLength": 1, "maxLength": 240 },
+                "kind": { "$ref": "#/$defs/nodeKind" },
+                "title": { "type": "string", "minLength": 1, "maxLength": 500 },
+                "metadata": {
+                  "type": "object",
+                  "additionalProperties": { "type": "string", "maxLength": 4000 }
+                },
+                "approval": { "$ref": "#/$defs/approval" },
+                "locked": { "type": "boolean" },
+                "stale": { "type": "boolean" }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "id"],
+          "properties": {
+            "type": { "const": "node.patch" },
+            "id": { "type": "string", "minLength": 1, "maxLength": 240 },
+            "expectedRevision": { "$ref": "#/$defs/expectedRevision" },
+            "title": { "type": "string", "minLength": 1, "maxLength": 500 },
+            "approval": { "$ref": "#/$defs/approval" },
+            "metadataUpdates": {
+              "type": "object",
+              "additionalProperties": { "type": "string", "maxLength": 4000 }
+            },
+            "metadataRemovals": {
+              "type": "array",
+              "maxItems": 128,
+              "items": { "type": "string", "minLength": 1, "maxLength": 240 }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "id", "locked"],
+          "properties": {
+            "type": { "const": "node.lock" },
+            "id": { "type": "string", "minLength": 1, "maxLength": 240 },
+            "locked": { "type": "boolean" },
+            "expectedRevision": { "$ref": "#/$defs/expectedRevision" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "id"],
+          "properties": {
+            "type": { "const": "node.markFresh" },
+            "id": { "type": "string", "minLength": 1, "maxLength": 240 },
+            "expectedRevision": { "$ref": "#/$defs/expectedRevision" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "dependent", "dependency"],
+          "properties": {
+            "type": { "enum": ["dependency.add", "dependency.remove"] },
+            "dependent": { "type": "string", "minLength": 1, "maxLength": 240 },
+            "dependency": { "type": "string", "minLength": 1, "maxLength": 240 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "id"],
+          "properties": {
+            "type": { "const": "node.remove" },
+            "id": { "type": "string", "minLength": 1, "maxLength": 240 },
+            "expectedRevision": { "$ref": "#/$defs/expectedRevision" }
+          }
+        }
+      ]
+    },
     "base": {
       "type": "object",
       "required": ["id", "type"],
@@ -115,7 +216,7 @@
               "type": "array",
               "minItems": 1,
               "maxItems": 48,
-              "items": { "type": "object", "required": ["type"] }
+              "items": { "$ref": "#/$defs/command" }
             }
           }
         },
