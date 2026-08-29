@@ -13,21 +13,12 @@ const MAX_STATUS_BYTES = 256 * 1024;
 const MAX_PLAN_PROCESS_BYTES = 2 * 1024 * 1024;
 
 let activeRun = null;
+let activePlanChild = null;
 
 function providerCommand(provider) {
   if (provider === 'codex') return 'codex';
   if (provider === 'claude') return 'claude';
   throw new Error(`unsupported Director provider: ${provider}`);
-}
-
-function appendChunk(state, chunk, maximum, label, child) {
-  state.bytes += chunk.length;
-  if (state.bytes > maximum) {
-    state.error = new Error(`${label} exceeded ${maximum} byte output limit`);
-    terminateProcessTree(child);
-    return;
-  }
-  state.chunks.push(chunk);
 }
 
 function terminateProcessTree(child) {
@@ -47,12 +38,23 @@ function terminateProcessTree(child) {
   timer.unref();
 }
 
+function appendChunk(state, chunk, maximum, label, child) {
+  state.bytes += chunk.length;
+  if (state.bytes > maximum) {
+    state.error = new Error(`${label} exceeded ${maximum} byte output limit`);
+    terminateProcessTree(child);
+    return;
+  }
+  state.chunks.push(chunk);
+}
+
 function runBounded(command, args, {
   input = '',
   timeoutMs = STATUS_TIMEOUT_MS,
   maxOutputBytes = MAX_STATUS_BYTES,
   cwd = root,
   env = {},
+  trackPlanChild = false,
 } = {}) {
   return new Promise((resolvePromise, rejectPromise) => {
     const child = spawn(command, args, {
@@ -61,9 +63,28 @@ function runBounded(command, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, ...env },
     });
+    if (trackPlanChild) activePlanChild = child;
+
     const stdout = { chunks: [], bytes: 0, error: null };
     const stderr = { chunks: [], bytes: 0, error: null };
     let timedOut = false;
+    let settled = false;
+
+    const clearOwnership = () => {
+      if (activePlanChild === child) activePlanChild = null;
+    };
+    const finishReject = (error) => {
+      if (settled) return;
+      settled = true;
+      clearOwnership();
+      rejectPromise(error);
+    };
+    const finishResolve = (value) => {
+      if (settled) return;
+      settled = true;
+      clearOwnership();
+      resolvePromise(value);
+    };
 
     const timer = setTimeout(() => {
       timedOut = true;
@@ -75,16 +96,16 @@ function runBounded(command, args, {
     child.stderr.on('data', (chunk) => appendChunk(stderr, chunk, maxOutputBytes, 'provider stderr', child));
     child.on('error', (error) => {
       clearTimeout(timer);
-      rejectPromise(error);
+      finishReject(error);
     });
     child.on('close', (code, signal) => {
       clearTimeout(timer);
       const stdoutText = Buffer.concat(stdout.chunks).toString('utf8').trim();
       const stderrText = Buffer.concat(stderr.chunks).toString('utf8').trim();
-      if (stdout.error) return rejectPromise(stdout.error);
-      if (stderr.error) return rejectPromise(stderr.error);
-      if (timedOut) return rejectPromise(new Error(`provider process timed out after ${timeoutMs} ms`));
-      resolvePromise({ code: code ?? -1, signal, stdout: stdoutText, stderr: stderrText });
+      if (stdout.error) return finishReject(stdout.error);
+      if (stderr.error) return finishReject(stderr.error);
+      if (timedOut) return finishReject(new Error(`provider process timed out after ${timeoutMs} ms`));
+      finishResolve({ code: code ?? -1, signal, stdout: stdoutText, stderr: stderrText });
     });
 
     if (input) child.stdin.end(input);
@@ -101,28 +122,35 @@ async function helpText(command, args) {
   }
 }
 
+function safeStatusDetail({ installed, authenticated, capable }) {
+  if (!installed) return 'Official client not found on PATH';
+  if (!capable) return 'Official client is installed but must be updated for the required automation flags';
+  if (!authenticated) return 'Official client is installed and awaiting first-party sign-in';
+  return 'Official client is authenticated and ready for Make & Watch Director planning';
+}
+
 async function codexStatus() {
   const command = providerCommand('codex');
-  let version;
+  let version = '';
   try {
     const versionResult = await runBounded(command, ['--version']);
-    if (versionResult.code !== 0) throw new Error(versionResult.stderr || 'codex --version failed');
-    version = versionResult.stdout || versionResult.stderr;
-  } catch (error) {
+    if (versionResult.code !== 0) throw new Error('codex --version failed');
+    version = (versionResult.stdout || versionResult.stderr).slice(0, 160);
+  } catch {
     return {
-      provider: 'codex', installed: false, authenticated: false, authMethod: '', version: '',
-      capable: false, detail: error instanceof Error ? error.message : String(error),
+      provider: 'codex', installed: false, authenticated: false, authMethod: '', version: '', capable: false,
+      detail: safeStatusDetail({ installed: false, authenticated: false, capable: false }),
     };
   }
 
   const execHelp = await helpText(command, ['exec', '--help']);
   const capable = execHelp.includes('--output-schema')
     && execHelp.includes('--output-last-message')
-    && execHelp.includes('--sandbox');
+    && execHelp.includes('--sandbox')
+    && execHelp.includes('--ephemeral');
 
   let authenticated = false;
   let authMethod = '';
-  let detail = '';
   try {
     const status = await runBounded(command, ['login', 'status']);
     const text = `${status.stdout}\n${status.stderr}`.trim();
@@ -130,28 +158,27 @@ async function codexStatus() {
     if (/chatgpt/i.test(text)) authMethod = 'chatgpt';
     else if (/api key/i.test(text)) authMethod = 'api_key';
     else if (/agent identity/i.test(text)) authMethod = 'agent_identity';
-    detail = text;
-  } catch (error) {
-    detail = error instanceof Error ? error.message : String(error);
+  } catch {
+    authenticated = false;
   }
 
   return {
-    provider: 'codex', installed: true, authenticated, authMethod, version,
-    capable, detail,
+    provider: 'codex', installed: true, authenticated, authMethod, version, capable,
+    detail: safeStatusDetail({ installed: true, authenticated, capable }),
   };
 }
 
 async function claudeStatus() {
   const command = providerCommand('claude');
-  let version;
+  let version = '';
   try {
     const versionResult = await runBounded(command, ['--version']);
-    if (versionResult.code !== 0) throw new Error(versionResult.stderr || 'claude --version failed');
-    version = versionResult.stdout || versionResult.stderr;
-  } catch (error) {
+    if (versionResult.code !== 0) throw new Error('claude --version failed');
+    version = (versionResult.stdout || versionResult.stderr).slice(0, 160);
+  } catch {
     return {
-      provider: 'claude', installed: false, authenticated: false, authMethod: '', version: '',
-      capable: false, detail: error instanceof Error ? error.message : String(error),
+      provider: 'claude', installed: false, authenticated: false, authMethod: '', version: '', capable: false,
+      detail: safeStatusDetail({ installed: false, authenticated: false, capable: false }),
     };
   }
 
@@ -162,27 +189,25 @@ async function claudeStatus() {
 
   let authenticated = false;
   let authMethod = '';
-  let detail = '';
   try {
     const status = await runBounded(command, ['auth', 'status']);
     const text = `${status.stdout}\n${status.stderr}`.trim();
-    detail = text;
     try {
       const parsed = JSON.parse(status.stdout);
       authenticated = Boolean(parsed.loggedIn);
-      authMethod = String(parsed.authMethod ?? parsed.apiProvider ?? '');
+      authMethod = String(parsed.authMethod ?? parsed.apiProvider ?? '').slice(0, 80);
     } catch {
       authenticated = status.code === 0 && /logged.?in|claude\.ai|oauth/i.test(text) && !/logged.?out|not logged/i.test(text);
       if (/claude\.ai/i.test(text)) authMethod = 'claude.ai';
       else if (/oauth/i.test(text)) authMethod = 'oauth';
     }
-  } catch (error) {
-    detail = error instanceof Error ? error.message : String(error);
+  } catch {
+    authenticated = false;
   }
 
   return {
-    provider: 'claude', installed: true, authenticated, authMethod, version,
-    capable, detail,
+    provider: 'claude', installed: true, authenticated, authMethod, version, capable,
+    detail: safeStatusDetail({ installed: true, authenticated, capable }),
   };
 }
 
@@ -233,12 +258,14 @@ async function invokeCodex(prompt) {
       '--ephemeral',
       '--output-schema', planSchemaPath,
       '--output-last-message', outputPath,
+      '-',
     ];
     const result = await runBounded('codex', args, {
       input: prompt,
       timeoutMs: PLAN_TIMEOUT_MS,
       maxOutputBytes: MAX_PLAN_PROCESS_BYTES,
       env: { MAKEWATCH_DIRECTOR_MODE: '1' },
+      trackPlanChild: true,
     });
     if (result.code !== 0) {
       throw new Error(result.stderr || result.stdout || `Codex exited with code ${result.code}`);
@@ -261,6 +288,7 @@ async function invokeClaude(prompt) {
     timeoutMs: PLAN_TIMEOUT_MS,
     maxOutputBytes: MAX_PLAN_PROCESS_BYTES,
     env: { MAKEWATCH_DIRECTOR_MODE: '1' },
+    trackPlanChild: true,
   });
   if (result.code !== 0) {
     throw new Error(result.stderr || result.stdout || `Claude exited with code ${result.code}`);
@@ -299,8 +327,7 @@ export async function invokeDirectorPlan(provider, prompt) {
 }
 
 export function shutdownDirectorProviders() {
-  // Provider invocations are request-scoped children. The bounded runner owns
-  // their timeout/termination. No long-lived OAuth or provider daemon is owned
-  // by Make & Watch.
+  if (activePlanChild) terminateProcessTree(activePlanChild);
+  activePlanChild = null;
   activeRun = null;
 }
