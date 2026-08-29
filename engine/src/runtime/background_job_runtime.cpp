@@ -80,7 +80,13 @@ StartBackgroundJobResult BackgroundJobRuntime::start_one_ready() {
       continue;
     }
 
-    auto acquired = resources_.try_acquire_scoped(iterator->request.resources);
+    // Stage all queue-owned data before resource admission. If any copy allocates
+    // and throws, the queue remains untouched and no native resource is reserved.
+    BackgroundJobRequest staged_request = iterator->request;
+    const auto staged_sequence = iterator->sequence;
+    core::EntityId job_id = staged_request.job_id;
+
+    auto acquired = resources_.try_acquire_scoped(staged_request.resources);
     if (!acquired.ok()) {
       if (acquired.status.code == core::ErrorCode::kBusy ||
           acquired.status.code == core::ErrorCode::kResourceExhausted) {
@@ -89,17 +95,26 @@ StartBackgroundJobResult BackgroundJobRuntime::start_one_ready() {
       return StartBackgroundJobResult{acquired.status, std::nullopt};
     }
 
-    QueuedJob queued = std::move(*iterator);
-    queued_.erase(iterator);
-    const auto job_id = queued.request.job_id;
-    running_.emplace(
+    // Commit to running_ before erasing the queued source. If map allocation or
+    // value construction throws, the temporary/moved lease releases itself and
+    // the original queued request is still present for a later retry.
+    const auto [running_iterator, inserted] = running_.emplace(
         job_id.value(),
         RunningJob{
-            .request = std::move(queued.request),
-            .sequence = queued.sequence,
+            .request = std::move(staged_request),
+            .sequence = staged_sequence,
             .state = BackgroundJobState::kRunning,
             .lease = std::move(acquired.lease),
         });
+    static_cast<void>(running_iterator);
+    if (!inserted) {
+      return StartBackgroundJobResult{
+          core::Status::failure(core::ErrorCode::kAlreadyExists,
+                                "background job became active during admission"),
+          std::nullopt};
+    }
+
+    queued_.erase(iterator);
     ++started_total_;
     return StartBackgroundJobResult{core::Status::success(), job_id};
   }
