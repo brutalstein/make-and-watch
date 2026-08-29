@@ -1,6 +1,7 @@
 #include "worker_supervisor_impl.hpp"
 
 #include <algorithm>
+#include <exception>
 #include <utility>
 
 namespace makewatch::runtime {
@@ -24,11 +25,16 @@ core::Status WorkerSupervisor::Impl::begin_stop_locked(
     return core::Status::success();
   }
 
-  const auto status = worker.process->request_graceful_stop();
+  // A broken/closed stdin is not a reason to abandon cancellation. It only means
+  // the cooperative stop channel is unavailable, so advance immediately to the
+  // process-tree escalation path on the next lifecycle pass.
+  const auto graceful_status = worker.process->request_graceful_stop();
   worker.state = WorkerState::kStoppingGracefully;
-  worker.deadline = now + worker.spec.graceful_stop_timeout;
+  worker.deadline = graceful_status.ok()
+                        ? now + worker.spec.graceful_stop_timeout
+                        : now;
   ++graceful_stop_total;
-  return status;
+  return core::Status::success();
 }
 
 core::Status WorkerSupervisor::Impl::finalize_exited_locked(
@@ -79,21 +85,10 @@ core::Status WorkerSupervisor::Impl::advance_locked(
     auto& worker = iterator->second;
     const auto observation = worker.process->observe();
 
-    if (observation.tree_exited) {
-      auto current = iterator++;
-      aggregate = remember_error(
-          std::move(aggregate), finalize_exited_locked(current, observation, result));
-      continue;
-    }
-
-    // A leader exiting while descendants remain is not completion. The tree is
-    // drained before its resource lease can be released.
-    if (observation.leader_exited && !worker.requested_completion.has_value()) {
-      aggregate = remember_error(
-          std::move(aggregate),
-          begin_stop_locked(worker, BackgroundJobCompletion::kFailed, false, now));
-    }
-
+    // Drain startup protocol state before classifying a very short-lived worker.
+    // A valid worker may emit MW_READY_V1 and exit cleanly between two pump()
+    // calls; the captured readiness line must still make that a completed job
+    // rather than a false handshake failure.
     if (worker.state == WorkerState::kStarting) {
       if (const auto handshake_error = worker.capture->handshake_error();
           handshake_error.has_value()) {
@@ -129,16 +124,30 @@ core::Status WorkerSupervisor::Impl::advance_locked(
       }
     }
 
+    if (observation.tree_exited) {
+      auto current = iterator++;
+      aggregate = remember_error(
+          std::move(aggregate), finalize_exited_locked(current, observation, result));
+      continue;
+    }
+
+    // A leader exiting while descendants remain is not completion. The tree is
+    // drained before its resource lease can be released.
+    if (observation.leader_exited && !worker.requested_completion.has_value()) {
+      aggregate = remember_error(
+          std::move(aggregate),
+          begin_stop_locked(worker, BackgroundJobCompletion::kFailed, false, now));
+    }
+
     if (worker.state == WorkerState::kStoppingGracefully && now >= worker.deadline) {
       const auto status = worker.process->terminate_tree();
-      aggregate = remember_error(std::move(aggregate), status);
       worker.state = WorkerState::kTerminating;
-      worker.deadline = now + worker.spec.terminate_timeout;
+      worker.deadline = status.ok() ? now + worker.spec.terminate_timeout : now;
       ++terminate_escalation_total;
       ++result.escalated;
     } else if (worker.state == WorkerState::kTerminating && now >= worker.deadline) {
       const auto status = worker.process->hard_kill_tree();
-      aggregate = remember_error(std::move(aggregate), status);
+      static_cast<void>(status);
       worker.state = WorkerState::kKilling;
       worker.deadline = now + worker.spec.hard_kill_timeout;
       ++hard_kill_total;
@@ -213,6 +222,10 @@ WorkerPumpResult WorkerSupervisor::Impl::pump_locked(std::size_t max_launches) {
   const auto now = std::chrono::steady_clock::now();
   result.status = advance_locked(now, result);
 
+  // Lifecycle/accounting errors fail closed. Never admit fresh work in the same
+  // pump pass after discovering that an existing worker could not be reconciled.
+  if (!result.status.ok()) return result;
+
   for (std::size_t index = 0; index < max_launches; ++index) {
     const auto started = jobs.start_one_ready();
     if (!started.ok()) {
@@ -225,6 +238,7 @@ WorkerPumpResult WorkerSupervisor::Impl::pump_locked(std::size_t max_launches) {
     const auto status = launch_started_job_locked(*started.job_id, now);
     result.status = remember_error(std::move(result.status), status);
     if (status.ok()) ++result.launched;
+    if (!result.status.ok()) break;
   }
   return result;
 }
@@ -234,17 +248,24 @@ void WorkerSupervisor::Impl::emergency_drain_noexcept() noexcept {
   for (auto& [id, worker] : active) {
     static_cast<void>(id);
     const bool confirmed = worker.process->emergency_kill_and_wait();
-    if (!confirmed) continue;  // fail closed: retain native lease accounting
-
-    if (worker.shutdown_target) {
-      (void)jobs.confirm_shutdown_target_stopped(
-          worker.job_id,
-          worker.requested_completion.value_or(BackgroundJobCompletion::kFailed));
-    } else {
-      (void)jobs.finish(
-          worker.job_id,
-          worker.requested_completion.value_or(BackgroundJobCompletion::kFailed));
+    if (!confirmed) {
+      // Continuing object destruction would eventually destroy
+      // BackgroundJobRuntime and release a lease for a process tree whose exit
+      // was never confirmed. Fail-stop instead of manufacturing false-free
+      // resource capacity.
+      std::terminate();
     }
+
+    const auto status = worker.shutdown_target
+                            ? jobs.confirm_shutdown_target_stopped(
+                                  worker.job_id,
+                                  worker.requested_completion.value_or(
+                                      BackgroundJobCompletion::kFailed))
+                            : jobs.finish(
+                                  worker.job_id,
+                                  worker.requested_completion.value_or(
+                                      BackgroundJobCompletion::kFailed));
+    if (!status.ok()) std::terminate();
   }
   active.clear();
   pending.clear();
