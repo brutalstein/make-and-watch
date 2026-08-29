@@ -228,6 +228,7 @@ export function DirectorProviderDock() {
       .then(([providerResult, archiveResult]) => {
         if (!active) return;
         setConversationArchive(archiveResult.conversations);
+        initialConversationLoaded.current = true;
         const chatReady = providerResult.providers.find((provider) => provider.chatAvailable);
         if (chatReady) setSelectedProvider(chatReady.provider);
         const codex = providerResult.providers.find((provider) => provider.provider === 'codex');
@@ -237,8 +238,7 @@ export function DirectorProviderDock() {
             : chatReady?.detail ?? codex?.detail ?? 'Director provider status loaded.',
         );
         const latest = archiveResult.conversations[0];
-        if (latest && !initialConversationLoaded.current) {
-          initialConversationLoaded.current = true;
+        if (latest) {
           void engineClient.readDirectorConversation(latest.id).then((result) => {
             if (!active) return;
             const document = result.conversation;
@@ -250,6 +250,7 @@ export function DirectorProviderDock() {
         }
       })
       .catch((error) => {
+        initialConversationLoaded.current = true;
         if (active) setStatusMessage(error instanceof Error ? error.message : String(error));
       });
     return () => { active = false; };
@@ -491,18 +492,28 @@ export function DirectorProviderDock() {
     setArchiveBusy(true);
     try {
       const result = await engineClient.unarchiveDirectorConversation(summary.id);
-      setStatusMessage(result.providerWarning || 'Conversation restored to Recent.');
-      setShowArchived(false);
+      if (conversationId && conversationId !== summary.id) {
+        await engineClient.closeDirectorChat(selectedProvider, conversationId).catch(() => undefined);
+      }
+      const restoredResult = await engineClient.readDirectorConversation(summary.id);
+      const document = restoredResult.conversation;
       const active = await engineClient.directorConversations(false, 200);
       setConversationArchive(active.conversations);
-      const restored = active.conversations.find((item) => item.id === summary.id);
-      if (restored) await loadConversation(restored);
+      setShowArchived(false);
+      setConversationId(document.id);
+      setConversationTitle(document.title);
+      setSelectedProvider(document.provider);
+      setMessages(document.messages.slice(-MAX_VISIBLE_MESSAGES).map(archivedMessage));
+      setLastContext(null);
+      setComposer('');
+      setPendingText(null);
+      setStatusMessage(result.providerWarning || `Conversation restored · ${document.turnCount} turns · ${document.runtimeMode}`);
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : String(error));
     } finally {
       setArchiveBusy(false);
     }
-  }, [archiveBusy, chatBusy, loadConversation]);
+  }, [archiveBusy, chatBusy, conversationId, selectedProvider]);
 
   const deleteConversation = useCallback(async (summary: DirectorConversationSummary) => {
     if (chatBusy || archiveBusy) return;
