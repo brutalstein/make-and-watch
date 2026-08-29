@@ -1,6 +1,7 @@
 #include "makewatch/runtime/background_job_runtime.hpp"
 
 #include <algorithm>
+#include <iterator>
 #include <utility>
 
 namespace makewatch::runtime {
@@ -161,8 +162,6 @@ core::Status BackgroundJobRuntime::finish(
     count_completion_locked(completion);
   }
 
-  // Release only after the running record has transitioned out. The caller
-  // reaches this method only after actual worker completion/stop confirmation.
   return lease.release();
 }
 
