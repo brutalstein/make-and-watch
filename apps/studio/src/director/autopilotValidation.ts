@@ -2,7 +2,7 @@ import type { ProjectGraphSnapshot, ProjectCommand } from '@makewatch/contracts'
 
 import type { AutopilotPlan, AutopilotStep } from './autopilotTypes';
 
-const MAX_STEPS = 512;
+const MAX_STEPS = 128;
 const MAX_COMMANDS_PER_STEP = 48;
 const MAX_COORDINATE = 100_000;
 const MAX_WAIT_MS = 15_000;
@@ -44,9 +44,7 @@ export function validateAutopilotPlan(plan: AutopilotPlan, snapshot: ProjectGrap
     validateNodeStep(step, nodeIds, errors);
 
     if (step.type === 'dragNode') {
-      if (!Number.isFinite(step.to.x) || !Number.isFinite(step.to.y)) {
-        errors.push(`${step.id}: drag coordinates must be finite`);
-      }
+      if (!Number.isFinite(step.to.x) || !Number.isFinite(step.to.y)) errors.push(`${step.id}: drag coordinates must be finite`);
       if (Math.abs(step.to.x) > MAX_COORDINATE || Math.abs(step.to.y) > MAX_COORDINATE) {
         errors.push(`${step.id}: drag coordinates exceed workspace safety bounds`);
       }

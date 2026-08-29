@@ -6,16 +6,27 @@ export type DirectorProviderPolicy =
   | 'api_required'
   | 'experimental_local_client';
 
+export type DirectorProviderIntegration =
+  | 'codex_app_server'
+  | 'anthropic_api_required'
+  | 'claude_code_preview';
+
 export interface DirectorProviderStatus {
   provider: DirectorProviderId;
   policy: DirectorProviderPolicy;
+  integration: DirectorProviderIntegration;
   installed: boolean;
   authenticated: boolean;
   authMethod: string;
+  planType: string;
   version: string;
   capable: boolean;
+  loginAvailable: boolean;
+  planningAvailable: boolean;
+  loginPending: boolean;
   executableName: string;
-  discovery: '' | 'override' | 'path' | 'known-user-bin';
+  discovery: string;
+  capabilityIssues: string[];
   detail: string;
 }
 
@@ -28,6 +39,9 @@ export interface DirectorConnectResult {
   provider: DirectorProviderId;
   launched: boolean;
   command: string;
+  loginMode: 'browser' | 'cli' | 'none';
+  loginId: string | null;
+  authUrl: string | null;
   message: string;
 }
 

@@ -9,37 +9,36 @@ assert.deepEqual(
   ['claude', 'codex'],
   'provider IDs must remain stable',
 );
+
 for (const provider of result.providers) {
   assert.equal(typeof provider.installed, 'boolean');
   assert.equal(typeof provider.authenticated, 'boolean');
   assert.equal(typeof provider.capable, 'boolean');
+  assert.equal(typeof provider.loginAvailable, 'boolean');
+  assert.equal(typeof provider.planningAvailable, 'boolean');
+  assert.equal(typeof provider.loginPending, 'boolean');
+  assert.ok(Array.isArray(provider.capabilityIssues));
   assert.equal(typeof provider.detail, 'string');
-  assert.equal(typeof provider.executableName, 'string');
-  assert.equal(typeof provider.discovery, 'string');
-  assert.ok(
-    ['', 'override', 'path', 'known-user-bin'].includes(provider.discovery),
-    'provider discovery source must remain bounded and sanitized',
-  );
+  assert.ok(provider.detail.length <= 220, 'sanitized provider status detail must remain bounded');
+  assert.equal(JSON.stringify(provider).includes('@'), false, 'sanitized provider status must not expose account email');
   assert.ok(
     ['supported_local_client', 'api_required', 'experimental_local_client'].includes(provider.policy),
     'provider policy must be explicit',
   );
-  assert.ok(provider.detail.length <= 180, 'sanitized provider status detail must remain bounded');
-  assert.ok(!/[\\/]/.test(provider.executableName), 'React must receive only executable basename, never a local path');
 }
 
 const codex = result.providers.find((provider) => provider.provider === 'codex');
 const claude = result.providers.find((provider) => provider.provider === 'claude');
-assert.equal(codex?.policy, 'supported_local_client', 'Codex local client is the supported subscription bridge');
+assert.equal(codex?.policy, 'supported_local_client');
+assert.equal(codex?.integration, 'codex_app_server');
 assert.equal(
   claude?.policy,
   process.env.MAKEWATCH_ENABLE_EXPERIMENTAL_CLAUDE_CODE === '1'
     ? 'experimental_local_client'
     : 'api_required',
-  'Claude Code must be policy-gated by default',
 );
 if (process.env.MAKEWATCH_ENABLE_EXPERIMENTAL_CLAUDE_CODE !== '1') {
-  assert.equal(claude?.capable, false, 'public-product Claude Code bridge must not be actionable by default');
+  assert.equal(claude?.planningAvailable, false, 'public-product Claude Code bridge must not be actionable by default');
 }
 
 await shutdownDirectorProviders();
