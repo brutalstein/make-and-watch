@@ -147,6 +147,36 @@ export interface ApplyProjectResult {
   snapshot: ProjectGraphSnapshot;
 }
 
+export type SavedWorkflowKind = 'saved' | 'recovery';
+
+export interface SavedWorkflowSummary {
+  id: string;
+  kind: SavedWorkflowKind;
+  name: string;
+  description: string;
+  createdAt: string;
+  updatedAt: string;
+  sourceProjectRevision: number;
+  nodeCount: number;
+  dependencyCount: number;
+}
+
+export interface SavedWorkflowListResult {
+  workflows: SavedWorkflowSummary[];
+  issues: Array<{ file: string; message: string }>;
+}
+
+export interface WorkflowRestoreResult extends ApplyProjectResult {
+  recoveryWorkflow: SavedWorkflowSummary;
+  loadedWorkflow?: {
+    id: string;
+    kind: SavedWorkflowKind;
+    name: string;
+    description: string;
+    sourceProjectRevision: number;
+  };
+}
+
 export interface SystemTelemetry {
   platform: string;
   cpu: {
