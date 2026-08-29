@@ -6,6 +6,7 @@ const SCHEMA_VERSION = 1;
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
 const MAX_TITLE_CHARS = 120;
 const MAX_MESSAGE_CHARS = 40_000;
+const MAX_PROVIDER_THREAD_ID_CHARS = 512;
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const PROVIDERS = new Set(['codex', 'claude']);
 const RUNTIME_MODES = new Set(['app_server', 'exec_fallback', 'none']);
@@ -22,6 +23,15 @@ function validateId(value, label = 'conversation id') {
   const id = String(value ?? '');
   if (!ID_PATTERN.test(id)) throw new Error(`${label} is invalid`);
   return id;
+}
+
+function validateProviderThreadId(value) {
+  if (value === null || value === undefined) return null;
+  const token = String(value);
+  if (!token || token.length > MAX_PROVIDER_THREAD_ID_CHARS || /[\r\n\0]/.test(token)) {
+    throw new Error('provider thread id is invalid');
+  }
+  return token;
 }
 
 function isoNow() {
@@ -88,9 +98,7 @@ function validateDocument(value) {
   const createdAt = validateIso(value.createdAt, 'conversation createdAt');
   const updatedAt = validateIso(value.updatedAt, 'conversation updatedAt');
   const archivedAt = value.archivedAt === null ? null : validateIso(value.archivedAt, 'conversation archivedAt');
-  const providerThreadId = value.providerThreadId === null
-    ? null
-    : validateId(value.providerThreadId, 'provider thread id');
+  const providerThreadId = validateProviderThreadId(value.providerThreadId);
   const turnCount = Number(value.turnCount ?? 0);
   if (!Number.isSafeInteger(turnCount) || turnCount < 0) throw new Error('conversation turnCount is invalid');
   const lastProjectRevision = value.lastProjectRevision === null || value.lastProjectRevision === undefined
@@ -239,12 +247,11 @@ export class ConversationStore {
 
   async appendTurn(id, { userText, assistantText, projectRevision = null, runtimeMode, providerThreadId }) {
     const document = await this.mutate(id, (current) => {
-      const now = isoNow();
       current.messages.push(validateMessage({
         id: randomUUID(),
         role: 'user',
         text: userText,
-        createdAt: now,
+        createdAt: isoNow(),
         projectRevision,
       }));
       current.messages.push(validateMessage({
