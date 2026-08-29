@@ -8,8 +8,6 @@ const CHAT_TURN_TIMEOUT_MS = 120_000;
 const TURN_START_TIMEOUT_MS = 20_000;
 const INTERRUPT_TIMEOUT_MS = 2_500;
 const THREAD_TIMEOUT_MS = 10_000;
-const THREAD_READ_ONLY_SANDBOX = 'read-only';
-const TURN_READ_ONLY_SANDBOX = 'readOnly';
 
 function safeText(value, fallback = 'Codex Director chat failed') {
   const text = String(value ?? '').trim();
@@ -28,7 +26,7 @@ export class CodexChatSession {
     const result = await this.client.request('thread/start', {
       cwd: directorRuntimeRoot,
       approvalPolicy: 'never',
-      sandbox: THREAD_READ_ONLY_SANDBOX,
+      ...this.client.readOnlyThreadSecurityParams(),
       ephemeral: true,
       serviceName: 'make_and_watch_director_chat',
     }, 15_000);
@@ -49,6 +47,9 @@ export class CodexChatSession {
       resolveCompletion = resolvePromise;
       rejectCompletion = rejectPromise;
     });
+    // turn/start can fail before completion is awaited. Keep a rejection observer
+    // attached so local request failure cannot become a process-level unhandled rejection.
+    void completion.catch(() => undefined);
     const turn = { threadId, turnId: null, finalText: '', settled: false, resolve: resolveCompletion, reject: rejectCompletion, completion, timer: null };
 
     const finish = (error, text = '') => {
@@ -100,14 +101,7 @@ export class CodexChatSession {
         input: [{ type: 'text', text: prompt }],
         cwd: directorRuntimeRoot,
         approvalPolicy: 'never',
-        sandboxPolicy: {
-          type: TURN_READ_ONLY_SANDBOX,
-          access: {
-            type: 'restricted',
-            includePlatformDefaults: true,
-            readableRoots: [directorRuntimeRoot],
-          },
-        },
+        ...this.client.readOnlyTurnSecurityParams(),
         effort: 'medium',
         summary: 'concise',
       }, TURN_START_TIMEOUT_MS);
