@@ -12,15 +12,17 @@ This folder is the canonical context handoff for **Make & Watch**. A new enginee
 6. `IPC_AND_SESSION.md` — native application transaction boundary and Studio IPC.
 7. `WORKSPACE_LAYOUT.md` — draggable workflow presentation-state boundary.
 8. `AUTOPILOT.md` — exact virtual-pointer pick-and-place protocol, typed takeover, interaction ownership, and safety boundaries.
-9. `RUNTIME_FOUNDATION.md` — native resource admission and lifecycle safety layer.
-10. `BACKGROUND_JOBS.md` — bounded job ownership, cancellation, and deterministic one-at-a-time shutdown contract.
-11. `AUTH_AND_AI_DIRECTOR.md` — supported Claude/Codex integration boundary.
-12. `INVARIANTS.md` — rules that must remain true as the repository grows.
-13. `DECISIONS.md` — architecture decisions already made.
-14. `QUALITY_GATES.md` — objective standards behind the quality target.
-15. `ROADMAP.md` — milestone sequence.
-16. `VALIDATION.md` — tests and environments that were actually executed.
-17. `HANDOFF.md` — current continuation point and live product-machine gate.
+9. `AI_DIRECTOR_CONTEXT.md` — compact stable creative-Director policy.
+10. `DIRECTOR_PROVIDERS.md` — first-party Codex/Claude auth, process and context-budget boundary.
+11. `AUTH_AND_AI_DIRECTOR.md` — authentication invariants and provider authority.
+12. `RUNTIME_FOUNDATION.md` — native resource admission and lifecycle safety layer.
+13. `BACKGROUND_JOBS.md` — bounded job ownership, cancellation, and deterministic one-at-a-time shutdown contract.
+14. `INVARIANTS.md` — rules that must remain true as the repository grows.
+15. `DECISIONS.md` — architecture decisions already made.
+16. `QUALITY_GATES.md` — objective standards behind the quality target.
+17. `ROADMAP.md` — milestone sequence.
+18. `VALIDATION.md` — tests and environments that were actually executed.
+19. `HANDOFF.md` — current continuation point and live product-machine gate.
 
 ## One-sentence product definition
 
@@ -28,11 +30,13 @@ Make & Watch is a local-first desktop series-production studio where a user dire
 
 ## Current stage
 
-**Foundation v1 / Interactive Native Studio + exact Autopilot pointer + bounded background lifecycle.** The repository has a transactional C++ project graph, SQLite schema-v2 snapshot/journal persistence, guarded resource admission, bounded background-job ownership, versioned native IPC, a persist-before-live-commit application session, interactive Studio, and a typed Autopilot executor whose visible pointer finds, grabs and places displaced workflow nodes one-by-one.
+**Foundation v1 / Interactive Native Studio + exact Autopilot pointer + first-party Director link + bounded background lifecycle.** The repository has a transactional C++ project graph, SQLite schema-v2 snapshot/journal persistence, guarded resource admission, bounded background-job ownership, versioned native IPC, a persist-before-live-commit application session, interactive Studio, and a typed Autopilot executor whose visible pointer finds, grabs and places displaced workflow nodes one-by-one while the viewport tracks the held node/cursor.
 
-The current AI Workspace Drive is deliberately deterministic and Assist-only; it proves the execution/interaction system without pretending Claude/Codex authentication is already connected. No heavyweight image/video/voice model is a hard dependency yet. The background runtime owns lifecycle/resource accounting but does not launch provider workers yet; concrete WorkerSupervisor is the next native runtime layer.
+Codex and Claude Code now have a local first-party-client connection boundary: Make & Watch probes official CLI/auth capability, launches official login without owning OAuth tokens, compiles a bounded project-specific context pack, and requests schema-constrained Assist plans. Authenticated provider planning still requires a fresh Windows product-machine validation because CI does not contain the user's first-party subscription session.
 
-Provider authentication, worker processes and model execution must build on these validated boundaries rather than bypassing them.
+No heavyweight image/video/voice model is a hard dependency yet. The background runtime owns lifecycle/resource accounting but does not launch provider workers yet; concrete WorkerSupervisor remains the next native runtime layer.
+
+Provider planning, worker processes and model execution must build on these validated boundaries rather than bypassing them.
 
 ## Public-repository warning
 
