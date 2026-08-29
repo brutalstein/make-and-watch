@@ -193,3 +193,5 @@ export interface SystemTelemetry {
     temperatureC: number;
   };
 }
+
+export * from './nodeCapabilities';
