@@ -7,10 +7,13 @@ import {
   ExternalLink,
   KeyRound,
   LoaderCircle,
+  MessageSquareText,
+  Plus,
   RefreshCw,
   Send,
   ShieldCheck,
   Sparkles,
+  WandSparkles,
 } from 'lucide-react';
 
 import { engineClient } from '../engineClient';
@@ -20,73 +23,69 @@ import type { DirectorContextStats, DirectorProviderId, DirectorProviderStatus }
 
 const LOGIN_POLL_INTERVAL_MS = 1_000;
 const LOGIN_POLL_ATTEMPTS = 120;
+const MAX_VISIBLE_MESSAGES = 80;
+
+interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  text: string;
+  meta?: string;
+}
 
 function providerLabel(provider: DirectorProviderId) {
   return provider === 'codex' ? 'Codex' : 'Claude';
 }
 
-function statusClass(status: DirectorProviderStatus) {
-  if (status.policy === 'api_required') return 'director-link__provider--policy';
-  if (!status.installed) return 'director-link__provider--missing';
-  if (!status.capable) return 'director-link__provider--update';
-  if (status.loginPending) return 'director-link__provider--connecting';
-  if (!status.authenticated) return 'director-link__provider--auth';
-  return 'director-link__provider--ready';
-}
-
 function statusLabel(status: DirectorProviderStatus | undefined) {
-  if (!status) return 'checking…';
-  if (status.policy === 'api_required') return status.installed ? 'CLI detected · API required' : 'API required';
-  if (!status.installed) return 'not detected';
-  if (!status.capable) return 'detected · update required';
+  if (!status) return 'Checking…';
+  if (status.policy === 'api_required') return status.installed ? 'CLI detected · API provider required' : 'API provider required';
+  if (!status.installed) return 'Not detected';
+  if (!status.capable) return 'Update required';
   if (status.loginPending) return 'ChatGPT sign-in pending';
-  if (status.planningAvailable) return status.planType ? `ChatGPT · ${status.planType}` : 'ChatGPT connected';
-  if (status.loginAvailable) return 'connect ChatGPT';
-  return status.authMethod || 'not ready';
-}
-
-function discoveryLabel(status: DirectorProviderStatus) {
-  if (!status.executableName) return 'No local executable resolved';
-  const source = status.discovery === 'known-user-bin'
-    ? 'user CLI directory'
-    : status.discovery === 'override'
-      ? 'explicit override'
-      : 'PATH';
-  return `${status.executableName} · ${source}${status.version ? ` · ${status.version}` : ''}`;
-}
-
-function Stage({ label, active }: { label: string; active: boolean }) {
-  return <span className={`director-link__stage ${active ? 'director-link__stage--active' : ''}`}>{label}</span>;
+  if (status.chatAvailable) return status.planType ? `ChatGPT · ${status.planType}` : 'ChatGPT connected';
+  if (status.loginAvailable) return 'Connect ChatGPT';
+  return status.detail;
 }
 
 function delay(ms: number) {
   return new Promise<void>((resolvePromise) => window.setTimeout(resolvePromise, ms));
 }
 
+function makeMessage(role: ChatMessage['role'], text: string, meta?: string): ChatMessage {
+  return {
+    id: `${role}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    role,
+    text,
+    meta,
+  };
+}
+
 export function DirectorProviderDock() {
   const [mountTarget, setMountTarget] = useState<HTMLElement | null>(null);
   const [providers, setProviders] = useState<DirectorProviderStatus[]>([]);
   const [selectedProvider, setSelectedProvider] = useState<DirectorProviderId>('codex');
-  const [objective, setObjective] = useState('Review the current workflow and propose the smallest useful visual organization pass.');
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [composer, setComposer] = useState('');
+  const [messages, setMessages] = useState<ChatMessage[]>([
+    makeMessage('system', 'Connect a Director, then talk naturally about your series, episodes, characters, shots, continuity, or production choices. Chat can discuss the project but cannot silently mutate native project state.'),
+  ]);
   const [loading, setLoading] = useState(false);
   const [connectingProvider, setConnectingProvider] = useState<DirectorProviderId | null>(null);
   const [pendingAuthUrl, setPendingAuthUrl] = useState<string | null>(null);
-  const [message, setMessage] = useState('Checking Director providers…');
-  const [contextStats, setContextStats] = useState<DirectorContextStats | null>(null);
-  const [planSummary, setPlanSummary] = useState<string | null>(null);
+  const [statusMessage, setStatusMessage] = useState('Checking Director providers…');
+  const [lastContext, setLastContext] = useState<DirectorContextStats | null>(null);
   const pollGeneration = useRef(0);
+  const bottomRef = useRef<HTMLDivElement | null>(null);
 
   useLayoutEffect(() => {
-    const history = document.querySelector<HTMLElement>('.director-panel .chat-history');
-    if (!history) return undefined;
+    const workspace = document.querySelector<HTMLElement>('.workspace');
+    const canvas = workspace?.querySelector<HTMLElement>('.canvas-panel');
+    if (!workspace || !canvas) return undefined;
 
-    const slot = document.createElement('div');
-    slot.className = 'director-provider-slot';
-    slot.dataset.makewatchDirectorProvider = 'true';
-    const autopilotCard = history.querySelector<HTMLElement>('.autopilot-card');
-    if (autopilotCard?.nextSibling) history.insertBefore(slot, autopilotCard.nextSibling);
-    else if (autopilotCard) autopilotCard.after(slot);
-    else history.prepend(slot);
+    const slot = document.createElement('aside');
+    slot.className = 'director-chat-panel';
+    slot.dataset.makewatchDirectorChat = 'true';
+    workspace.insertBefore(slot, canvas);
     setMountTarget(slot);
 
     return () => {
@@ -94,6 +93,10 @@ export function DirectorProviderDock() {
       slot.remove();
     };
   }, []);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' });
+  }, [messages, loading]);
 
   const refresh = useCallback(async () => {
     const result = await engineClient.directorProviders();
@@ -106,15 +109,17 @@ export function DirectorProviderDock() {
     void refresh()
       .then((result) => {
         if (!active) return;
-        const ready = result.providers.find((provider) => provider.planningAvailable);
-        if (ready) setSelectedProvider(ready.provider);
+        const chatReady = result.providers.find((provider) => provider.chatAvailable);
+        if (chatReady) setSelectedProvider(chatReady.provider);
         const codex = result.providers.find((provider) => provider.provider === 'codex');
-        setMessage(result.activeProviderRun
-          ? `${providerLabel(result.activeProviderRun)} is planning…`
-          : ready?.detail ?? codex?.detail ?? 'Director provider status loaded.');
+        setStatusMessage(
+          result.activeProviderRun
+            ? `${providerLabel(result.activeProviderRun)} is working…`
+            : chatReady?.detail ?? codex?.detail ?? 'Director provider status loaded.',
+        );
       })
       .catch((error) => {
-        if (active) setMessage(error instanceof Error ? error.message : String(error));
+        if (active) setStatusMessage(error instanceof Error ? error.message : String(error));
       });
     return () => { active = false; };
   }, [refresh]);
@@ -124,45 +129,54 @@ export function DirectorProviderDock() {
     [providers, selectedProvider],
   );
 
-  const selectProvider = useCallback((providerId: DirectorProviderId) => {
+  const selectProvider = useCallback(async (providerId: DirectorProviderId) => {
+    if (providerId === selectedProvider) return;
+    if (conversationId) {
+      try {
+        await engineClient.closeDirectorChat(selectedProvider, conversationId);
+      } catch {
+        // Provider session cleanup is best-effort during a manual provider switch.
+      }
+    }
+    setConversationId(null);
+    setMessages([makeMessage('system', `Switched to ${providerLabel(providerId)}. Start a new Director conversation when this provider is ready.`)]);
+    setLastContext(null);
     setSelectedProvider(providerId);
-    setContextStats(null);
-    setPlanSummary(null);
     setPendingAuthUrl(null);
     const status = providers.find((provider) => provider.provider === providerId);
-    setMessage(status?.detail ?? `Checking ${providerLabel(providerId)}…`);
-  }, [providers]);
+    setStatusMessage(status?.detail ?? `Checking ${providerLabel(providerId)}…`);
+  }, [conversationId, providers, selectedProvider]);
 
   const pollLogin = useCallback(async (provider: DirectorProviderId, generation: number) => {
     for (let attempt = 0; attempt < LOGIN_POLL_ATTEMPTS; attempt += 1) {
       await delay(LOGIN_POLL_INTERVAL_MS);
       if (pollGeneration.current !== generation) return;
-
       try {
         const result = await refresh();
         const status = result.providers.find((candidate) => candidate.provider === provider);
         if (!status) continue;
-        if (status.planningAvailable) {
+        if (status.chatAvailable) {
           setConnectingProvider(null);
           setPendingAuthUrl(null);
-          setMessage(`${providerLabel(provider)} connected${status.planType ? ` · ${status.planType}` : ''}. Director planning is ready.`);
+          setStatusMessage(`${providerLabel(provider)} connected${status.planType ? ` · ${status.planType}` : ''}. Director chat is ready.`);
+          setMessages((current) => [...current, makeMessage('system', `${providerLabel(provider)} is connected. You can message the Director now.`)].slice(-MAX_VISIBLE_MESSAGES));
           return;
         }
         if (attempt > 3 && !status.loginPending) {
           setConnectingProvider(null);
-          setMessage('Sign-in did not complete. You can retry the official connection without reinstalling the CLI.');
+          setStatusMessage('Sign-in did not complete. Retry the official connection when ready.');
           return;
         }
       } catch (error) {
         if (attempt === LOGIN_POLL_ATTEMPTS - 1) {
           setConnectingProvider(null);
-          setMessage(error instanceof Error ? error.message : String(error));
+          setStatusMessage(error instanceof Error ? error.message : String(error));
         }
       }
     }
     if (pollGeneration.current === generation) {
       setConnectingProvider(null);
-      setMessage('Sign-in timed out locally. The Codex CLI remains installed; retry Connect when ready.');
+      setStatusMessage('Sign-in timed out locally. Retry Connect when ready.');
     }
   }, [refresh]);
 
@@ -172,8 +186,6 @@ export function DirectorProviderDock() {
     setLoading(true);
     setConnectingProvider(provider);
     setSelectedProvider(provider);
-    setPlanSummary(null);
-    setContextStats(null);
 
     const popup = provider === 'codex'
       ? window.open('about:blank', 'makewatch-codex-login', 'popup,width=760,height=840')
@@ -182,48 +194,89 @@ export function DirectorProviderDock() {
 
     try {
       const result = await engineClient.connectDirector(provider);
-      setMessage(result.message);
+      setStatusMessage(result.message);
       setPendingAuthUrl(result.authUrl);
-
       if (result.authUrl) {
         if (popup) popup.location.replace(result.authUrl);
         else window.open(result.authUrl, '_blank', 'noopener,noreferrer');
       } else {
         popup?.close();
       }
-
       if (!result.launched) {
         setConnectingProvider(null);
         await refresh();
         return;
       }
-
       void pollLogin(provider, generation);
     } catch (error) {
       popup?.close();
       setConnectingProvider(null);
-      setMessage(error instanceof Error ? error.message : String(error));
+      setStatusMessage(error instanceof Error ? error.message : String(error));
     } finally {
       setLoading(false);
     }
   }, [pollLogin, refresh]);
 
-  const plan = useCallback(async () => {
-    if (!selectedStatus?.planningAvailable || !objective.trim()) return;
+  const sendChat = useCallback(async () => {
+    const text = composer.trim();
+    if (!text || !selectedStatus?.chatAvailable || loading) return;
+    setComposer('');
+    setMessages((current) => [...current, makeMessage('user', text)].slice(-MAX_VISIBLE_MESSAGES));
+    setLoading(true);
+    try {
+      const result = await engineClient.directorChat({
+        provider: selectedProvider,
+        conversationId,
+        message: text,
+        selectedId: null,
+      });
+      setConversationId(result.conversationId);
+      setLastContext(result.context);
+      setMessages((current) => [
+        ...current,
+        makeMessage(
+          'assistant',
+          result.reply,
+          `${providerLabel(result.provider)} · turn ${result.turnCount} · native rev ${result.projectRevision}`,
+        ),
+      ].slice(-MAX_VISIBLE_MESSAGES));
+      setStatusMessage(`Conversation active · turn ${result.turnCount}`);
+    } catch (error) {
+      setMessages((current) => [...current, makeMessage('system', error instanceof Error ? error.message : String(error))].slice(-MAX_VISIBLE_MESSAGES));
+      setStatusMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLoading(false);
+    }
+  }, [composer, conversationId, loading, selectedProvider, selectedStatus]);
+
+  const newConversation = useCallback(async () => {
+    if (conversationId) {
+      try {
+        await engineClient.closeDirectorChat(selectedProvider, conversationId);
+      } catch (error) {
+        setStatusMessage(error instanceof Error ? error.message : String(error));
+      }
+    }
+    setConversationId(null);
+    setComposer('');
+    setLastContext(null);
+    setMessages([makeMessage('system', `New ${providerLabel(selectedProvider)} Director conversation. Native project state has not changed.`)]);
+  }, [conversationId, selectedProvider]);
+
+  const createAssistPlan = useCallback(async () => {
+    const objective = composer.trim();
+    if (!objective || !selectedStatus?.planningAvailable || loading) return;
     if (document.querySelector('.studio-shell--autopilot')) {
-      setMessage('Return control from the current Autopilot pass before asking a provider for a new plan.');
+      setStatusMessage('Return control from the current Autopilot pass before asking for a new plan.');
       return;
     }
-
     setLoading(true);
-    setContextStats(null);
-    setPlanSummary(null);
     try {
       const before = await engineClient.snapshot();
       const workspacePositions = resolveWorkflowPositions(before, workflowProjectKey(before));
       const result = await engineClient.directorPlan({
         provider: selectedProvider,
-        objective: objective.trim(),
+        objective,
         mode: 'assist',
         selectedId: null,
         workspacePositions,
@@ -231,127 +284,140 @@ export function DirectorProviderDock() {
       const liveSnapshot = await engineClient.snapshot();
       const validation = validateAutopilotPlan(result.plan, liveSnapshot);
       if (!validation.ok) throw new Error(`Provider plan rejected: ${validation.errors.join(' · ')}`);
-      if (result.plan.mode !== 'assist') throw new Error('Connection-phase Director plan must remain Assist-only');
-
-      setContextStats(result.context);
-      setPlanSummary(`${providerLabel(selectedProvider)} · ${result.plan.steps.length} validated steps · “${result.plan.title}”`);
-      setMessage('Plan validated against the live native revision. Semantic project state was not changed.');
+      if (result.plan.mode !== 'assist') throw new Error('Studio preview plan must remain Assist-only');
+      setLastContext(result.context);
+      setMessages((current) => [
+        ...current,
+        makeMessage(
+          'system',
+          `Validated Assist plan: “${result.plan.title}” · ${result.plan.steps.length} typed steps. No semantic project mutation was applied.`,
+          `${providerLabel(selectedProvider)} plan preview`,
+        ),
+      ].slice(-MAX_VISIBLE_MESSAGES));
+      setStatusMessage('Assist plan validated against the live native revision.');
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
+      setStatusMessage(error instanceof Error ? error.message : String(error));
     } finally {
       setLoading(false);
     }
-  }, [objective, selectedProvider, selectedStatus]);
+  }, [composer, loading, selectedProvider, selectedStatus]);
 
   if (!mountTarget) return null;
 
   const content = (
-    <section className="director-link" aria-label="AI Director provider connection">
-      <div className="director-link__head">
-        <span className="director-link__orb"><Bot size={14} /></span>
-        <div>
-          <strong>DIRECTOR LINK</strong>
-          <small>provider session · bounded project context</small>
+    <section className="director-chat" aria-label="AI Director chat">
+      <header className="director-chat__header">
+        <div className="director-chat__identity">
+          <span className="director-chat__orb"><WandSparkles size={18} /></span>
+          <div>
+            <span className="director-chat__eyebrow">AI DIRECTOR</span>
+            <strong>Director Chat</strong>
+            <small>Long-form creative conversation · native state protected</small>
+          </div>
         </div>
-        <button className="director-link__refresh" onClick={() => void refresh()} disabled={loading} title="Refresh provider status">
-          <RefreshCw size={12} className={loading ? 'spin' : ''} />
-        </button>
-      </div>
+        <div className="director-chat__header-actions">
+          <button onClick={() => void refresh()} disabled={loading} title="Refresh provider status"><RefreshCw size={15} /></button>
+          <button onClick={() => void newConversation()} disabled={loading} title="New Director conversation"><Plus size={16} /></button>
+        </div>
+      </header>
 
-      <div className="director-link__providers">
+      <div className="director-chat__providers">
         {(['codex', 'claude'] as const).map((providerId) => {
           const status = providers.find((candidate) => candidate.provider === providerId);
-          const ready = Boolean(status?.planningAvailable);
+          const selected = selectedProvider === providerId;
           const connecting = connectingProvider === providerId || Boolean(status?.loginPending);
+          const ready = Boolean(status?.chatAvailable);
           return (
             <button
               key={providerId}
-              className={`director-link__provider ${status ? statusClass(status) : ''} ${selectedProvider === providerId ? 'director-link__provider--selected' : ''}`}
-              onClick={() => selectProvider(providerId)}
+              className={`director-chat__provider ${selected ? 'director-chat__provider--selected' : ''} ${ready ? 'director-chat__provider--ready' : ''}`}
+              onClick={() => void selectProvider(providerId)}
               disabled={loading}
-              title={status?.detail}
             >
-              <span>{connecting ? <LoaderCircle size={12} className="spin" /> : ready ? <Check size={12} /> : <KeyRound size={12} />}</span>
-              <div>
+              <span className="director-chat__provider-icon">
+                {connecting ? <LoaderCircle size={15} className="spin" /> : ready ? <Check size={15} /> : <KeyRound size={15} />}
+              </span>
+              <span>
                 <strong>{providerLabel(providerId)}</strong>
                 <small>{statusLabel(status)}</small>
-              </div>
+              </span>
             </button>
           );
         })}
       </div>
 
-      {selectedStatus ? (
-        <div className="director-link__status">
-          <div className="director-link__stages" aria-label={`${providerLabel(selectedStatus.provider)} readiness`}>
-            <Stage label="CLI" active={selectedStatus.installed} />
-            <Stage label={selectedStatus.provider === 'codex' ? 'APP SERVER' : 'POLICY'} active={selectedStatus.capable || selectedStatus.policy === 'api_required'} />
-            <Stage label="ACCOUNT" active={selectedStatus.authenticated} />
-            <Stage label="PLAN" active={selectedStatus.planningAvailable} />
-          </div>
-          <div className="director-link__diagnostic">
-            <code>{discoveryLabel(selectedStatus)}</code>
-            <small>{selectedStatus.detail}</small>
-          </div>
-          {selectedStatus.capabilityIssues.map((issue) => (
-            <div className="director-link__issue" key={issue}><CircleAlert size={10} /> {issue}</div>
-          ))}
-        </div>
-      ) : null}
-
-      {selectedStatus?.loginAvailable && !selectedStatus.authenticated ? (
-        <button
-          className="director-link__connect"
-          onClick={() => void connect(selectedProvider)}
-          disabled={loading || connectingProvider !== null}
-        >
-          <ExternalLink size={12} />
-          {connectingProvider === selectedProvider ? 'Waiting for ChatGPT…' : `Connect ${providerLabel(selectedProvider)} officially`}
-        </button>
-      ) : null}
-
-      {pendingAuthUrl && connectingProvider === 'codex' ? (
-        <a className="director-link__auth-link" href={pendingAuthUrl} target="_blank" rel="noreferrer">
-          <ExternalLink size={10} /> Reopen ChatGPT sign-in
-        </a>
-      ) : null}
-
-      {selectedStatus?.policy === 'api_required' ? (
-        <div className="director-link__policy">
-          <ShieldCheck size={11} />
-          <span>Claude Code is detected, but its subscription login is not routed through the public product. Claude production support will use a supported Anthropic API/Console provider.</span>
-        </div>
-      ) : null}
-
-      {selectedStatus?.planningAvailable ? (
-        <div className="director-link__objective">
-          <textarea
-            value={objective}
-            onChange={(event) => setObjective(event.target.value.slice(0, 4000))}
-            rows={3}
-            disabled={loading}
-            aria-label="AI Director objective"
-          />
-          <button
-            onClick={() => void plan()}
-            disabled={loading || !objective.trim()}
-            title="Generate and validate an Assist-mode plan"
-          >
-            {loading ? <RefreshCw size={13} className="spin" /> : <Send size={13} />}
+      <div className="director-chat__connection">
+        {selectedStatus?.loginAvailable && !selectedStatus.authenticated ? (
+          <button className="director-chat__connect" onClick={() => void connect(selectedProvider)} disabled={loading || connectingProvider !== null}>
+            <ExternalLink size={14} /> {connectingProvider === selectedProvider ? 'Waiting for sign-in…' : `Connect ${providerLabel(selectedProvider)}`}
           </button>
-        </div>
-      ) : null}
+        ) : null}
+        {pendingAuthUrl && connectingProvider === 'codex' ? (
+          <a href={pendingAuthUrl} target="_blank" rel="noreferrer"><ExternalLink size={12} /> Reopen ChatGPT sign-in</a>
+        ) : null}
+        {selectedStatus?.policy === 'api_required' ? (
+          <div className="director-chat__policy"><ShieldCheck size={14} /><span>Claude CLI can be detected, but public-product Claude chat requires a supported Anthropic API/Console provider. Subscription routing is not faked.</span></div>
+        ) : null}
+        {selectedStatus?.capabilityIssues.map((issue) => (
+          <div className="director-chat__issue" key={issue}><CircleAlert size={13} /> {issue}</div>
+        ))}
+        <p>{statusMessage}</p>
+      </div>
 
-      {contextStats ? (
-        <div className="director-link__stats">
-          <span><Sparkles size={10} /> ~{contextStats.estimatedTokens.toLocaleString()} ctx</span>
-          <span>{contextStats.nodeCountIncluded} nodes</span>
-          <span>{contextStats.dependencyCountIncluded} edges</span>
-        </div>
-      ) : null}
+      <div className="director-chat__messages" aria-live="polite">
+        {messages.map((message) => (
+          <article key={message.id} className={`director-chat__message director-chat__message--${message.role}`}>
+            <div className="director-chat__message-label">
+              {message.role === 'assistant' ? <Bot size={14} /> : message.role === 'user' ? <MessageSquareText size={14} /> : <Sparkles size={14} />}
+              <span>{message.role === 'assistant' ? providerLabel(selectedProvider) : message.role === 'user' ? 'You' : 'Studio'}</span>
+            </div>
+            <p>{message.text}</p>
+            {message.meta ? <small>{message.meta}</small> : null}
+          </article>
+        ))}
+        {loading ? (
+          <article className="director-chat__message director-chat__message--assistant director-chat__message--loading">
+            <div className="director-chat__message-label"><LoaderCircle size={14} className="spin" /><span>{providerLabel(selectedProvider)}</span></div>
+            <p>Thinking with the current series context…</p>
+          </article>
+        ) : null}
+        <div ref={bottomRef} />
+      </div>
 
-      {planSummary ? <div className="director-link__plan"><ShieldCheck size={11} /> {planSummary}</div> : null}
-      <p className="director-link__message">{message}</p>
+      <footer className="director-chat__composer">
+        {lastContext ? (
+          <div className="director-chat__context-line">
+            <span>~{lastContext.estimatedTokens.toLocaleString()} ctx</span>
+            <span>{lastContext.nodeCountIncluded} nodes</span>
+            <span>{lastContext.dependencyCountIncluded} edges</span>
+          </div>
+        ) : null}
+        <textarea
+          value={composer}
+          onChange={(event) => setComposer(event.target.value.slice(0, 6000))}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+              event.preventDefault();
+              void sendChat();
+            }
+          }}
+          placeholder={selectedStatus?.chatAvailable ? 'Talk to your Director about the series…' : 'Connect a supported Director to start chatting…'}
+          disabled={loading || !selectedStatus?.chatAvailable}
+          rows={4}
+          aria-label="Message the AI Director"
+        />
+        <div className="director-chat__composer-actions">
+          <span>Enter to send · Shift+Enter for a new line</span>
+          <div>
+            <button className="director-chat__plan-button" onClick={() => void createAssistPlan()} disabled={loading || !composer.trim() || !selectedStatus?.planningAvailable}>
+              <Sparkles size={14} /> Preview plan
+            </button>
+            <button className="director-chat__send-button" onClick={() => void sendChat()} disabled={loading || !composer.trim() || !selectedStatus?.chatAvailable}>
+              <Send size={16} /> Send
+            </button>
+          </div>
+        </div>
+      </footer>
     </section>
   );
 
