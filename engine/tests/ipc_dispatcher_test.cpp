@@ -56,8 +56,6 @@ class FakeStore final : public SnapshotStore {
     if (limit == 0 || journal.empty()) return {Status::success(), {}};
     const auto take = std::min(limit, journal.size());
     result.reserve(take);
-    // Production SQLite returns newest revisions first. Reverse transaction
-    // order is sufficient for these single-transaction IPC tests.
     result.insert(result.end(), journal.end() - static_cast<std::ptrdiff_t>(take), journal.end());
     return {Status::success(), std::move(result)};
   }
@@ -93,7 +91,7 @@ void test_protocol_project_history_and_context_roundtrip() {
   auto applied = call(dispatcher, Json{{"protocol", 1},
                                        {"id", "apply-1"},
                                        {"method", "project.apply"},
-                                       {"params", Json{{"commands", commands}, {"context", context}}}});
+                                       {"params", Json{{"expectedProjectRevision", 0}, {"commands", commands}, {"context", context}}}});
   require(applied["ok"].get<bool>() && applied["result"]["projectRevision"] == 1,
           "project.apply should route through native session");
   require(store.persisted.project_revision == 1,
@@ -101,6 +99,13 @@ void test_protocol_project_history_and_context_roundtrip() {
   require(store.last_context.source == "studio-inspector" &&
               store.last_context.reason == "create first shot",
           "validated IPC commit context must reach persistence boundary");
+
+  auto stale_apply = call(dispatcher, Json{{"protocol", 1},
+                                           {"id", "apply-stale"},
+                                           {"method", "project.apply"},
+                                           {"params", Json{{"expectedProjectRevision", 0}, {"commands", Json::array({Json{{"type", "node.markFresh"}, {"id", "shot.001"}}})}}}});
+  require(!stale_apply["ok"].get<bool>() && stale_apply["error"]["code"] == "revision_conflict",
+          "project.apply should reject stale expected project revisions");
 
   auto snapshot = call(dispatcher, Json{{"protocol", 1}, {"id", "snapshot-1"}, {"method", "project.snapshot"}, {"params", Json::object()}});
   require(snapshot["ok"].get<bool>() && snapshot["result"]["nodes"].size() == 2 &&
@@ -125,6 +130,76 @@ void test_protocol_project_history_and_context_roundtrip() {
           "history should parse durable commit provenance into typed fields");
   require(transaction["events"].is_array() && transaction["events"].size() >= 4,
           "history transaction should preserve committed native events");
+}
+
+void test_workflow_restore_is_revision_safe_and_journaled() {
+  FakeStore store;
+  ProjectSession session{store};
+  require(session.load().ok(), "restore IPC session should load");
+  Dispatcher dispatcher{session};
+
+  auto setup = call(dispatcher, Json{{"protocol", 1},
+                                     {"id", "restore-setup"},
+                                     {"method", "project.apply"},
+                                     {"params", Json{{"commands", Json::array({Json{{"type", "node.create"}, {"node", Json{{"id", "scene.old"}, {"kind", "scene"}, {"title", "Old"}}}}})}}}});
+  require(setup["ok"].get<bool>() && setup["result"]["projectRevision"] == 1,
+          "restore setup should commit revision one");
+
+  Json target{{"schemaVersion", 1},
+              {"projectRevision", 77},
+              {"nodes", Json::array({Json{{"id", "scene.loaded"},
+                                          {"kind", "scene"},
+                                          {"title", "Loaded"},
+                                          {"metadata", Json::object()},
+                                          {"revision", 1},
+                                          {"approval", "draft"},
+                                          {"locked", false},
+                                          {"stale", false}}})},
+              {"dependencies", Json::array()}};
+  const Json restore_context{{"actor", "ai_director"},
+                             {"source", "director-workflow-load"},
+                             {"planId", "tool-call-restore"},
+                             {"reason", "load saved workflow"}};
+
+  auto missing_expected = call(dispatcher, Json{{"protocol", 1},
+                                                 {"id", "restore-missing"},
+                                                 {"method", "project.restore"},
+                                                 {"params", Json{{"snapshot", target}, {"context", restore_context}}}});
+  require(!missing_expected["ok"].get<bool>() && missing_expected["error"]["code"] == "invalid_argument",
+          "workflow restore must require expected project revision");
+
+  auto restored = call(dispatcher, Json{{"protocol", 1},
+                                        {"id", "restore-live"},
+                                        {"method", "project.restore"},
+                                        {"params", Json{{"expectedProjectRevision", 1}, {"snapshot", target}, {"context", restore_context}}}});
+  require(restored["ok"].get<bool>() && restored["result"]["projectRevision"] == 2,
+          "workflow restore should advance from live revision instead of saved revision");
+  require(restored["result"]["snapshot"]["nodes"].size() == 1 &&
+              restored["result"]["snapshot"]["nodes"][0]["id"] == "scene.loaded",
+          "workflow restore should return the authoritative restored snapshot");
+
+  auto stale_restore = call(dispatcher, Json{{"protocol", 1},
+                                             {"id", "restore-stale"},
+                                             {"method", "project.restore"},
+                                             {"params", Json{{"expectedProjectRevision", 1}, {"snapshot", target}, {"context", restore_context}}}});
+  require(!stale_restore["ok"].get<bool>() && stale_restore["error"]["code"] == "revision_conflict",
+          "stale workflow restore must fail closed");
+
+  auto history = call(dispatcher, Json{{"protocol", 1},
+                                       {"id", "restore-history"},
+                                       {"method", "project.history"},
+                                       {"params", Json{{"limit", 8}}}});
+  require(history["ok"].get<bool>() && history["result"]["transactions"].size() == 2,
+          "restore should remain a complete durable history transaction");
+  const auto& restore_transaction = history["result"]["transactions"][1];
+  require(restore_transaction["projectRevision"] == 2 &&
+              restore_transaction["actor"] == "ai_director" &&
+              restore_transaction["source"] == "director-workflow-load" &&
+              restore_transaction["reason"] == "load saved workflow",
+          "restore history should retain AI provenance and reason");
+  require(restore_transaction["events"].size() == 1 &&
+              restore_transaction["events"][0]["type"] == "transaction.committed",
+          "restore journal should use one bounded semantic commit marker");
 }
 
 void test_typed_failures_and_bounds() {
@@ -172,6 +247,7 @@ void test_typed_failures_and_bounds() {
 
 int main() {
   test_protocol_project_history_and_context_roundtrip();
+  test_workflow_restore_is_revision_safe_and_journaled();
   test_typed_failures_and_bounds();
   std::cout << "ipc_dispatcher_test: all checks passed\n";
   return EXIT_SUCCESS;
