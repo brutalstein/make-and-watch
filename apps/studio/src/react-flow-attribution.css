@@ -1,0 +1,33 @@
+.flow-surface {
+  position: relative;
+}
+
+.makewatch-reactflow-attribution {
+  position: absolute;
+  right: 10px;
+  bottom: 8px;
+  z-index: 9;
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 3px 7px;
+  border: 1px solid rgba(102, 111, 139, .24);
+  border-radius: 7px;
+  color: rgba(174, 182, 203, .72);
+  background: rgba(9, 12, 19, .72);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .025);
+  backdrop-filter: blur(8px);
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: .025em;
+  text-decoration: none;
+  transition: color 150ms ease, border-color 150ms ease, background 150ms ease;
+}
+
+.makewatch-reactflow-attribution:hover,
+.makewatch-reactflow-attribution:focus-visible {
+  color: #e7e2ff;
+  border-color: rgba(128, 108, 220, .5);
+  background: rgba(22, 20, 39, .88);
+  outline: none;
+}
