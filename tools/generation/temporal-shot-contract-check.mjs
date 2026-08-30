@@ -5,6 +5,7 @@ import {
   parseReferenceAssetIds,
   planTemporalSegments,
   temporalResourcePolicy,
+  temporalShotContract,
 } from './temporal-shot-contract.mjs';
 
 function node(id, kind, metadata = {}, extra = {}) {
@@ -58,11 +59,14 @@ const snapshot = {
   ],
 };
 
+assert.deepEqual(temporalShotContract.strategies, ['I2V', 'FLF2V', 'VIDEO']);
+assert.equal(temporalShotContract.stillImageFallbackAllowed, false);
 assert.deepEqual(parseReferenceAssetIds('a,b\na; b'), ['a', 'b']);
 assert.deepEqual(parseReferenceAssetIds('["a","b","a"]'), ['a', 'b']);
 assert.deepEqual(planTemporalSegments(11, 6).map((segment) => segment.durationSeconds), [6, 5]);
 
 const request = buildTemporalShotRequest(snapshot, 'shot.1', { totalVramMb: 8192 });
+assert.equal(request.schemaVersion, 2);
 assert.equal(request.shot.strategy, 'I2V');
 assert.equal(request.inputs.startFrame.id, 'asset.hero');
 assert.equal(request.inputs.characters[0].references[0].id, 'asset.face');
@@ -73,6 +77,7 @@ assert.equal(request.resourcePolicy.exclusiveGpu, true);
 assert.equal(request.resourcePolicy.releaseOtherGpuModelsBeforeLaunch, true);
 assert.equal(request.providerContract.mustReturnMediaType, 'video');
 assert.equal(request.providerContract.tailFrameHandoffRequired, true);
+assert.equal(request.providerContract.stillImageFallbackAllowed, false);
 
 const eightGb = temporalResourcePolicy({ qualityTier: 'preview', totalVramMb: 8192 });
 assert.equal(eightGb.reserveVramMb, 1536);
@@ -90,4 +95,16 @@ missingEnd.nodes = missingEnd.nodes.map((candidate) => candidate.id === 'shot.1'
   : candidate);
 assert.throws(() => buildTemporalShotRequest(missingEnd, 'shot.1'), /endFrameAssetId/);
 
-console.log('temporal shot contract checks passed');
+for (const legacy of ['STILL_MOTION', 'T2I', 'COMPOSITE']) {
+  const old = structuredClone(snapshot);
+  old.nodes = old.nodes.map((candidate) => candidate.id === 'shot.1'
+    ? { ...candidate, metadata: { ...candidate.metadata, generationStrategy: legacy } }
+    : candidate);
+  assert.throws(
+    () => buildTemporalShotRequest(old, 'shot.1'),
+    /still-image output strategies were removed/,
+    `${legacy} must not re-enter final Shot synthesis`,
+  );
+}
+
+console.log('temporal-only shot contract checks passed');
