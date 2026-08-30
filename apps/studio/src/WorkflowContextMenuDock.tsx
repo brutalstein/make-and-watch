@@ -56,6 +56,15 @@ function safeNextIndex(snapshot: ProjectGraphSnapshot, kind: 'scene' | 'shot') {
     }, 0) + 1;
 }
 
+function safeNextEpisodeNumber(snapshot: ProjectGraphSnapshot) {
+  return snapshot.nodes
+    .filter((candidate) => candidate.kind === 'episode')
+    .reduce((maximum, candidate) => {
+      const value = Number(candidate.metadata.episodeNumber ?? '0');
+      return Number.isFinite(value) ? Math.max(maximum, Math.floor(value)) : maximum;
+    }, 0) + 1;
+}
+
 function contextPosition(event: MouseEvent) {
   const width = 330;
   const height = 560;
@@ -261,27 +270,85 @@ export function WorkflowContextMenuDock() {
 
   const addScene = useCallback(() => {
     void commit((live) => {
-      const episode = clicked?.kind === 'episode'
+      const commands: ProjectCommand[] = [];
+      let episode = clicked?.kind === 'episode'
         ? live.nodes.find((candidate) => candidate.id === clicked.id && candidate.kind === 'episode')
         : live.nodes.find((candidate) => candidate.kind === 'episode');
-      if (!episode) throw new Error('Create an Episode before adding a Scene.');
-      const index = safeNextIndex(live, 'scene');
-      const id = `scene.${crypto.randomUUID()}`;
-      return [
-        {
+
+      if (!episode) {
+        let series = live.nodes.find((candidate) => candidate.kind === 'series');
+        if (!series) {
+          const seriesId = `series.${crypto.randomUUID()}`;
+          series = {
+            id: seriesId,
+            kind: 'series',
+            title: 'Untitled Series',
+            metadata: defaultMetadataForKind('series'),
+            approval: 'draft',
+            locked: false,
+            stale: false,
+            revision: 0,
+          };
+          commands.push({
+            type: 'node.create',
+            node: {
+              id: series.id,
+              kind: 'series',
+              title: series.title,
+              metadata: series.metadata,
+              approval: 'draft', locked: false, stale: false,
+            },
+          });
+          commands.push({ type: 'node.markFresh', id: series.id });
+        }
+
+        const episodeNumber = safeNextEpisodeNumber(live);
+        const episodeId = `episode.${crypto.randomUUID()}`;
+        episode = {
+          id: episodeId,
+          kind: 'episode',
+          title: `Episode ${String(episodeNumber).padStart(2, '0')}`,
+          metadata: {
+            ...defaultMetadataForKind('episode'),
+            episodeNumber: String(episodeNumber),
+            targetDurationSeconds: '1200',
+          },
+          approval: 'draft',
+          locked: false,
+          stale: false,
+          revision: 0,
+        };
+        commands.push({
           type: 'node.create',
           node: {
-            id,
-            kind: 'scene',
-            title: `Scene ${String(index).padStart(2, '0')}`,
-            metadata: { ...defaultMetadataForKind('scene'), index: String(index), summary: 'New dramatic beat' },
+            id: episode.id,
+            kind: 'episode',
+            title: episode.title,
+            metadata: episode.metadata,
             approval: 'draft', locked: false, stale: false,
           },
+        });
+        commands.push({ type: 'dependency.add', dependent: episode.id, dependency: series.id });
+        commands.push({ type: 'node.markFresh', id: episode.id });
+      }
+
+      if (episode.locked) throw new Error('Unlock the Episode before adding a Scene.');
+      const index = safeNextIndex(live, 'scene');
+      const id = `scene.${crypto.randomUUID()}`;
+      commands.push({
+        type: 'node.create',
+        node: {
+          id,
+          kind: 'scene',
+          title: `Scene ${String(index).padStart(2, '0')}`,
+          metadata: { ...defaultMetadataForKind('scene'), index: String(index), summary: 'New dramatic beat' },
+          approval: 'draft', locked: false, stale: false,
         },
-        { type: 'dependency.add', dependent: id, dependency: episode.id },
-        { type: 'node.markFresh', id },
-      ];
-    }, 'create scene from workflow context menu');
+      });
+      commands.push({ type: 'dependency.add', dependent: id, dependency: episode.id });
+      commands.push({ type: 'node.markFresh', id });
+      return commands;
+    }, 'create scene and ensure its episode scope from workflow context menu');
   }, [clicked, commit]);
 
   const addShot = useCallback((scene: ProjectNode) => {
@@ -441,9 +508,9 @@ export function WorkflowContextMenuDock() {
 
           {clicked ? <button onClick={() => void focusClicked()}><Eye size={14} /><span>Focus node</span></button> : null}
           {clicked ? <button onClick={openProperties}><Settings2 size={14} /><span>Production properties…</span></button> : null}
-          {clicked?.kind === 'episode' ? <button onClick={addScene}><Plus size={14} /><span>Add Scene</span></button> : null}
-          {menuScene ? <button onClick={() => addShot(menuScene)} disabled={menuScene.locked}><Clapperboard size={14} /><span>Add Shot to Scene</span></button> : null}
-          {menuScene ? <button onClick={() => addAudioCue(menuScene)} disabled={menuScene.locked}><AudioLines size={14} /><span>Add Audio Cue</span></button> : null}
+          {clicked?.kind === 'episode' ? <button onClick={addScene} disabled={clicked.locked || busy}><Plus size={14} /><span>Add Scene</span></button> : null}
+          {menuScene ? <button onClick={() => addShot(menuScene)} disabled={menuScene.locked || busy}><Clapperboard size={14} /><span>Add Shot to Scene</span></button> : null}
+          {menuScene ? <button onClick={() => addAudioCue(menuScene)} disabled={menuScene.locked || busy}><AudioLines size={14} /><span>Add Audio Cue</span></button> : null}
           {menuScene ? (
             <button className="workflow-context-menu__primary" onClick={() => void generateScene(menuScene)} disabled={busy || !provider?.online}>
               {busy ? <LoaderCircle size={14} className="spin" /> : <ImageIcon size={14} />}
@@ -453,8 +520,8 @@ export function WorkflowContextMenuDock() {
           ) : null}
 
           {canLink ? <div className="workflow-context-menu__separator" /> : null}
-          {canLink ? <button onClick={linkSelectionIntoClicked}><GitMerge size={14} /><span>Selected → this node</span></button> : null}
-          {canLink ? <button onClick={feedClickedIntoSelection}><Link2 size={14} /><span>This node → selected</span></button> : null}
+          {canLink ? <button onClick={linkSelectionIntoClicked} disabled={busy}><GitMerge size={14} /><span>Selected → this node</span></button> : null}
+          {canLink ? <button onClick={feedClickedIntoSelection} disabled={busy}><Link2 size={14} /><span>This node → selected</span></button> : null}
 
           {clicked ? <div className="workflow-context-menu__separator" /> : null}
           {clicked ? (
@@ -465,8 +532,8 @@ export function WorkflowContextMenuDock() {
           ) : null}
           {clicked ? <button className="danger" onClick={removeClicked} disabled={clicked.locked || busy}><Trash2 size={14} /><span>Delete node</span></button> : null}
 
-          {!clicked && !cleanWorkflow ? <button onClick={addScene}><Plus size={14} /><span>Add Scene</span></button> : null}
-          {!clicked && selectedScene ? <button onClick={() => addShot(selectedScene)}><Clapperboard size={14} /><span>Add Shot to selected Scene</span></button> : null}
+          {!clicked && !cleanWorkflow ? <button onClick={addScene} disabled={busy}><Plus size={14} /><span>Add Scene</span></button> : null}
+          {!clicked && selectedScene ? <button onClick={() => addShot(selectedScene)} disabled={selectedScene.locked || busy}><Clapperboard size={14} /><span>Add Shot to selected Scene</span></button> : null}
           <button onClick={() => void sync()} disabled={busy}><RefreshCw size={14} className={busy ? 'spin' : ''} /><span>Sync native workflow</span></button>
         </div>
       ) : null}
