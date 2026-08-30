@@ -1,172 +1,192 @@
 # AI Director Providers
 
+> Current status: 2026-08-30 04:09 TRT (Europe/Istanbul)
+
 ## Goal
 
-Make & Watch uses a cloud reasoning/Director layer while authoritative project state, media generation, worker lifecycle and rendering remain local.
+Make & Watch uses a cloud/first-party reasoning layer as an interactive screenwriter/director while authoritative project state, media generation, worker lifecycle and rendering remain local.
 
-This is **project-scoped specialization**, not model fine-tuning. Provider conversation is useful creative context, but it is never project truth.
+This is **project-scoped specialization**, not model fine-tuning. Provider conversation is useful creative context, but plain model text is never project truth. Actual changes become truth only after typed Make & Watch tools pass native validation and commit.
 
 ## Authentication boundary
 
-Make & Watch must never copy credential caches, session tokens or subscription OAuth tokens.
+Make & Watch must never copy credential caches, session tokens or subscription OAuth tokens. Codex authentication stays owned by the official Codex client/App Server. React receives only sanitized provider state.
 
-Official references checked 2026-08-29:
+Official integration direction checked during the August 2026 implementation:
 
-- OpenAI Codex App Server: https://developers.openai.com/codex/app-server
-- OpenAI Codex authentication: https://developers.openai.com/codex/auth
-- OpenAI Codex `AGENTS.md`: https://developers.openai.com/codex/guides/agents-md
-- OpenAI Codex open-source App Server protocol and permission-profile implementation
-- Anthropic Claude Code legal/compliance: https://docs.anthropic.com/en/docs/claude-code/legal-and-compliance
+- Codex App Server is the preferred interactive integration.
+- Official Codex CLI `exec` is a bounded compatibility fallback when App Server is unavailable.
+- Claude Code local subscription routing remains developer-preview/policy-gated; shipping Claude chat waits for a supported Anthropic product/API path.
 
-## Codex — resilient supported local-client path
+## Codex runtime selection
 
-The preferred integration is **Codex App Server**, but the product must not become unusable merely because an installed official Codex CLI build cannot keep App Server alive.
-
-Current runtime selection is deterministic:
+Runtime selection is capability-driven:
 
 ```text
 Codex CLI detected
       |
-      +-- app-server advertised + initializes
-      |       -> app_server
-      |       -> permission-profile negotiation
+      +-- App Server initializes
+      |       -> permission-profile discovery
       |       -> account/read
-      |       -> ChatGPT browser auth when needed
-      |       -> native Codex threads for multi-turn chat
+      |       -> ChatGPT browser auth when required
+      |       -> provider-native multi-turn threads
+      |       -> image/localImage turns
+      |       -> dynamic Make & Watch tools
       |
-      +-- app-server unavailable/broken
-              -> bounded codex exec capability probe
-              -> codex login status
-              -> ChatGPT subscription session required
-              -> exec_fallback
-              -> bounded read-only compatibility chat/plan
+      +-- App Server unavailable
+              -> bounded official codex exec probe
+              -> ChatGPT login status required
+              -> read-only compatibility chat/plan
+              -> no image pretending / no hidden multimodal fallback
 ```
 
 `runtimeMode` is surfaced as `app_server`, `exec_fallback`, or `none`.
 
-### App Server mode
+## Automatic Director model profile
 
-One bridge-owned App Server process handles sanitized account state, login, bounded chat threads and schema-constrained planning:
+Routine Director Room conversation should not require a model picker.
 
-```text
-initialize(experimentalApi=true)
- -> initialized
- -> permissionProfile/list
- -> select allowed :read-only
- -> account/read
-      |
-      +-- auth needed -> account/login/start(type=chatgpt)
-      |                 -> official browser flow
-      |                 -> account/login/completed / account/updated
-      |
-      +-- chat -> thread/start(permissions=:read-only)
-      |          -> repeated turn/start(permissions=:read-only)
-      |          -> thread/delete
-      |
-      +-- plan -> thread/start(permissions=:read-only)
-                 -> turn/start(permissions=:read-only, outputSchema)
-                 -> thread/delete
-```
-
-Codex owns OAuth persistence/refresh. Make & Watch receives sanitized account type/plan state and, when needed, the official auth URL. Account email and token material are stripped before provider state reaches React.
-
-### Permission-profile compatibility
-
-Current Codex builds expose named permission profiles. The built-in read-only profile is `:read-only`.
+The App Server model catalog is inspected at runtime. Make & Watch prefers the configured inexpensive multilingual Director profile when it is actually advertised by that installed Codex build/account. The current preferred profile is GPT-5.6 Luna with low reasoning. If it is unavailable, a compatible advertised fallback is selected rather than hard-failing on a stale model string.
 
 Rules:
 
-- App Server initialization opts into the experimental API surface required for permission-profile discovery;
-- `permissionProfile/list` is queried for the Director runtime working directory;
-- `:read-only` must exist and be allowed before the modern App Server path is considered safe;
-- modern `thread/start` and `turn/start` use `permissions: ":read-only"`;
-- `permissions` is never combined with legacy `sandbox` / `sandboxPolicy` fields;
-- the deprecated `readOnly.access` shape is never emitted;
-- if an older App Server does not implement permission-profile discovery, Make & Watch may use the minimal legacy read-only fields without the removed `access` object;
-- if read-only permission negotiation itself is denied by policy, App Server is rejected and the bounded official CLI compatibility path may be used instead.
+- routine dialogue uses a low reasoning budget;
+- costly reasoning is reserved for tasks that actually need it;
+- image-bearing turns require an advertised image-capable App Server model;
+- the exec compatibility path must never silently discard an image and then claim it was seen;
+- model/profile information is surfaced as status, not as a mandatory user decision.
 
-This negotiation exists because official docs and installed Codex builds may evolve at different speeds. The runtime contract is therefore capability-driven rather than depending on one hard-coded legacy sandbox payload.
+## App Server safety and lifecycle
 
-### Exec compatibility mode
+The bridge owns one App Server process and negotiates a read-only provider execution profile. Provider-side filesystem/shell access is not the project mutation mechanism.
 
-`tools/director/codex-exec-runtime.mjs` provides a bounded compatibility path when App Server exits or is missing from the installed official CLI.
-
-Rules:
-
-- uses the same official local Codex executable and cached login session;
-- requires `codex login status` to identify a **ChatGPT** session before product chat is enabled;
-- API-key/other auth must not silently masquerade as subscription access;
-- runs `codex exec` with read-only sandbox and prompt over stdin;
-- final output is collected from a bounded temporary `--output-last-message` file and the temp directory is always removed;
-- typed planning additionally requires `--output-schema`;
-- chat keeps only a bounded in-memory recent transcript window rather than pretending CLI exec has native thread state;
-- transcript is conversation context only and never project truth;
-- App Server failure is preserved as a diagnostic issue instead of blocking a working CLI fallback.
-
-Static `--version` / `--help` capability probes are cached for the bridge lifetime so readiness polling does not continuously spawn probe processes. Login/account readiness remains live.
-
-## Automatic startup / simple-user contract
-
-The developer runtime must prepare infrastructure rather than make the user manage services.
-
-`tools/dev-runner.mjs`:
-
-1. builds the native host;
-2. starts the local bridge/native session;
-3. waits for bridge health;
-4. warms Director provider status before Vite starts;
-5. reports the real Codex runtime (`App Server`, `CLI compatibility`, or unavailable);
-6. starts Studio.
-
-If a ChatGPT account is already connected, chat should be usable immediately. If sign-in is required, first Send initiates the policy-permitted official login flow while preserving the queued user message.
-
-Director warm-up failure is non-fatal because local project operation must remain possible without an AI provider.
-
-## Composer/readiness rule
-
-Provider readiness must **not** disable the chat text area.
-
-The current first-Send behavior is:
+Project authority is instead exposed through typed dynamic tools. This separation is intentional:
 
 ```text
-user types immediately
- -> Send
- -> chat ready? yes -> submit turn
- -> chat ready? no  -> start official Codex login from this user gesture
-                     -> retain message locally as queued
-                     -> poll sanitized readiness
-                     -> submit queued message only after chat becomes ready
+Codex reasoning/thread
+      |
+      +--> provider sandbox / read-only client context
+      |
+      +--> makewatch tools
+      |       -> native ProjectSession / revision / lock / journal
+      |
+      +--> makewatch_media tools
+              -> bounded localhost media gateway
+              -> GPU scheduler / generation services
+              -> native provenance commit
 ```
 
-If connection fails before submission, Studio restores the text to the composer. If failure happens after a provider turn may have started, Studio avoids automatic replay to prevent duplicate turns.
+A rejected/failed provider turn must not kill the bridge. Owned child processes, turn-completion promises, shutdown, output limits and timeout paths are bounded and guarded.
 
-Manual Connect remains available inside the Connections drawer as a recovery/control surface, not the normal mandatory path.
+## Interactive Director Room
 
-## Multi-turn ownership
+Director Room is conversational rather than form-driven.
 
-App Server mode uses one native Codex thread per Director conversation.
+The Director should:
 
-Exec compatibility mode uses a bounded in-memory transcript window because it cannot claim provider-native thread ownership.
+- understand natural multilingual requests;
+- act like a screenwriter/director/visual-development collaborator;
+- ask only blocking questions;
+- make creative choices when the user delegates them;
+- reuse established Character/Location continuity instead of inventing duplicates;
+- accept optional image references;
+- use typed tools when the user asks for an actual project/media change;
+- clearly distinguish discussion from committed state.
 
-Common bounds:
+### Durable image attachments
 
-- finite active conversation count;
-- one active provider run at a time;
-- finite turn/process timeouts;
-- bounded prompt/reply/output sizes;
-- read-only execution policy;
-- explicit conversation cleanup on New conversation/close/shutdown;
-- provider process remains bridge-owned while active.
+Studio supports reference images through file selection, drag/drop and clipboard paste. Uploads are not pasted into prompts as fragile filesystem strings.
 
-A crucial lifecycle invariant is that a rejected `turn/start` may occur before the turn-completion promise is awaited. Chat and plan runtimes therefore attach an explicit rejection observer to completion promises so cleanup failure cannot become a process-level unhandled rejection. Provider errors must be returned/fail over; they must never terminate the native project bridge.
+Flow:
 
-Chat is creative context only; it cannot mutate SQLite/native project state.
+```text
+Studio composer image
+   -> localhost media gateway
+   -> content validation + SHA-256 storage
+   -> native image Asset registration
+   -> conversation attachment stores Asset ID/hash metadata
+   -> Codex App Server receives actual localImage input
+```
 
-Configured `makewatch.*` tools also expose bounded local media operations: Scene visual generation, Audio generation, Episode composition inspection, Episode render start, and typed visual/audio/render job polling. Codex never shells out to media providers directly; the bridge delegates to the local generation gateway and native project transaction boundary.
+Conversation archive schema v2 persists attachment links. Older v1 conversations remain readable with empty attachment arrays until rewritten. A provider failure after image submission is recorded; the system does not replay the image turn through a text-only fallback.
+
+## Typed project authority
+
+Interactive Director chat may mutate semantic project state **only** through typed `makewatch` tools. This is not unrestricted shell access.
+
+Current project/workflow capabilities include:
+
+- project snapshot/query/history/impact;
+- revision-checked atomic project apply;
+- workflow new/save/list/load/delete with recovery behavior;
+- authoritative production schema inspection;
+- Scene storyboard generation;
+- Audio generation;
+- Episode composition inspection and render start;
+- bounded media job inspection.
+
+Locks, cycles, expected project revision and journal/recovery remain native authority. Direct SQLite mutation, DOM click automation and arbitrary project-file edits are not allowed as substitutes.
+
+## Canonical Character/Location reference generation
+
+`makewatch_media` now includes real canonical reference operations:
+
+- `reference_provider`
+- `reference_generate`
+- `reference_job`
+- `reference_jobs`
+
+`reference_generate` accepts an existing Character or Location target plus an optional image Asset.
+
+Without a source Asset it performs text-to-image canonical design. With an image Asset it performs reference-guided img2img through standard ComfyUI primitives. Supported explicit styles currently include:
+
+- `live-action-cinematic`
+- `anime-cinematic`
+- `illustration`
+- `stylized-3d`
+
+The source Asset is never overwritten. Successful output creates/uses a content-addressed image Asset and Generation provenance, then makes the target Character/Location depend on that generated Asset.
+
+Important fail-closed invariants:
+
+- target must be Character or Location and unlocked;
+- optional source must remain an image Asset;
+- target/source revisions are captured when the job is submitted;
+- they are checked before generation, after the expensive generation step, and again before canonical registration;
+- stale output cannot become a canonical dependency;
+- a failed job does not publish its artifact endpoint;
+- a pre-existing content-addressed path is re-hashed before reuse;
+- native revision/lock/cycle validation still owns the final commit.
+
+## Temporal video tools
+
+The same `makewatch_media` namespace retains temporal Shot execution:
+
+- `temporal_providers`
+- `shot_temporal_plan`
+- `shot_generate_video`
+- `temporal_job`
+- `temporal_jobs`
+
+Current local temporal implementation includes the FramePack provider path with bounded hardware/resource policy. The Director must inspect provider/readiness and the Shot plan before claiming a video can be produced.
+
+## Local media boundary
+
+Codex never shells directly into ComfyUI, FramePack, Chatterbox or FFmpeg as the authoritative product path. Typed tools delegate to the localhost media gateway, which owns execution limits and provenance writes.
+
+Current local media paths include:
+
+- ComfyUI storyboard frames;
+- ComfyUI canonical Character/Location T2I/img2img references;
+- Chatterbox voice/audio generation;
+- FramePack temporal I2V;
+- deterministic Episode composition and preview/render assembly.
+
+GPU-heavy reference/storyboard/video work is serialized through the local GPU scheduling boundary rather than independently overcommitting VRAM.
 
 ## Planning path
 
-A provider plan must be schema-constrained and pass:
+Provider-generated `AutopilotPlan` output remains schema-constrained and validated against the live project before any later execution:
 
 ```text
 provider
@@ -175,85 +195,57 @@ provider
  -> exact live native revision check
  -> autonomy/capability policy
  -> optional checkpoint
- -> native ProjectSession transaction if execution is later authorized
+ -> native transaction if execution is authorized
 ```
 
-Current provider-generated plans remain Assist-preview oriented. Login, chat, or planning alone grants no semantic write authority.
+Assist plan preview remains non-mutating. Interactive chat tool calls are a separate explicitly typed execution path.
 
-## Claude — policy-gated by default
+## Composer/readiness behavior
 
-Claude Code subscription login is not treated as a supported third-party product auth path.
+Provider readiness must not disable typing. The first Send may initiate official Codex sign-in while preserving the queued text. If connection fails before submission, the composer restores it. If a provider turn may already have started, Studio avoids automatic replay to prevent duplicate turns.
 
-Public behavior:
+Image attachments are uploaded and registered before the turn is submitted. The Send action remains disabled while an attachment upload is unresolved/failed, rather than sending a partial prompt.
 
-- Claude CLI may be detected and displayed;
-- production Claude chat/planning requires a supported Anthropic API/Console/cloud-provider path;
-- Claude Code local-client behavior remains developer-preview only behind the explicit experimental flag;
-- `chatAvailable` remains false for the shipping Claude slot until a supported product provider is implemented.
+## Conversation persistence
 
-## Studio side-panel UX
+App Server mode uses a provider-native Codex thread per Director conversation. The Make & Watch conversation archive is also durable and stores user/assistant/system messages plus attachment metadata.
 
-Workflow is the persistent central canvas. Creative Control, Director Chat and Inspector are independent presentation sidecars.
+Exec compatibility mode carries only a bounded recent transcript and cannot claim provider-native thread ownership.
 
-- Director Chat supports open/rail states;
-- `StudioPanelController` gives Creative Control and Inspector independent persisted collapse/rail states;
-- collapsing a sidecar returns width to the workflow instead of overlaying it;
-- Autopilot interaction lock tracks the actual active sidecar widths and still owns only the workflow surface;
-- sidecar scrolling is internal; Creative Control must not create a second outer native scrollbar;
-- internal scrollbars use a quiet custom thumb with native arrow buttons removed.
-
-This presentation state never changes native project revision.
-
-## Local bridge endpoints
-
-- `GET /api/director/providers` — sanitized provider readiness/policy/runtime state and warm-up surface;
-- `POST /api/director/connect` — policy-permitted official login initiation;
-- `POST /api/director/chat` — bounded creative chat;
-- `POST /api/director/chat/close` — explicit conversation/thread teardown;
-- `POST /api/director/plan` — bounded schema-constrained Assist planning.
+Archive operations support recent/archived search, rename, archive/unarchive and explicit deletion. Archive presentation is closed by default and its UI preference is persisted independently from conversation data.
 
 ## Context economy
 
-Runtime requests do not dump the repository/project journal.
+Runtime requests do not dump the repository or entire journal by default.
 
-Planning hard bounds remain approximately:
-
-- <=16,000 prompt characters;
-- conservative <=4,000 estimated tokens;
-- bounded node/edge scope;
-- allow-listed bounded metadata;
-- deterministic reduction that never slices serialized JSON mid-object.
-
-Chat first-turn context has its own bounded compiler. App Server mode uses provider-native thread history; exec compatibility mode carries only a bounded recent transcript.
+- first-turn project context is bounded and deterministic;
+- later App Server turns rely on provider-native thread continuity plus targeted live project context;
+- project queries are preferred to full snapshots for focused work;
+- dynamic tool results are byte/character bounded;
+- low-cost model routing prevents routine conversation from consuming high-reasoning budgets unnecessarily.
 
 ## Shutdown / failure behavior
 
 - missing CLI: report unavailable; never fake connection;
-- App Server start/protocol failure: record the bounded diagnostic and attempt official CLI exec compatibility when safe;
-- incompatible exec fallback: report unavailable rather than run an unsafe/unbounded command path;
-- auth required: first Send or manual Connect can initiate official Codex login;
-- concurrent provider run: reject the second run rather than overlap hidden state;
-- timeout: interrupt/terminate only the owned provider run;
-- provider ChildProcess and stdio `error` events are guarded so EPIPE/process errors cannot terminate the bridge EventEmitter;
-- turn-completion promises cannot become orphaned unhandled rejections;
-- bridge shutdown: drain App Server/turns and any active exec/login child before exit;
-- malformed provider output never becomes project state.
+- App Server failure: record a bounded diagnostic and use official CLI compatibility only when safe;
+- image turn without a real image-capable App Server path: fail explicitly;
+- malformed provider output: never becomes project state;
+- concurrent provider run: reject/serialize rather than overlap hidden state;
+- media queue/provider failure: return authoritative job/provider error rather than fabricate an artifact;
+- bridge shutdown: drain/terminate owned provider processes cleanly;
+- local project operation remains available when AI/media providers are offline.
 
 ## Product-machine validation
 
-CI validates deterministic helpers and fake App Server protocol behavior but cannot contain the user's ChatGPT subscription session.
+CI covers deterministic provider protocol helpers, dynamic tool contracts, conversation persistence, reference-generation provenance, stale-output rejection, TypeScript and production build. Product-machine smoke validation must additionally exercise the real local account/GPU services:
 
-Windows live validation must prove:
-
-1. `dev.ps1` reports the actual Codex runtime;
-2. composer accepts typing before authentication/readiness;
-3. an already-connected ChatGPT CLI session enables either App Server chat or exec compatibility chat without reconfiguration;
-4. modern App Server selects the allowed `:read-only` permission profile and does not emit deprecated `readOnly.access`;
-5. if sign-in is required, first Send preserves the message while official login completes;
-6. a second message preserves bounded conversation continuity;
-7. an App Server turn error must either safely fail over or return a bounded error while native bridge/system telemetry stay alive;
-8. Chat stays interactive while Autopilot protects workflow geometry;
-9. Creative Control, Chat and Inspector can collapse/reopen independently without breaking canvas geometry;
-10. no nested white/native Creative Control scrollbar remains;
-11. bridge shutdown during a provider turn leaves no orphan owned provider process;
-12. chat/planning do not mutate semantic project revision by themselves.
+1. Codex App Server authenticates through the installed official client;
+2. automatic Director model routing resolves an advertised compatible model;
+3. text conversation resumes correctly;
+4. pasted/dragged/uploaded image is visible to a real image-capable turn;
+5. image attachment survives conversation reload;
+6. `reference_generate` can create a Character/Location reference from text;
+7. an uploaded image Asset can drive `anime-cinematic` img2img and attach only after native commit;
+8. editing the target while generation runs causes stale rejection rather than attachment;
+9. temporal/video/audio providers report real readiness before execution;
+10. shutdown leaves no owned provider/media bridge process orphaned.
