@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import { AudioGenerationService } from '../audio/audio-generation-service.mjs';
 import { compileEpisodeComposition } from '../composition/episode-composition.mjs';
 import { EpisodeRenderService } from '../composition/episode-render-service.mjs';
+import { DirectorReferenceLibrary, directorReferenceLimits } from '../director/reference-library.mjs';
 import { localGpuTelemetry } from '../runtime/gpu-telemetry.mjs';
 import { GenerationBridgeClient } from './bridge-client.mjs';
 import { ComfyUiClient } from './comfyui-client.mjs';
@@ -22,6 +23,7 @@ const audioArtifactRoot = resolve(root, process.env.MAKEWATCH_AUDIO_ARTIFACT_DIR
 const episodeArtifactRoot = resolve(root, process.env.MAKEWATCH_EPISODE_ARTIFACT_DIR ?? '.makewatch/artifacts/episodes');
 const renderCacheRoot = resolve(root, process.env.MAKEWATCH_RENDER_CACHE_DIR ?? '.makewatch/render-cache');
 const bridge = new GenerationBridgeClient();
+const directorReferences = new DirectorReferenceLibrary({ projectRoot: root });
 const comfy = new ComfyUiClient();
 const scheduler = new GpuExclusiveScheduler();
 const scheduledComfy = {
@@ -69,7 +71,7 @@ function allowOrigin(request, response) {
     response.setHeader('Access-Control-Allow-Origin', origin);
     response.setHeader('Vary', 'Origin');
   }
-  response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  response.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-MakeWatch-Filename');
   response.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
 }
 
@@ -98,6 +100,27 @@ async function readJson(request) {
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw Object.assign(new Error('request body must be valid JSON'), { code: 'invalid_argument' }); }
 }
 
+async function readBinary(request, maximumBytes) {
+  const declared = Number(request.headers['content-length'] ?? 0);
+  if (Number.isFinite(declared) && declared > maximumBytes) {
+    throw Object.assign(new Error('reference image exceeds the upload size limit'), { code: 'resource_exhausted' });
+  }
+  const chunks = [];
+  let bytes = 0;
+  for await (const chunk of request) {
+    bytes += chunk.length;
+    if (bytes > maximumBytes) throw Object.assign(new Error('reference image exceeds the upload size limit'), { code: 'resource_exhausted' });
+    chunks.push(chunk);
+  }
+  if (!bytes) throw Object.assign(new Error('reference image upload is empty'), { code: 'invalid_argument' });
+  return Buffer.concat(chunks);
+}
+
+function decodedFilename(request) {
+  const raw = String(request.headers['x-makewatch-filename'] ?? 'reference-image');
+  try { return decodeURIComponent(raw); } catch { return raw; }
+}
+
 function boundedId(value, label) {
   if (typeof value !== 'string' || !value || value.length > 180 || !/^[A-Za-z0-9._:-]+$/.test(value)) {
     throw Object.assign(new Error(`${label} is invalid`), { code: 'invalid_argument' });
@@ -121,7 +144,7 @@ function boundedNumber(value, fallback, minimum, maximum) {
 
 function errorStatus(error) {
   if (error?.code === 'not_found') return 404;
-  if (error?.code === 'busy' || error?.code === 'not_ready' || error?.code === 'stale_request' || error?.code === 'conflict') return 409;
+  if (error?.code === 'busy' || error?.code === 'not_ready' || error?.code === 'stale_request' || error?.code === 'conflict' || error?.code === 'integrity_error') return 409;
   if (error?.code === 'resource_exhausted') return 429;
   if (error?.code === 'invalid_argument') return 400;
   if (error?.code === 'timeout') return 504;
@@ -132,11 +155,32 @@ function streamArtifact(request, response, artifact) {
   if (!existsSync(artifact.absolutePath)) throw Object.assign(new Error('artifact file is missing'), { code: 'not_found' });
   allowOrigin(request, response);
   response.writeHead(200, {
-    'Content-Type': artifact.contentType || 'application/octet-stream',
+    'Content-Type': artifact.contentType || artifact.mimeType || 'application/octet-stream',
     'Cache-Control': 'private, no-store',
-    'Content-Disposition': `inline; filename="${artifact.filename.replace(/["\\]/g, '_')}"`,
+    'Content-Disposition': `inline; filename="${String(artifact.filename ?? 'artifact').replace(/["\\]/g, '_')}"`,
   });
   createReadStream(artifact.absolutePath).pipe(response);
+}
+
+async function registerDirectorReference(imported) {
+  let lastConflict = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const snapshot = await bridge.snapshot();
+    const commands = directorReferences.commandsForImport(snapshot, imported);
+    if (!commands.length) return snapshot.projectRevision;
+    try {
+      const applied = await bridge.apply(commands, {
+        actor: 'user',
+        source: 'director-reference-import',
+        reason: `import durable Director reference ${imported.filename}`,
+      }, snapshot.projectRevision);
+      return applied.projectRevision ?? snapshot.projectRevision;
+    } catch (error) {
+      if (error?.code !== 'revision_conflict') throw error;
+      lastConflict = error;
+    }
+  }
+  throw lastConflict ?? Object.assign(new Error('reference import could not acquire a fresh project revision'), { code: 'conflict' });
 }
 
 const server = createServer(async (request, response) => {
@@ -152,7 +196,7 @@ const server = createServer(async (request, response) => {
     if (request.method === 'GET' && url.pathname === '/api/health') {
       sendJson(request, response, 200, {
         service: 'makewatch-media-generation',
-        modes: ['storyboard-preview', 'temporal-i2v', 'multilingual-voice', 'episode-composition', 'episode-preview-render'],
+        modes: ['storyboard-preview', 'director-reference-library', 'temporal-i2v', 'multilingual-voice', 'episode-composition', 'episode-preview-render'],
         temporal: temporalShotContract,
         gpu: localGpuTelemetry(),
         gpuScheduler: scheduler.status(),
@@ -191,6 +235,27 @@ const server = createServer(async (request, response) => {
       sendJson(request, response, 200, { jobs: renderService.list(Number.isInteger(limit) ? limit : 20) });
       return;
     }
+    if (request.method === 'POST' && url.pathname === '/api/director/references') {
+      const bytes = await readBinary(request, directorReferenceLimits.maxImageBytes);
+      const imported = await directorReferences.importImage({
+        bytes,
+        filename: decodedFilename(request),
+        declaredMimeType: String(request.headers['content-type'] ?? ''),
+      });
+      const projectRevision = await registerDirectorReference(imported);
+      sendJson(request, response, 201, {
+        reference: {
+          assetNodeId: imported.assetNodeId,
+          filename: imported.filename,
+          mimeType: imported.mimeType,
+          byteSize: imported.byteSize,
+          sha256: imported.sha256,
+          relativePath: imported.relativePath,
+        },
+        projectRevision,
+      });
+      return;
+    }
     if (request.method === 'POST' && url.pathname === '/api/scenes') {
       const body = await readJson(request);
       const job = await sceneService.startScene(boundedId(body.sceneId, 'sceneId'));
@@ -210,6 +275,14 @@ const server = createServer(async (request, response) => {
         providerId: boundedProviderId(body.providerId),
       });
       sendJson(request, response, 202, { job });
+      return;
+    }
+
+    const referenceMatch = /^\/api\/director\/references\/([A-Za-z0-9._:-]+)$/.exec(url.pathname);
+    if (request.method === 'GET' && referenceMatch) {
+      const snapshot = await bridge.snapshot();
+      const reference = await directorReferences.resolveAsset(snapshot, boundedId(referenceMatch[1], 'assetNodeId'));
+      streamArtifact(request, response, { ...reference, contentType: reference.mimeType });
       return;
     }
 
