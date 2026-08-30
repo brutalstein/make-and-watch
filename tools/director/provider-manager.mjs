@@ -26,6 +26,7 @@ const PROVIDER_SHUTDOWN_WAIT_MS = 2_000;
 const MAX_STATUS_BYTES = 256 * 1024;
 const MAX_PLAN_PROCESS_BYTES = 2 * 1024 * 1024;
 const MAX_CHAT_REPLY_CHARS = 32_000;
+const MAX_CHAT_ATTACHMENTS = 8;
 const EXPERIMENTAL_CLAUDE_CODE = process.env.MAKEWATCH_ENABLE_EXPERIMENTAL_CLAUDE_CODE === '1';
 
 let activeRun = null;
@@ -175,6 +176,9 @@ function unavailableStatus(provider, policy, integration, detail) {
     loginPending: false,
     executableName: '',
     discovery: '',
+    model: '',
+    reasoningEffort: '',
+    inputModalities: [],
     capabilityIssues: [],
     detail,
   };
@@ -295,9 +299,16 @@ async function codexStatus() {
       const planType = chatGptConnected ? String(account.planType ?? '').slice(0, 40) : '';
       const authMethod = account?.type ? String(account.type).slice(0, 60) : '';
       const capabilityIssues = [];
+      let profile = null;
+      try {
+        profile = await (await chatForCodex(executable)).directorProfile();
+      } catch (error) {
+        capabilityIssues.push(`Codex model catalog unavailable: ${boundedText(error instanceof Error ? error.message : error, 180)}`);
+      }
       if (account && account.type !== 'chatgpt') {
         capabilityIssues.push('Codex is authenticated with a non-ChatGPT credential; connect ChatGPT to use subscription access');
       }
+      const chatAvailable = chatGptConnected && Boolean(profile);
       return {
         provider: 'codex',
         policy,
@@ -311,13 +322,18 @@ async function codexStatus() {
         capable: true,
         loginAvailable: !chatGptConnected,
         planningAvailable: chatGptConnected,
-        chatAvailable: chatGptConnected,
+        chatAvailable,
         loginPending: Boolean(client.loginState && !client.loginState.failed),
         executableName: executable.name,
         discovery: executable.discovery,
+        model: profile?.model ?? '',
+        reasoningEffort: profile?.effort ?? '',
+        inputModalities: profile?.inputModalities ?? [],
         capabilityIssues,
         detail: chatGptConnected
-          ? `Codex App Server is connected through ChatGPT${planType ? ` · ${planType}` : ''} and ready for Director chat + planning`
+          ? chatAvailable
+            ? `Codex App Server · ${profile.displayName}${profile.effort ? ` · ${profile.effort}` : ''} · Director chat + planning ready`
+            : 'Codex App Server is connected through ChatGPT, but no safe Director chat model was advertised by the current model catalog'
           : account
             ? 'Codex App Server is ready; connect ChatGPT to switch this Director to subscription access'
             : 'Codex App Server is ready for first-party ChatGPT sign-in',
@@ -356,10 +372,13 @@ async function codexStatus() {
     loginPending: Boolean(activeLoginChild && activeLoginChild.exitCode === null),
     executableName: executable.name,
     discovery: executable.discovery,
+    model: '',
+    reasoningEffort: '',
+    inputModalities: ['text'],
     capabilityIssues,
     detail: capable
       ? authenticated
-        ? 'Codex is connected through the official CLI session. Make & Watch is using bounded read-only exec compatibility mode because App Server is unavailable.'
+        ? 'Codex is connected through the official CLI session. Make & Watch is using bounded text-only exec compatibility mode because App Server is unavailable.'
         : 'Codex compatibility runtime is ready; complete the official Codex ChatGPT sign-in to enable Director chat.'
       : 'Codex CLI is detected, but neither App Server nor the bounded exec compatibility runtime is usable in this installed build.',
   };
@@ -433,6 +452,9 @@ async function claudeStatus() {
     loginPending: false,
     executableName: executable.name,
     discovery: executable.discovery,
+    model: '',
+    reasoningEffort: '',
+    inputModalities: [],
     capabilityIssues,
     detail: EXPERIMENTAL_CLAUDE_CODE
       ? probe.technicallyCapable
@@ -666,6 +688,34 @@ function compatibilityTranscript(document) {
   return transcript;
 }
 
+function normalizeChatAttachments(values) {
+  if (values === undefined || values === null) return [];
+  if (!Array.isArray(values)) throw new Error('Director chat attachments must be an array');
+  if (values.length > MAX_CHAT_ATTACHMENTS) throw new Error(`Director chat supports at most ${MAX_CHAT_ATTACHMENTS} reference images per turn`);
+  const seen = new Set();
+  const result = [];
+  for (const value of values) {
+    if (!value || typeof value !== 'object' || typeof value.absolutePath !== 'string' || !value.absolutePath) {
+      throw new Error('Director chat attachment is invalid');
+    }
+    const assetNodeId = String(value.assetNodeId ?? '');
+    if (!assetNodeId || seen.has(assetNodeId)) continue;
+    seen.add(assetNodeId);
+    result.push({
+      absolutePath: value.absolutePath,
+      archive: {
+        assetNodeId,
+        filename: String(value.filename ?? assetNodeId),
+        mimeType: String(value.mimeType ?? 'image/png'),
+        sha256: String(value.sha256 ?? ''),
+        relativePath: String(value.relativePath ?? ''),
+        byteSize: Number(value.byteSize ?? 0),
+      },
+    });
+  }
+  return result;
+}
+
 async function codexConversationTools() {
   const executable = discoverProviderExecutable('codex');
   if (!executable) return { executable: null, chat: null };
@@ -716,6 +766,9 @@ export async function invokeDirectorChat(provider, prompt, conversationId = null
   const executable = discoverProviderExecutable('codex');
   if (!executable) throw new Error('Codex official client is no longer available');
 
+  const attachments = normalizeChatAttachments(options.attachments);
+  const userAttachments = attachments.map((item) => item.archive);
+  const localImages = attachments.map((item) => item.absolutePath);
   const userMessage = boundedText(options.userMessage ?? extractUserMessage(prompt), 6_000);
   const projectRevision = Number.isSafeInteger(options.projectRevision) && options.projectRevision >= 0
     ? options.projectRevision
@@ -756,11 +809,16 @@ export async function invokeDirectorChat(provider, prompt, conversationId = null
     let runtimeMode = conversation.runtimeMode;
     const providerThreadId = conversation.providerThreadId;
 
+    if (localImages.length && runtimeMode !== 'app_server') {
+      throw new Error('Reference-image chat requires Codex App Server multimodal input; text-only exec fallback will not pretend it saw the image');
+    }
+
     if (runtimeMode === 'app_server' && providerThreadId) {
       try {
         const chat = await chatForCodex(executable);
-        rawReply = await chat.send(providerThreadId, prompt);
+        rawReply = await chat.send(providerThreadId, prompt, { localImages });
       } catch (error) {
+        if (localImages.length) throw error;
         const probe = await codexStaticProbe(executable);
         if (!probe.exec.chatAvailable) throw error;
         runtimeMode = 'exec_fallback';
@@ -778,6 +836,7 @@ export async function invokeDirectorChat(provider, prompt, conversationId = null
       : `${rawReply.slice(0, MAX_CHAT_REPLY_CHARS - 1)}…`;
     const summary = await conversationStore.appendTurn(conversation.id, {
       userText: userMessage,
+      userAttachments,
       assistantText: reply,
       projectRevision,
       runtimeMode,
@@ -797,10 +856,13 @@ export async function invokeDirectorChat(provider, prompt, conversationId = null
       title: summary.title,
       updatedAt: summary.updatedAt,
       runtimeMode: summary.runtimeMode,
+      model: status.model || '',
+      reasoningEffort: status.reasoningEffort || '',
     };
   } catch (error) {
     await conversationStore.appendFailure(conversation.id, {
       userText: userMessage || 'Director request',
+      userAttachments,
       message: error instanceof Error ? error.message : String(error),
       projectRevision,
     }).catch(() => undefined);
