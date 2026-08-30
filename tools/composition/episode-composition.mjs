@@ -1,6 +1,7 @@
 const MAX_SCENES = 256;
 const MAX_SHOTS = 4096;
 const MAX_AUDIO_CUES = 4096;
+const TEMPORAL_SHOT_STRATEGIES = new Set(['I2V', 'FLF2V', 'VIDEO']);
 
 function numeric(value, fallback = 0) {
   const parsed = Number(value);
@@ -63,14 +64,9 @@ function assetForGeneration(snapshot, generation, acceptedTypes) {
 }
 
 function mediaForShot(snapshot, shot) {
-  const strategy = shot.metadata.generationStrategy || '';
-  const preferred = strategy === 'VIDEO' || strategy === 'I2V' ? ['video', 'image'] : ['image', 'video'];
-  for (const type of preferred) {
-    const generation = readyGenerationsFor(snapshot, shot.id, type)[0];
-    const asset = assetForGeneration(snapshot, generation, [type]);
-    if (asset) return { generation, asset };
-  }
-  return { generation: null, asset: null };
+  const generation = readyGenerationsFor(snapshot, shot.id, 'video')[0];
+  const asset = assetForGeneration(snapshot, generation, ['video']);
+  return { generation, asset };
 }
 
 function mediaForAudio(snapshot, audio) {
@@ -133,9 +129,13 @@ export function compileEpisodeComposition(snapshot, episodeId) {
       const durationSeconds = numeric(shot.metadata.durationSeconds, 0);
       if (!(durationSeconds > 0)) issues.push(`Shot ${shot.id} has invalid duration.`);
       const strategy = shot.metadata.generationStrategy || '';
-      if (!strategy) issues.push(`Shot ${shot.id} has no generationStrategy.`);
+      if (!TEMPORAL_SHOT_STRATEGIES.has(strategy)) {
+        issues.push(`Shot ${shot.id} must use I2V, FLF2V or VIDEO; still-image Shot output was removed.`);
+      }
       const { generation, asset } = mediaForShot(snapshot, shot);
-      if (!asset) issues.push(`Shot ${shot.id} has no ready generated visual Asset.`);
+      if (!asset) {
+        issues.push(`Shot ${shot.id} has no ready temporal video Asset. Prepare hero/reference frames, then run temporal video generation.`);
+      }
       const startSeconds = sceneStart + shotCursor;
       const safeDuration = Math.max(0, durationSeconds);
       shotCursor += safeDuration;
@@ -223,7 +223,7 @@ export function compileEpisodeComposition(snapshot, episodeId) {
   }
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     projectRevision: snapshot.projectRevision,
     episode: {
       id: episode.id,
@@ -240,7 +240,7 @@ export function compileEpisodeComposition(snapshot, episodeId) {
       sceneCount: sceneManifest.length,
       shotCount: totalShots,
       audioCueCount: totalAudioCues,
-      generatedVisualCount: sceneManifest.flatMap((scene) => scene.shots).filter((shot) => shot.media).length,
+      generatedVisualCount: sceneManifest.flatMap((scene) => scene.shots).filter((shot) => shot.media?.mediaType === 'video').length,
       generatedAudioCount: sceneManifest.flatMap((scene) => scene.audio).filter((cue) => cue.media).length,
     },
     issues,
