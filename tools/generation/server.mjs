@@ -7,6 +7,7 @@ import { compileEpisodeComposition } from '../composition/episode-composition.mj
 import { EpisodeRenderService } from '../composition/episode-render-service.mjs';
 import { DirectorReferenceLibrary, directorReferenceLimits } from '../director/reference-library.mjs';
 import { localGpuTelemetry } from '../runtime/gpu-telemetry.mjs';
+import { AnchorReferenceGenerationService, anchorReferenceGenerationLimits } from './anchor-reference-generation-service.mjs';
 import { GenerationBridgeClient } from './bridge-client.mjs';
 import { ComfyUiClient } from './comfyui-client.mjs';
 import { FramePackTemporalProvider } from './framepack-temporal-provider.mjs';
@@ -35,6 +36,12 @@ const scheduledComfy = {
   ),
 };
 const sceneService = new SceneGenerationService({ bridge, comfy: scheduledComfy, artifactRoot: sceneArtifactRoot });
+const referenceService = new AnchorReferenceGenerationService({
+  bridge,
+  comfy,
+  scheduler,
+  projectRoot: root,
+});
 const audioService = new AudioGenerationService({
   bridge,
   scheduler,
@@ -128,6 +135,37 @@ function boundedId(value, label) {
   return value;
 }
 
+function optionalId(value, label) {
+  if (value === undefined || value === null || value === '') return null;
+  return boundedId(value, label);
+}
+
+function boundedText(value, label, maximum) {
+  if (value === undefined || value === null || value === '') return '';
+  if (typeof value !== 'string') throw Object.assign(new Error(`${label} must be a string`), { code: 'invalid_argument' });
+  const text = value.trim();
+  if (text.length > maximum) throw Object.assign(new Error(`${label} exceeds ${maximum} characters`), { code: 'invalid_argument' });
+  return text;
+}
+
+function boundedReferenceStyle(value) {
+  const style = boundedText(value, 'stylePreset', 80);
+  if (!style) return '';
+  if (!anchorReferenceGenerationLimits.stylePresets.includes(style)) {
+    throw Object.assign(new Error(`stylePreset must be one of ${anchorReferenceGenerationLimits.stylePresets.join(', ')}`), { code: 'invalid_argument' });
+  }
+  return style;
+}
+
+function boundedOptionalNumber(value, label, minimum, maximum) {
+  if (value === undefined || value === null || value === '') return undefined;
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < minimum || number > maximum) {
+    throw Object.assign(new Error(`${label} must be between ${minimum} and ${maximum}`), { code: 'invalid_argument' });
+  }
+  return number;
+}
+
 function boundedProviderId(value) {
   if (typeof value !== 'string' || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(value)) {
     throw Object.assign(new Error('providerId is invalid'), { code: 'invalid_argument' });
@@ -196,7 +234,7 @@ const server = createServer(async (request, response) => {
     if (request.method === 'GET' && url.pathname === '/api/health') {
       sendJson(request, response, 200, {
         service: 'makewatch-media-generation',
-        modes: ['storyboard-preview', 'director-reference-library', 'temporal-i2v', 'multilingual-voice', 'episode-composition', 'episode-preview-render'],
+        modes: ['storyboard-preview', 'director-reference-library', 'anchor-reference-generation', 'temporal-i2v', 'multilingual-voice', 'episode-composition', 'episode-preview-render'],
         temporal: temporalShotContract,
         gpu: localGpuTelemetry(),
         gpuScheduler: scheduler.status(),
@@ -205,6 +243,10 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === 'GET' && url.pathname === '/api/provider') {
       sendJson(request, response, 200, await sceneService.providerStatus());
+      return;
+    }
+    if (request.method === 'GET' && url.pathname === '/api/reference/provider') {
+      sendJson(request, response, 200, await referenceService.providerStatus());
       return;
     }
     if (request.method === 'GET' && url.pathname === '/api/audio/provider') {
@@ -218,6 +260,11 @@ const server = createServer(async (request, response) => {
     if (request.method === 'GET' && url.pathname === '/api/jobs') {
       const limit = Number(url.searchParams.get('limit') ?? '20');
       sendJson(request, response, 200, { jobs: sceneService.list(Number.isInteger(limit) ? limit : 20) });
+      return;
+    }
+    if (request.method === 'GET' && url.pathname === '/api/reference/jobs') {
+      const limit = Number(url.searchParams.get('limit') ?? '20');
+      sendJson(request, response, 200, { jobs: referenceService.list(Number.isInteger(limit) ? limit : 20) });
       return;
     }
     if (request.method === 'GET' && url.pathname === '/api/audio/jobs') {
@@ -256,6 +303,18 @@ const server = createServer(async (request, response) => {
       });
       return;
     }
+    if (request.method === 'POST' && url.pathname === '/api/reference/generate') {
+      const body = await readJson(request);
+      const job = await referenceService.start({
+        targetId: boundedId(body.targetId, 'targetId'),
+        sourceAssetId: optionalId(body.sourceAssetId, 'sourceAssetId'),
+        stylePreset: boundedReferenceStyle(body.stylePreset),
+        direction: boundedText(body.direction, 'direction', 4_000),
+        denoise: boundedOptionalNumber(body.denoise, 'denoise', 0.15, 0.9),
+      });
+      sendJson(request, response, 202, { job });
+      return;
+    }
     if (request.method === 'POST' && url.pathname === '/api/scenes') {
       const body = await readJson(request);
       const job = await sceneService.startScene(boundedId(body.sceneId, 'sceneId'));
@@ -283,6 +342,17 @@ const server = createServer(async (request, response) => {
       const snapshot = await bridge.snapshot();
       const reference = await directorReferences.resolveAsset(snapshot, boundedId(referenceMatch[1], 'assetNodeId'));
       streamArtifact(request, response, { ...reference, contentType: reference.mimeType });
+      return;
+    }
+
+    const referenceJobMatch = /^\/api\/reference\/jobs\/([A-Za-z0-9-]+)$/.exec(url.pathname);
+    if (request.method === 'GET' && referenceJobMatch) {
+      sendJson(request, response, 200, { job: referenceService.get(referenceJobMatch[1]) });
+      return;
+    }
+    const referenceArtifactMatch = /^\/api\/reference\/artifacts\/([A-Za-z0-9-]+)$/.exec(url.pathname);
+    if (request.method === 'GET' && referenceArtifactMatch) {
+      streamArtifact(request, response, referenceService.artifact(referenceArtifactMatch[1]));
       return;
     }
 
@@ -373,6 +443,9 @@ server.listen(port, '127.0.0.1', () => {
   void sceneService.providerStatus().then((status) => {
     if (status.online) console.log(`[generation] ComfyUI ready · ${status.checkpoint}`);
     else console.log(`[generation] ComfyUI offline · ${status.detail}`);
+  });
+  void referenceService.providerStatus().then((status) => {
+    console.log(`[reference] canonical image generation ${status.ready ? `ready · ${status.checkpoint}` : status.detail}`);
   });
   void audioService.providerStatus().then((status) => {
     console.log(`[audio] Chatterbox ${status.ready ? 'ready' : status.detail}`);
