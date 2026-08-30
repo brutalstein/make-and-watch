@@ -30,6 +30,7 @@ function mergeCapabilities(base, overlay) {
     if (!patch) return [kind, capability];
     return [kind, {
       ...capability,
+      ...patch,
       invariants: [...capability.invariants, ...(patch.invariants ?? [])],
       fields: mergeFields(capability.fields, patch.fields),
     }];
@@ -49,14 +50,6 @@ export function productionNodeKinds() {
   return Object.keys(productionNodeCapabilities());
 }
 
-/**
- * Compact, prompt-friendly projection of one node kind.
- *
- * The full capability table is far larger than a Director turn should spend
- * context on, so field specs are flattened to the parts that actually change
- * what the model writes: the metadata key, its type/enum domain, whether the
- * generation pipeline requires it, and its default.
- */
 function digestField(field) {
   return {
     key: field.key,
@@ -85,6 +78,7 @@ export function productionSchemaDigest(kinds = null) {
         label: capability.label,
         role: capability.role,
         purpose: capability.purpose,
+        primaryOutput: capability.primaryOutput,
         consumes: capability.consumes,
         produces: capability.produces,
         invariants: capability.invariants,
