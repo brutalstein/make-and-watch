@@ -1,3 +1,4 @@
+import { announceProjectChanged } from '../projectEvents';
 import type { DirectorReferenceImportResult } from './providerTypes';
 
 const DEFAULT_MEDIA_API = 'http://127.0.0.1:4178/api';
@@ -46,7 +47,9 @@ export const directorReferenceClient = {
       body: file,
       signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
     });
-    return parseResult<DirectorReferenceImportResult>(response);
+    const result = await parseResult<DirectorReferenceImportResult>(response);
+    announceProjectChanged({ projectRevision: result.projectRevision, source: 'director-reference-import' });
+    return result;
   },
 
   url(assetNodeId: string): string {
