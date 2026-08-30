@@ -10,6 +10,7 @@ const policy = scene.fields.find((field) => field.key === 'generationPolicy');
 assert.deepEqual(policy.options, ['i2v-first', 'keyframe-controlled', 'provider-native-video']);
 assert.equal(policy.default, 'i2v-first');
 assert.equal(defaultMetadataForKind('scene').generationPolicy, 'i2v-first');
+assert.match(scene.primaryOutput, /temporal Shot video Assets/i);
 
 const shot = digest.kinds.find((kind) => kind.kind === 'shot');
 const strategy = shot.fields.find((field) => field.key === 'generationStrategy');
@@ -22,6 +23,8 @@ assert.ok(shot.fields.some((field) => field.key === 'endFrameAssetId'));
 assert.ok(shot.fields.some((field) => field.key === 'temporalPrompt'));
 assert.ok(shot.fields.some((field) => field.key === 'temporalProvider'));
 assert.equal(defaultMetadataForKind('shot').generationStrategy, 'I2V');
+assert.match(shot.primaryOutput, /temporal video Asset/i);
+assert.equal(/animated still/i.test(`${shot.purpose} ${shot.primaryOutput}`), false);
 
 const character = digest.kinds.find((kind) => kind.kind === 'character');
 assert.ok(character.fields.some((field) => field.key === 'canonicalImageAssetIds'));
