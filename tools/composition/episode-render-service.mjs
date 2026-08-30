@@ -1,12 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { createReadStream } from 'node:fs';
 import { copyFile, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { cpus } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 
 import { ensureFfmpegRuntime } from '../runtime/ffmpeg-runtime-manager.mjs';
-import { buildCameraMotionFilter } from './camera-motion.mjs';
 import { compileEpisodeComposition } from './episode-composition.mjs';
 
 const MAX_PENDING_RENDERS = 3;
@@ -93,7 +91,7 @@ function scaleFilter(profile) {
 
 export function sceneCacheKey(manifest, scene) {
   return sha256Text(JSON.stringify({
-    renderer: 'ffmpeg-scene-v2',
+    renderer: 'ffmpeg-temporal-video-v3',
     encoding: { crf: VIDEO_CRF, preset: VIDEO_PRESET, transitionSeconds: DEFAULT_TRANSITION_SECONDS },
     profile: manifest.profile,
     durationSeconds: scene.durationSeconds,
@@ -103,11 +101,10 @@ export function sceneCacheKey(manifest, scene) {
       id: shot.id,
       durationSeconds: shot.durationSeconds,
       strategy: shot.strategy,
-      camera: shot.camera,
-      motionLevel: shot.motionLevel,
       transitionOut: shot.transitionOut,
       sha256: shot.media?.sha256 ?? '',
       mediaType: shot.media?.mediaType ?? '',
+      sourceDurationSeconds: shot.media?.durationSeconds ?? 0,
     })),
     audio: scene.audio.map((cue) => ({
       id: cue.id,
@@ -138,8 +135,6 @@ function publicJob(job) {
   };
 }
 
-// Editorial transition -> ffmpeg xfade. `match-cut` is an editorial idea rather
-// than an optical effect, so it renders as a hard cut like `cut` does.
 const XFADE_TRANSITIONS = {
   fade: 'fade',
   dissolve: 'fade',
@@ -150,18 +145,6 @@ const DEFAULT_TRANSITION_SECONDS = Number.isFinite(configuredTransitionSeconds)
   ? Math.max(0, Math.min(2, configuredTransitionSeconds))
   : 0.5;
 
-/**
- * Plan the transitions between the shots of one scene.
- *
- * An xfade consumes time from both sides, so a scene built from N shots joined
- * by overlaps would finish short and every later scene would drift against the
- * episode timeline. Each shot is therefore rendered longer than its editorial
- * duration by exactly the overlap it gives away, which makes the assembled
- * scene land back on the sum of the authored durations.
- *
- * Returns `null` when every join is a hard cut, so the caller keeps its cheaper
- * stream-copy concat instead of re-encoding for no visible gain.
- */
 export function planSceneTransitions(shots, fps) {
   const frameSeconds = 1 / Math.max(1, Number(fps) || 24);
   const plans = shots.map((shot, index) => {
@@ -170,8 +153,6 @@ export function planSceneTransitions(shots, fps) {
     const kind = XFADE_TRANSITIONS[String(shot.transitionOut ?? 'cut')] ?? null;
     if (isLast || !kind) return { transition: null, overlap: 0, duration, renderDuration: duration };
 
-    // An overlap may never eat more than half of either side, and must stay at
-    // least a frame long or xfade has nothing to interpolate across.
     const next = Math.max(0.04, Number(shots[index + 1].durationSeconds));
     const overlap = Math.min(DEFAULT_TRANSITION_SECONDS, duration / 2, next / 2);
     if (!(overlap >= frameSeconds)) {
@@ -184,13 +165,6 @@ export function planSceneTransitions(shots, fps) {
   return plans;
 }
 
-/**
- * Build the xfade filter graph that joins pre-rendered shot segments.
- *
- * Each xfade offset is measured against the running length of everything
- * already chained, which is what keeps a scene of many transitions in sync
- * rather than accumulating drift.
- */
 export function buildTransitionGraph(plans) {
   const steps = [];
   let label = '0:v';
@@ -207,8 +181,6 @@ export function buildTransitionGraph(plans) {
       );
       running = running + plans[index].renderDuration - previous.overlap;
     } else {
-      // A hard cut inside an otherwise dissolved scene still has to go through
-      // the graph, so it is expressed as a zero-length concat of the two legs.
       steps.push(`[${label}][${index}:v]concat=n=2:v=1:a=0[${output}]`);
       running += plans[index].renderDuration;
     }
@@ -377,7 +349,7 @@ export class EpisodeRenderService {
       width: manifest.profile.width,
       height: manifest.profile.height,
       fps: manifest.profile.fps,
-      renderer: 'ffmpeg-scene-cache-v1',
+      renderer: 'ffmpeg-temporal-video-v3',
       cachedScenes: job.cachedScenes,
     };
     await this.#registerEpisodeArtifact(generationNodeId, assetNodeId, job, manifest);
@@ -385,20 +357,19 @@ export class EpisodeRenderService {
   }
 
   async #renderScene(ffmpeg, manifest, scene, workDirectory, outputPath) {
-    // Authored transitions decide how the shots are joined. When every join is
-    // a hard cut the segments are stream-copied together, which is both faster
-    // and lossless; a scene that actually dissolves has to be re-encoded.
     const transitions = planSceneTransitions(scene.shots, manifest.profile.fps);
-
     const shotSegments = [];
+
     for (let index = 0; index < scene.shots.length; index += 1) {
       const shot = scene.shots[index];
-      if (!shot.media) throw new Error(`Shot ${shot.id} has no media`);
+      if (!shot.media || shot.media.mediaType !== 'video') {
+        throw new Error(`Shot ${shot.id} has no temporal video media; animated-still rendering was removed`);
+      }
       const input = projectAssetPath(this.projectRoot, shot.media);
-      if (!await exists(input)) throw new Error(`Shot media file is missing: ${shot.media.relativePath}`);
+      if (!await exists(input)) throw new Error(`Shot video file is missing: ${shot.media.relativePath}`);
       const segment = join(workDirectory, `shot-${String(index + 1).padStart(4, '0')}.mp4`);
       const renderSeconds = transitions ? transitions[index].renderDuration : Number(shot.durationSeconds);
-      await this.#renderShotSegment(ffmpeg, manifest, shot, input, segment, renderSeconds);
+      await this.#renderVideoShotSegment(ffmpeg, manifest, shot, input, segment, renderSeconds);
       shotSegments.push(segment);
     }
 
@@ -438,44 +409,29 @@ export class EpisodeRenderService {
     await rm(temporaryOutput, { force: true });
   }
 
-  async #renderShotSegment(ffmpeg, manifest, shot, input, output, renderSeconds) {
-    const duration = Math.max(0.04, Number(renderSeconds ?? shot.durationSeconds));
+  async #renderVideoShotSegment(ffmpeg, manifest, shot, input, output, renderSeconds) {
+    if (shot.media.mediaType !== 'video') throw new Error(`unsupported Shot media type: ${shot.media.mediaType}`);
+    const authoredDuration = Math.max(0.04, Number(shot.durationSeconds));
+    const duration = Math.max(0.04, Number(renderSeconds ?? authoredDuration));
+    const sourceDuration = Number(shot.media.durationSeconds);
+    if (!Number.isFinite(sourceDuration) || sourceDuration <= 0) {
+      throw new Error(`Shot ${shot.id} video Asset has no valid duration metadata`);
+    }
+    if (sourceDuration + 1 / Math.max(1, Number(manifest.profile.fps)) < authoredDuration) {
+      throw new Error(`Shot ${shot.id} temporal video is shorter than its authored duration`);
+    }
+
     const fps = String(manifest.profile.fps);
     const threads = String(Math.max(2, Math.min(8, Math.ceil(cpus().length / 2))));
-    const base = ['-y', '-hide_banner', '-loglevel', 'error'];
-    const visual = `${scaleFilter(manifest.profile)},fps=${fps},format=yuv420p`;
-    if (shot.media.mediaType === 'image') {
-      // The Shot's authored camera move is rendered here rather than discarded.
-      // A locked-off shot keeps the cheaper static path.
-      const move = buildCameraMotionFilter({
-        camera: shot.camera,
-        motionLevel: shot.motionLevel,
-        durationSeconds: duration,
-        fps: manifest.profile.fps,
-        width: manifest.profile.width,
-        height: manifest.profile.height,
-      });
-      await runProcess(ffmpeg, [
-        ...base,
-        '-loop', '1', '-framerate', fps, '-i', input,
-        '-t', duration.toFixed(6),
-        '-vf', move ? move.filter : visual,
-        '-an', '-c:v', 'libx264', '-preset', VIDEO_PRESET, '-crf', VIDEO_CRF,
-        '-threads', threads, '-pix_fmt', 'yuv420p', '-movflags', '+faststart', output,
-      ]);
-      return;
-    }
-    if (shot.media.mediaType === 'video') {
-      const padded = `${scaleFilter(manifest.profile)},fps=${fps},tpad=stop_mode=clone:stop_duration=${duration.toFixed(6)},trim=duration=${duration.toFixed(6)},setpts=PTS-STARTPTS,format=yuv420p`;
-      await runProcess(ffmpeg, [
-        ...base, '-i', input,
-        '-t', duration.toFixed(6), '-vf', padded,
-        '-an', '-c:v', 'libx264', '-preset', VIDEO_PRESET, '-crf', VIDEO_CRF,
-        '-threads', threads, '-pix_fmt', 'yuv420p', '-movflags', '+faststart', output,
-      ]);
-      return;
-    }
-    throw new Error(`unsupported Shot media type: ${shot.media.mediaType}`);
+    const stretch = duration / authoredDuration;
+    const timing = Math.abs(stretch - 1) > 0.000001 ? `setpts=${stretch.toFixed(8)}*PTS,` : 'setpts=PTS-STARTPTS,';
+    const filter = `${timing}${scaleFilter(manifest.profile)},fps=${fps},trim=duration=${duration.toFixed(6)},setpts=PTS-STARTPTS,format=yuv420p`;
+    await runProcess(ffmpeg, [
+      '-y', '-hide_banner', '-loglevel', 'error', '-i', input,
+      '-vf', filter,
+      '-an', '-c:v', 'libx264', '-preset', VIDEO_PRESET, '-crf', VIDEO_CRF,
+      '-threads', threads, '-pix_fmt', 'yuv420p', '-movflags', '+faststart', output,
+    ]);
   }
 
   async #renderSceneAudio(ffmpeg, scene, output) {
@@ -520,7 +476,7 @@ export class EpisodeRenderService {
       mediaType: 'video',
       provider: 'ffmpeg',
       model: 'ffmpeg-managed',
-      strategy: 'SCENE_CACHED_PREVIEW_ASSEMBLY',
+      strategy: 'TEMPORAL_VIDEO_ASSEMBLY',
       status: 'ready',
       artifactPath: job.artifact.relativePath,
       artifactSha256: job.artifact.sha256,
@@ -537,7 +493,7 @@ export class EpisodeRenderService {
         node: {
           id: generationNodeId,
           kind: 'generation',
-          title: `${job.episodeTitle} · Preview Master`,
+          title: `${job.episodeTitle} · Temporal Master`,
           metadata,
           approval: 'draft', locked: false, stale: false,
         },
@@ -553,7 +509,7 @@ export class EpisodeRenderService {
       generationCommands.push({ type: 'node.markFresh', id: generation.id });
     }
     await this.bridge.apply(generationCommands, {
-      actor: 'system', source: 'episode-render', reason: `register preview master generation for ${job.episodeId}`,
+      actor: 'system', source: 'episode-render', reason: `register temporal master generation for ${job.episodeId}`,
     }, snapshot.projectRevision);
 
     snapshot = await this.bridge.snapshot();
@@ -565,10 +521,10 @@ export class EpisodeRenderService {
           node: {
             id: assetNodeId,
             kind: 'asset',
-            title: `${job.episodeTitle} · Preview MP4`,
+            title: `${job.episodeTitle} · Temporal MP4`,
             approval: 'draft', locked: false, stale: false,
             metadata: {
-              mediaType: 'video', role: 'episode-preview-master', relativePath: job.artifact.relativePath,
+              mediaType: 'video', role: 'episode-temporal-master', relativePath: job.artifact.relativePath,
               sha256: job.artifact.sha256, mimeType: 'video/mp4', durationSeconds: String(job.artifact.durationSeconds),
               width: String(job.artifact.width), height: String(job.artifact.height), fps: String(job.artifact.fps),
               source: 'generated', generatedBy: generationNodeId, renderer: job.artifact.renderer,
@@ -578,7 +534,7 @@ export class EpisodeRenderService {
         { type: 'dependency.add', dependent: assetNodeId, dependency: generationNodeId },
         { type: 'node.markFresh', id: assetNodeId },
       ], {
-        actor: 'system', source: 'episode-render', reason: `register preview MP4 asset for ${job.episodeId}`,
+        actor: 'system', source: 'episode-render', reason: `register temporal MP4 asset for ${job.episodeId}`,
       }, snapshot.projectRevision);
     }
   }
