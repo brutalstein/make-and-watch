@@ -1,6 +1,28 @@
 {
+  "scene": {
+    "invariants": [
+      "Scene visual output is assembled only from real temporal video Shot Assets; still images are preparation/reference inputs, never final Shot media."
+    ],
+    "fields": [
+      {
+        "key": "generationPolicy",
+        "label": "Generation policy",
+        "type": "enum",
+        "scope": "production",
+        "description": "Temporal synthesis policy inherited by child Shots. Image generation prepares hero/end/reference frames only; it is never an episode-render fallback.",
+        "options": [
+          "i2v-first",
+          "keyframe-controlled",
+          "provider-native-video"
+        ],
+        "defaultValue": "i2v-first"
+      }
+    ]
+  },
   "shot": {
     "invariants": [
+      "Final Shot media must be a real video Asset produced by temporal synthesis.",
+      "Still images may only act as hero/start/end/reference anchors and can never satisfy Episode render readiness.",
       "Temporal generation must resolve concrete input/reference Assets before expensive execution.",
       "Queued temporal work must fail closed if the Shot revision changes before commit."
     ],
@@ -10,16 +32,13 @@
         "label": "Generation strategy",
         "type": "enum",
         "scope": "production",
-        "description": "Concrete media synthesis mode. I2V animates a start/hero frame; FLF2V constrains both endpoints; VIDEO is provider-native temporal synthesis.",
+        "description": "Final temporal synthesis mode. I2V animates a hero frame; FLF2V constrains both endpoints; VIDEO is provider-native temporal synthesis. There is no animated-still fallback.",
         "options": [
-          "STILL_MOTION",
-          "T2I",
           "I2V",
           "FLF2V",
-          "VIDEO",
-          "COMPOSITE"
+          "VIDEO"
         ],
-        "defaultValue": "STILL_MOTION",
+        "defaultValue": "I2V",
         "requiredFor": "preview"
       },
       {
@@ -27,7 +46,7 @@
         "label": "Hero frame Asset",
         "type": "text",
         "scope": "production",
-        "description": "Optional explicit image Asset id used as the canonical first frame for I2V/FLF2V. If empty, the latest ready Shot image generation may be used."
+        "description": "Optional explicit image Asset id used as the canonical first frame for I2V/FLF2V. If empty, the latest ready Shot image generation may be used as preparation input only."
       },
       {
         "key": "endFrameAssetId",
@@ -41,7 +60,7 @@
         "label": "Temporal action prompt",
         "type": "multiline",
         "scope": "creative",
-        "description": "Chronological motion/action direction for the video model. Falls back to Subject action when empty."
+        "description": "Chronological motion/action direction for the video model. Falls back to Subject action when empty. Write motion as ordered beats instead of static appearance prose."
       },
       {
         "key": "temporalProvider",
