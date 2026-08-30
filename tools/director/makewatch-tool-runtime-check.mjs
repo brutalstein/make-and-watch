@@ -27,6 +27,10 @@ const baseRuntime = {
   generationJobs: async () => ({}),
 };
 const temporalRuntime = {
+  referenceProvider: async () => ({ provider: 'comfyui', ready: true, modes: ['T2I_REFERENCE', 'IMG2IMG_REFERENCE'] }),
+  startReferenceGeneration: async (input) => ({ job: { id: 'reference-job', ...input, status: 'queued' } }),
+  referenceJob: async ({ jobId }) => ({ job: { id: jobId, status: 'running' } }),
+  referenceJobs: async () => ({ jobs: [] }),
   temporalProviders: async () => ({ providers: [{ id: 'framepack', ready: true }] }),
   temporalShotPlan: async ({ shotId }) => ({ plan: { shot: { id: shotId, strategy: 'I2V' } } }),
   startTemporalShotGeneration: async ({ shotId, providerId }) => ({ job: { id: 'temporal-job', shotId, providerId, status: 'queued' } }),
@@ -43,6 +47,32 @@ const base = JSON.parse(await handleConfiguredMakeWatchToolCall({
   namespace: 'makewatch', tool: 'project_snapshot', arguments: {},
 }));
 assert.equal(base.projectRevision, 1);
+
+const referenceProvider = JSON.parse(await handleConfiguredMakeWatchToolCall({
+  namespace: 'makewatch_media', tool: 'reference_provider', arguments: {},
+}));
+assert.equal(referenceProvider.ready, true);
+
+const referenceStarted = JSON.parse(await handleConfiguredMakeWatchToolCall({
+  namespace: 'makewatch_media',
+  tool: 'reference_generate',
+  arguments: {
+    targetId: 'character.mira',
+    sourceAssetId: 'asset.source',
+    stylePreset: 'anime-cinematic',
+    direction: 'preserve identity',
+    denoise: 0.6,
+  },
+}));
+assert.equal(referenceStarted.job.status, 'queued');
+assert.equal(referenceStarted.job.targetId, 'character.mira');
+assert.equal(referenceStarted.job.stylePreset, 'anime-cinematic');
+assert.equal(referenceStarted.job.denoise, 0.6);
+
+const referenceJob = JSON.parse(await handleConfiguredMakeWatchToolCall({
+  namespace: 'makewatch_media', tool: 'reference_job', arguments: { jobId: 'reference-job' },
+}));
+assert.equal(referenceJob.job.status, 'running');
 
 const media = JSON.parse(await handleConfiguredMakeWatchToolCall({
   namespace: 'makewatch_media', tool: 'temporal_providers', arguments: {},
