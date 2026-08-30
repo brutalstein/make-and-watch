@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { relative, resolve } from 'node:path';
 
 const MAX_PENDING_JOBS = 8;
@@ -262,16 +262,26 @@ export class AnchorReferenceGenerationService {
     }
   }
 
+  #assertInputsCurrent(snapshot, job, phase) {
+    const target = nodeById(snapshot, job.targetId);
+    if (!target || target.kind !== job.targetKind) {
+      throw serviceError('stale_request', `reference target was removed ${phase}`);
+    }
+    if (target.revision !== job.targetRevision) {
+      throw serviceError('stale_request', `reference target changed ${phase}; submit again from the current revision`);
+    }
+    if (target.locked) throw serviceError('conflict', `reference target became locked ${phase}`);
+
+    const source = job.sourceAssetId ? nodeById(snapshot, job.sourceAssetId) : null;
+    if (job.sourceAssetId && (!source || source.kind !== 'asset' || source.revision !== job.sourceRevision || source.metadata?.mediaType !== 'image')) {
+      throw serviceError('stale_request', `source reference Asset changed ${phase}; submit again from the current revision`);
+    }
+    return { target, source };
+  }
+
   async #run(job) {
     let snapshot = await this.bridge.snapshot();
-    const target = nodeById(snapshot, job.targetId);
-    if (!target || target.kind !== job.targetKind) throw serviceError('stale_request', 'reference target was removed before generation started');
-    if (target.revision !== job.targetRevision) throw serviceError('stale_request', 'reference target changed while the generation job was queued; submit again from the current revision');
-    if (target.locked) throw serviceError('conflict', 'reference target became locked before generation started');
-    const source = job.sourceAssetId ? nodeById(snapshot, job.sourceAssetId) : null;
-    if (job.sourceAssetId && (!source || source.revision !== job.sourceRevision || source.kind !== 'asset')) {
-      throw serviceError('stale_request', 'source reference Asset changed while the generation job was queued');
-    }
+    let { target, source } = this.#assertInputsCurrent(snapshot, job, 'before generation started');
     const series = seriesForTarget(snapshot, target);
     const prompt = compilePrompt(target, series, job.stylePreset, job.direction, Boolean(source));
     const negative = negativePrompt(target, Boolean(source));
@@ -331,7 +341,14 @@ export class AnchorReferenceGenerationService {
     await mkdir(directory, { recursive: true });
     const outputPath = resolve(directory, `${sha256}${extension}`);
     const existing = await stat(outputPath).catch(() => null);
-    if (!existing) await writeFile(outputPath, bytes, { flag: 'wx' });
+    if (existing) {
+      if (!existing.isFile()) throw serviceError('integrity_error', 'reference artifact hash path exists but is not a file');
+      const existingBytes = await readFile(outputPath);
+      const existingHash = createHash('sha256').update(existingBytes).digest('hex');
+      if (existingHash !== sha256) throw serviceError('integrity_error', 'reference artifact content-addressed path failed hash verification');
+    } else {
+      await writeFile(outputPath, bytes, { flag: 'wx' });
+    }
     const relativePath = relative(resolve(this.projectRoot, '.makewatch'), outputPath).replaceAll('\\', '/');
     const assetNodeId = `asset.${sha256.slice(0, 24)}`;
     const completedAt = new Date().toISOString();
@@ -354,11 +371,13 @@ export class AnchorReferenceGenerationService {
     };
 
     snapshot = await this.bridge.snapshot();
+    ({ target, source } = this.#assertInputsCurrent(snapshot, job, 'while generation was running'));
     await this.#upsertGeneration(snapshot, generationNodeId, job, {
       status: 'ready', promptHash, seed, provider: 'comfyui', model: generated.checkpoint, sampler: generated.sampler, scheduler: generated.scheduler,
       promptId: generated.promptId, startedAt: job.startedAt, completedAt, artifactPath: relativePath, artifactSha256: sha256, error: '',
     });
     snapshot = await this.bridge.snapshot();
+    this.#assertInputsCurrent(snapshot, job, 'before canonical reference registration');
     await this.#registerAssetAndLinkTarget(snapshot, target.id, assetNodeId, generationNodeId, job, job.artifact);
     job.progress = 95;
   }
@@ -397,9 +416,8 @@ export class AnchorReferenceGenerationService {
   }
 
   async #registerAssetAndLinkTarget(snapshot, targetId, assetNodeId, generationNodeId, job, artifact) {
-    const target = nodeById(snapshot, targetId);
-    if (!target || target.kind !== job.targetKind) throw serviceError('stale_request', 'reference target disappeared before output registration');
-    if (target.locked) throw serviceError('conflict', 'reference target was locked before output registration');
+    const { target } = this.#assertInputsCurrent(snapshot, job, 'before canonical reference registration');
+    if (target.id !== targetId) throw serviceError('integrity_error', 'reference target identity changed before output registration');
     const existing = nodeById(snapshot, assetNodeId);
     const commands = [];
     if (!existing) {
