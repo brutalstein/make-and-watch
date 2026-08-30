@@ -232,14 +232,151 @@ CI now asserts:
 - short video blocks readiness rather than being freeze-padded;
 - transition/cache logic is tested using real video media semantics.
 
-### Verification status
+### Verification
 
-This entry records the migration before final release verification. The exact final `main` SHA after all code/documentation changes must pass:
+Exact release SHA `426e80cefe06b7c66c3aeb8485d0abbb07607faa` passed CI run #796:
 
-- Bridge and Director checks;
-- Studio TypeScript typecheck;
-- Studio production build;
-- Native Linux configure/build/test;
-- Native Windows configure/build/test.
+- Bridge and Director checks: success;
+- Studio TypeScript typecheck: success;
+- Studio production build: success;
+- Native Linux configure/build/test: success;
+- Native Windows MSVC build/test: success.
 
-Do not call this temporal-only checkpoint released until that exact-head CI is green.
+---
+
+## 2026-08-30 14:04 TRT — Multilingual anime localization architecture + real-user proof gate
+
+### Product objective
+
+Move Make & Watch from “temporal video generator” toward a credible episodic anime production system with an explicit language/localization model and a hard real-media acceptance test.
+
+Target default for the Turkish anime audience profile:
+
+```text
+Authoring language:          tr-TR
+Original performance audio: ja-JP
+Primary subtitles:          tr-TR
+Optional subtitle tracks:   en-US / others
+Optional dub tracks:        tr-TR / en-US / others
+```
+
+Japanese performance is an intelligent default for `anime-cinematic`, not a mandatory restriction.
+
+### Architecture decision: DialogueUnit identity
+
+A serious localized production cannot keep script text, Japanese TTS, Turkish subtitle text and lip-sync timing as unrelated strings.
+
+The new design document introduces a stable semantic `DialogueUnit` concept.
+
+One DialogueUnit owns/links:
+
+- semantic intent;
+- speaker Character;
+- authoring text;
+- Japanese performance adaptation;
+- Turkish/English subtitle adaptation;
+- generated speech Assets;
+- forced-alignment Assets;
+- optional dub Assets;
+- QC/approval/revision state.
+
+The stable DialogueUnit id survives translation and regeneration.
+
+### Audio timing versus subtitle timing
+
+A critical distinction is now explicit:
+
+```text
+actual generated audio + forced alignment
+ -> mouth/face/performance timing
+
+same DialogueUnit + audio/shot anchors
+ -> subtitle cue timing optimized for readability
+```
+
+Lip sync and subtitle sync therefore share identity and timing anchors but are not forced to use identical out-times.
+
+This allows mouth motion to end with speech while a Turkish subtitle may remain visible slightly longer when readability and shot boundaries permit.
+
+### Rational-time direction
+
+The long-term timeline should migrate away from floating-point seconds as production truth.
+
+The roadmap recommends an OpenTimelineIO-style rational-time principle:
+
+- picture/edit time represented at frame rate;
+- audio alignment represented in integer samples;
+- VTT/IMSC/SRT timestamps derived during export.
+
+This prevents cumulative drift and handles 23.976/29.97/59.94 more rigorously.
+
+### Japanese speech and alignment research
+
+Current official/public research establishes:
+
+- Chatterbox Multilingual V3 documents `ja` and `tr` support;
+- Montreal Forced Aligner documents a current Japanese acoustic/dictionary/G2P alignment workflow;
+- WhisperX currently includes Japanese and Turkish alignment model mappings.
+
+These are research/roadmap inputs unless already wired into Make & Watch. Documentation does not claim the forced-alignment layer is implemented today.
+
+### Subtitle architecture
+
+The new localization document recommends:
+
+- structured internal SubtitleTrack data;
+- WebVTT for browser preview;
+- IMSC/TTML for professional timed-text master output;
+- SRT as compatibility export only;
+- BCP-47 language tags at project boundaries;
+- deterministic subtitle timing verification;
+- language matrix UI rather than one ambiguous `language` field.
+
+W3C WebVTT and IMSC are the standards anchors. Current public Netflix timing/language guides are used only as professional QC references, not as certification claims.
+
+For Turkish adult subtitles, the documented target includes <=17 characters/second and maximum two lines, with audio/shot-aware timing and semantic segmentation.
+
+### Audio-first dialogue production
+
+For dialogue-heavy anime, the recommended order is now:
+
+```text
+DialogueUnits
+ -> Japanese performance adaptation
+ -> Japanese TTS
+ -> forced alignment
+ -> Shot timing refinement
+ -> hero/start frames
+ -> temporal video
+ -> Turkish subtitle timing/adaptation
+ -> final mix/render
+```
+
+This makes actual acting/audio duration authoritative before expensive final video generation and reduces late video rework.
+
+### New documents
+
+Created:
+
+- `project_brain/LOCALIZATION_SYNC_ARCHITECTURE.md`
+- `project_brain/ONE_MINUTE_ANIME_ACCEPTANCE.md`
+- `project_brain/CLAUDE_REAL_USER_ANIME_QA_PROMPT.md`
+
+`LOCALIZATION_SYNC_ARCHITECTURE.md` specifies multilingual semantic identity, language matrix, forced alignment, subtitle/lip timing separation, timed-text formats, dub strategy, on-screen Japanese text, songs and QC.
+
+`ONE_MINUTE_ANIME_ACCEPTANCE.md` defines a real ~60 second proof instead of an API/unit-test proof. A PASS requires a newly generated MP4, real temporal video Assets for every final Shot, Japanese dialogue, Turkish subtitles, visual playback/inspection, audio/subtitle checks, continuity review and exact-head CI.
+
+`CLAUDE_REAL_USER_ANIME_QA_PROMPT.md` instructs a Claude environment with repo/terminal/browser access to act as a demanding real user: launch Studio, use the visible UI, create the mini episode, generate real media, render it, play it, extract/inspect frames, produce timestamped defects, repair root causes and rerun the smallest invalidated scope.
+
+### Important truth boundary
+
+This documentation checkpoint does **not** itself prove that the user's local RTX machine currently produces a smooth one-minute anime. That proof requires running the acceptance prompt on the product machine with real installed inference runtimes and visually/audibly inspecting the final generated media.
+
+The documentation explicitly forbids calling a test PASS when:
+
+- no final MP4 exists;
+- a final Shot is still-image fallback;
+- the final output was not actually played/inspected;
+- Japanese audio/subtitle behavior was fabricated;
+- an external provider was offline;
+- the exact final commit was not verified.
