@@ -11,6 +11,10 @@ let temporalRuntime = null;
 
 function createTemporalRuntime(client = new GenerationGatewayClient()) {
   return {
+    referenceProvider: () => client.referenceProviderStatus(),
+    startReferenceGeneration: (input) => client.startReferenceGeneration(input),
+    referenceJob: ({ jobId }) => client.referenceJob(jobId),
+    referenceJobs: ({ limit }) => client.referenceJobs(limit),
     temporalProviders: () => client.temporalProviders(),
     temporalShotPlan: ({ shotId, maxSegmentSeconds }) => client.temporalShotPlan(shotId, { maxSegmentSeconds }),
     startTemporalShotGeneration: ({ shotId, providerId }) => client.startTemporalShot(shotId, providerId),
