@@ -83,7 +83,13 @@ function runWorkerProcess(python, workerPath, requestPath, { cwd, timeoutMs = WO
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
       detached: process.platform !== 'win32',
-      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+      env: {
+        ...process.env,
+        PYTHONUNBUFFERED: '1',
+        HF_HUB_OFFLINE: '1',
+        TRANSFORMERS_OFFLINE: '1',
+        HF_HUB_DISABLE_TELEMETRY: '1',
+      },
     });
     let stdout = '';
     let stderr = '';
@@ -178,6 +184,7 @@ export class FramePackTemporalProvider {
     const selected = runtime.selected;
     const ready = Boolean(
       runtime.installed
+      && runtime.modelsReady
       && runtime.hardware?.readyForAttempt
       && selected?.sourceEntry
       && selected?.python,
@@ -187,14 +194,17 @@ export class FramePackTemporalProvider {
       ready,
       busy: false,
       detail: ready
-        ? 'Official FramePack checkout and dedicated Python runtime are ready for bounded I2V.'
-        : runtime.installed && !selected?.python
-          ? 'FramePack was found, but its dedicated/embedded Python runtime was not discovered. Global Python is intentionally not used.'
-          : runtime.detail,
+        ? 'Official FramePack checkout, required local model cache and dedicated Python runtime are ready for bounded offline I2V.'
+        : runtime.installed && !runtime.modelsReady
+          ? runtime.detail || 'FramePack model cache is incomplete; explicit setup is required.'
+          : runtime.installed && !selected?.python
+            ? 'FramePack was found, but its dedicated/embedded Python runtime was not discovered. Global Python is intentionally not used.'
+            : runtime.detail,
       runtime: selected ? {
         kind: selected.kind,
         root: selected.root,
         dedicatedPython: Boolean(selected.python),
+        modelsReady: Boolean(runtime.modelsReady),
         automaticBootstrap: false,
       } : null,
       hardware: runtime.hardware,
@@ -212,8 +222,8 @@ export class FramePackTemporalProvider {
 
     const runtime = await this.runtimeResolver(context.hardware ?? {});
     const selected = runtime.selected;
-    if (!runtime.installed || !runtime.hardware?.readyForAttempt || !selected?.sourceEntry || !selected?.python) {
-      throw providerError('not_ready', (await this.status(context)).detail || 'FramePack runtime is not ready');
+    if (!runtime.installed || !runtime.modelsReady || !runtime.hardware?.readyForAttempt || !selected?.sourceEntry || !selected?.python) {
+      throw providerError('not_ready', (await this.status(context)).detail || 'FramePack runtime is not ready for offline execution');
     }
 
     const inputImage = projectMediaPath(this.projectRoot, startFrame.relativePath);
@@ -276,6 +286,7 @@ export class FramePackTemporalProvider {
           steps: worker?.payload?.steps ?? null,
           requestedDurationSeconds: duration,
           comfyMemoryReleased: memoryRelease?.released === true,
+          offlineModelExecution: true,
         },
       };
     } catch (error) {
