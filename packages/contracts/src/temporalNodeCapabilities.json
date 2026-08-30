@@ -71,7 +71,8 @@
         "label": "Temporal provider",
         "type": "text",
         "scope": "runtime",
-        "description": "Explicit temporal provider id. Provider choice stays explicit in the public architecture; no hidden adaptive model selection."
+        "defaultValue": "native-anime",
+        "description": "Explicit temporal provider id. Targets the deterministic Native Anime Motion Engine (native-anime), which remains fail-closed until its ShotAnim compiler reports ready. FramePack and other heavy diffusion providers are optional fallbacks selected explicitly; no hidden adaptive model selection."
       }
     ]
   },

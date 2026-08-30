@@ -35,11 +35,15 @@ function validateProvider(provider) {
   if (!PROVIDER_ID.test(id)) throw registryError('invalid_argument', 'temporal provider id is invalid');
   if (typeof provider.status !== 'function') throw registryError('invalid_argument', `temporal provider ${id} is missing status()`);
   if (typeof provider.generate !== 'function') throw registryError('invalid_argument', `temporal provider ${id} is missing generate()`);
+  // Delegate to the original object so class-based providers keep their prototype
+  // methods and `this`. Spreading a class instance ({...provider}) silently drops
+  // status()/generate() and left the only real temporal provider unusable.
   return {
-    ...provider,
     id,
     displayName: String(provider.displayName ?? id).trim().slice(0, 120) || id,
     strategies: normalizedStrategies(provider.strategies),
+    status: (context) => provider.status(context),
+    generate: (request, context) => provider.generate(request, context),
   };
 }
 

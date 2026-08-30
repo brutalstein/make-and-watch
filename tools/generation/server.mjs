@@ -2,6 +2,7 @@ import { createReadStream, existsSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { resolve } from 'node:path';
 
+import { NativeAnimeTemporalProvider } from '../anime/native-anime-provider.mjs';
 import { AudioGenerationService } from '../audio/audio-generation-service.mjs';
 import { compileEpisodeComposition } from '../composition/episode-composition.mjs';
 import { EpisodeRenderService } from '../composition/episode-render-service.mjs';
@@ -56,10 +57,19 @@ const renderService = new EpisodeRenderService({
   artifactRoot: episodeArtifactRoot,
   cacheRoot: renderCacheRoot,
 });
-const temporalRegistry = new TemporalProviderRegistry().register(new FramePackTemporalProvider({
-  projectRoot: root,
-  workerPath: resolve(root, 'tools/generation/framepack-temporal-worker.py'),
-}));
+// `native-anime` is the deterministic target default (no resident video model), but
+// reports not-ready until the native graph -> ShotAnim compiler is connected.
+// FramePack stays an optional experiment and reports not-ready unless its ~30-40 GB
+// models are explicitly present.
+const temporalRegistry = new TemporalProviderRegistry()
+  .register(new NativeAnimeTemporalProvider({
+    projectRoot: root,
+    workerPath: resolve(root, 'tools/anime/native-anime-worker.py'),
+  }))
+  .register(new FramePackTemporalProvider({
+    projectRoot: root,
+    workerPath: resolve(root, 'tools/generation/framepack-temporal-worker.py'),
+  }));
 const temporalService = new TemporalShotGenerationService({
   bridge,
   registry: temporalRegistry,

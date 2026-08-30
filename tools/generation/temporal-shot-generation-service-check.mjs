@@ -65,6 +65,7 @@ const registry = {
         width: 960,
         height: 540,
         fps: 24,
+        providerMetadata: { engine: 'fixture', deterministic: true },
       },
     };
   },
@@ -91,6 +92,10 @@ assert.equal(applies[0].context.source, 'temporal-shot-generation');
 assert.ok(applies[0].commands.some((command) => command.type === 'node.create' && command.node.kind === 'generation'));
 assert.ok(applies[0].commands.some((command) => command.type === 'node.create' && command.node.kind === 'asset'));
 assert.ok(applies[0].commands.some((command) => command.type === 'dependency.add' && command.dependency === 'asset.face'));
+const generationCreate = applies[0].commands.find((command) => command.type === 'node.create' && command.node.kind === 'generation');
+const assetCreate = applies[0].commands.find((command) => command.type === 'node.create' && command.node.kind === 'asset');
+assert.equal(generationCreate.node.metadata.providerMetadata, JSON.stringify({ engine: 'fixture', deterministic: true }));
+assert.equal(assetCreate.node.metadata.fps, '24');
 
 let snapshots = 0;
 const staleBridge = {
