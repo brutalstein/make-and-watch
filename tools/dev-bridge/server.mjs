@@ -27,6 +27,7 @@ import {
   shutdownDirectorProviders,
   unarchiveDirectorConversation,
 } from '../director/provider-manager.mjs';
+import { DirectorReferenceLibrary, directorReferenceLimits } from '../director/reference-library.mjs';
 import { DEV_SEED_COMMANDS, DEV_SEED_VERSION } from './dev-seed.mjs';
 import { GenerationGatewayClient } from './generation-gateway.mjs';
 import { WorkflowService } from './workflow-service.mjs';
@@ -169,6 +170,7 @@ function rpc(method, params = {}) {
 const workflowStore = new WorkflowStore({ rootDirectory: workflowDirectory });
 const workflowService = new WorkflowService({ rpc, store: workflowStore });
 const generationGateway = new GenerationGatewayClient();
+const directorReferences = new DirectorReferenceLibrary({ projectRoot: root });
 
 // The Director operates the project through exactly one authoritative surface.
 // Project/workflow operations stay native; media operations are delegated to
@@ -272,12 +274,33 @@ function boundedWorkflowText(value, label, maximum, { required = false } = {}) {
 
 function directorProvider(value) {
   if (value === 'codex' || value === 'claude') return value;
-  throw new Error('Director provider must be codex or claude');
+  throw Object.assign(new Error('Director provider must be codex or claude'), { code: 'invalid_argument' });
 }
 
 function directorMode(value) {
   if (value === 'assist' || value === 'guided' || value === 'director') return value;
-  throw new Error('Director mode must be assist, guided, or director');
+  throw Object.assign(new Error('Director mode must be assist, guided, or director'), { code: 'invalid_argument' });
+}
+
+function directorChatAttachmentIds(value) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw Object.assign(new Error('Director attachmentAssetIds must be an array'), { code: 'invalid_argument' });
+  if (value.length > directorReferenceLimits.maxAttachmentsPerMessage) {
+    throw Object.assign(new Error(`Director supports at most ${directorReferenceLimits.maxAttachmentsPerMessage} reference images per message`), { code: 'invalid_argument' });
+  }
+  const result = [];
+  const seen = new Set();
+  for (const candidate of value) {
+    const id = String(candidate ?? '');
+    if (!id || id.length > 180 || !/^[A-Za-z0-9._:-]+$/.test(id)) {
+      throw Object.assign(new Error('Director attachment Asset id is invalid'), { code: 'invalid_argument' });
+    }
+    if (!seen.has(id)) {
+      seen.add(id);
+      result.push(id);
+    }
+  }
+  return result;
 }
 
 function directorObjective(value) {
@@ -286,18 +309,27 @@ function directorObjective(value) {
   return value.trim();
 }
 
-function directorChatMessage(value) {
-  if (typeof value !== 'string' || !value.trim()) throw new Error('Director chat message is required');
-  if (value.length > 6_000) throw new Error('Director chat message exceeds 6000 characters');
+function directorChatMessage(value, hasAttachments = false) {
+  if ((value === undefined || value === null || !String(value).trim()) && hasAttachments) return '[Reference image attached]';
+  if (typeof value !== 'string' || !value.trim()) throw Object.assign(new Error('Director chat message is required'), { code: 'invalid_argument' });
+  if (value.length > 6_000) throw Object.assign(new Error('Director chat message exceeds 6000 characters'), { code: 'invalid_argument' });
   return value.trim();
 }
 
 function optionalConversationId(value) {
   if (value === undefined || value === null || value === '') return null;
   if (typeof value !== 'string' || value.length > 128 || !/^[A-Za-z0-9_-]+$/.test(value)) {
-    throw new Error('Director conversation ID is invalid');
+    throw Object.assign(new Error('Director conversation ID is invalid'), { code: 'invalid_argument' });
   }
   return value;
+}
+
+async function resolveDirectorAttachments(snapshot, assetIds) {
+  const attachments = [];
+  for (const assetNodeId of assetIds) {
+    attachments.push(await directorReferences.resolveAsset(snapshot, assetNodeId));
+  }
+  return attachments;
 }
 
 async function collectSystemTelemetry() {
@@ -500,12 +532,14 @@ const server = createServer(async (request, response) => {
     if (request.method === 'POST' && url.pathname === '/api/director/chat') {
       const body = await readJsonBody(request);
       const provider = directorProvider(body.provider);
-      const message = directorChatMessage(body.message);
+      const attachmentAssetIds = directorChatAttachmentIds(body.attachmentAssetIds);
+      const message = directorChatMessage(body.message, attachmentAssetIds.length > 0);
       const conversationId = optionalConversationId(body.conversationId);
       const snapshotResponse = await rpc('project.snapshot');
       if (!snapshotResponse.ok) {
         throw new Error(`native snapshot failed before Director chat: ${snapshotResponse.error?.message ?? 'unknown error'}`);
       }
+      const attachments = await resolveDirectorAttachments(snapshotResponse.result, attachmentAssetIds);
       const beforeRevision = snapshotResponse.result.projectRevision;
       let firstTurn = conversationId === null;
       if (conversationId) {
@@ -519,11 +553,13 @@ const server = createServer(async (request, response) => {
         message,
         snapshot: snapshotResponse.result,
         selectedId: typeof body.selectedId === 'string' ? body.selectedId : null,
+        attachmentAssetIds,
         firstTurn,
       });
       const chat = await invokeDirectorChat(provider, context.prompt, conversationId, {
         userMessage: message,
         projectRevision: beforeRevision,
+        attachments,
       });
       const liveAfter = await rpc('project.snapshot');
       if (!liveAfter.ok) {
@@ -539,6 +575,7 @@ const server = createServer(async (request, response) => {
           estimatedTokens: context.estimatedTokens,
           nodeCountIncluded: context.nodeCountIncluded,
           dependencyCountIncluded: context.dependencyCountIncluded,
+          attachmentCount: context.attachmentCount,
         },
       }));
       return;
@@ -649,7 +686,15 @@ const server = createServer(async (request, response) => {
     });
   } catch (error) {
     const code = typeof error?.code === 'string' ? error.code : 'bridge_error';
-    const status = code === 'revision_conflict' ? 409 : 502;
+    const status = code === 'revision_conflict' || code === 'conflict'
+      ? 409
+      : code === 'invalid_argument'
+        ? 400
+        : code === 'not_found'
+          ? 404
+          : code === 'resource_exhausted'
+            ? 429
+            : 502;
     sendJson(request, response, status, {
       ok: false,
       error: { code, message: error instanceof Error ? error.message : String(error) },
@@ -667,6 +712,7 @@ server.listen(bridgePort, '127.0.0.1', () => {
   console.log(`[bridge] project database: ${databasePath}`);
   console.log(`[bridge] saved workflows: ${workflowDirectory}`);
   console.log('[bridge] Director conversations persist under .makewatch/conversations');
+  console.log('[bridge] Director image references persist as native Asset nodes + content-addressed media');
 });
 
 function waitForNativeExit(timeoutMs) {
