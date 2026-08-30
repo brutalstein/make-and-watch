@@ -30,6 +30,9 @@ export interface DirectorProviderStatus {
   loginPending: boolean;
   executableName: string;
   discovery: string;
+  model: string;
+  reasoningEffort: string;
+  inputModalities: string[];
   capabilityIssues: string[];
   detail: string;
 }
@@ -55,6 +58,7 @@ export interface DirectorContextStats {
   estimatedTokens: number;
   nodeCountIncluded: number;
   dependencyCountIncluded: number;
+  attachmentCount?: number;
 }
 
 export interface DirectorPlanResult {
@@ -70,11 +74,26 @@ export interface DirectorPlanRequest {
   workspacePositions?: Record<string, { x: number; y: number }>;
 }
 
+export interface DirectorReferenceAttachment {
+  assetNodeId: string;
+  filename: string;
+  mimeType: string;
+  byteSize: number;
+  sha256: string;
+  relativePath: string;
+}
+
+export interface DirectorReferenceImportResult {
+  reference: DirectorReferenceAttachment;
+  projectRevision: number;
+}
+
 export interface DirectorChatRequest {
   provider: DirectorProviderId;
   conversationId?: string | null;
   message: string;
   selectedId?: string | null;
+  attachmentAssetIds?: string[];
 }
 
 export interface DirectorChatResult {
@@ -85,6 +104,8 @@ export interface DirectorChatResult {
   title: string;
   updatedAt: string;
   runtimeMode: DirectorRuntimeMode;
+  model: string;
+  reasoningEffort: string;
   projectRevision: number;
   projectChanged: boolean;
   context: DirectorContextStats;
@@ -104,6 +125,7 @@ export interface DirectorConversationMessage {
   createdAt: string;
   projectRevision: number | null;
   delivery: DirectorConversationDelivery;
+  attachments: DirectorReferenceAttachment[];
 }
 
 export interface DirectorConversationSummary {
@@ -119,11 +141,12 @@ export interface DirectorConversationSummary {
   providerThreadArchived: boolean;
   lastProjectRevision: number | null;
   messageCount: number;
+  attachmentCount: number;
   preview: string;
 }
 
 export interface DirectorConversationDocument {
-  schemaVersion: 1;
+  schemaVersion: 2;
   id: string;
   provider: DirectorProviderId;
   runtimeMode: DirectorRuntimeMode;
