@@ -6,6 +6,7 @@ import './styles.css';
 import './director/autopilot.css';
 import './director/workflowPointer.css';
 import './director/director-link.css';
+import './director/director-room.css';
 import './director/conversation-archive.css';
 import './activity.css';
 import './layout-safety.css';
