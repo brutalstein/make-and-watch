@@ -39,6 +39,29 @@ const compilerResult = {
   compileReport: { schema: 'makewatch.shotAnimCompileReport/1', resolvedRevisions: { shot: 9 } },
 };
 
+const plannerResult = {
+  ready: true,
+  shotId: 'shot.1',
+  projectRevision: 42,
+  issues: [],
+  inputAssetIds: ['asset.rig', 'asset.environment', 'asset.audio', 'asset.alignment'],
+  resolved: {
+    shot: shot(),
+    scene: { id: 'scene.1', revision: 4 },
+    rigs: [{ characterId: 'character.1', characterRevision: 7, outfitState: 'school' }],
+    rigAssets: [{ id: 'asset.rig', absolutePath: 'C:/private/rig.json', bytes: Buffer.from('secret') }],
+    environment: { locationId: 'location.1', locationRevision: 3 },
+    environmentAsset: { id: 'asset.environment', absolutePath: 'C:/private/environment.json' },
+    dialogue: [{
+      unit: { id: 'dialogue.1' },
+      audioAsset: { id: 'asset.audio' },
+      alignmentAsset: { id: 'asset.alignment' },
+      audio: { absolutePath: 'C:/private/dialogue.wav', bytes: Buffer.from('secret') },
+    }],
+    correctiveKeyIds: ['asset.corrective'],
+  },
+};
+
 function bridge(snapshots, { applyError } = {}) {
   const applies = [];
   let index = 0;
@@ -60,7 +83,18 @@ try {
     projectRoot: root,
     bridge: stableBridge,
     compiler: async () => structuredClone(compilerResult),
+    planner: async () => structuredClone(plannerResult),
   });
+  const publicPlan = await service.plan('shot.1');
+  assert.deepEqual(publicPlan.resolved, {
+    shotRevision: 9,
+    scene: { id: 'scene.1', revision: 4 },
+    characterRigs: [{ assetId: 'asset.rig', characterId: 'character.1', characterRevision: 7, outfitState: 'school' }],
+    environmentPackage: { assetId: 'asset.environment', locationId: 'location.1', locationRevision: 3 },
+    dialogue: [{ dialogueUnitId: 'dialogue.1', audioAssetId: 'asset.audio', alignmentAssetId: 'asset.alignment' }],
+    correctiveKeyAssetIds: ['asset.corrective'],
+  });
+  assert.doesNotMatch(JSON.stringify(publicPlan), /absolutePath|bytes|private|secret/);
   const result = await service.compile('shot.1');
   assert.match(result.assetNodeId, /^asset\.[a-f0-9]{24}$/);
   assert.match(result.generationNodeId, /^generation\.anime-compile\.shot\.1\.[a-f0-9]{12}$/);

@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 
 import { NativeAnimeTemporalProvider } from '../anime/native-anime-provider.mjs';
 import { buildShotAnimRequest } from '../anime/shot-anim-compiler.mjs';
+import { ShotAnimCompilationService } from '../anime/shot-anim-compilation-service.mjs';
 import { AudioGenerationService } from '../audio/audio-generation-service.mjs';
 import { compileEpisodeComposition } from '../composition/episode-composition.mjs';
 import { EpisodeRenderService } from '../composition/episode-render-service.mjs';
@@ -87,6 +88,26 @@ const temporalService = new TemporalShotGenerationService({
     },
   },
 });
+const shotAnimService = new ShotAnimCompilationService({ projectRoot: root, bridge });
+
+async function animeProductionStatus() {
+  const [providers, audio] = await Promise.all([
+    temporalService.providerStatuses(),
+    audioService.providerStatus(),
+  ]);
+  const renderer = providers.find(({ id }) => id === 'native-anime') ?? { id: 'native-anime', ready: false, installed: false };
+  return {
+    ready: false,
+    compiler: { ready: true, schema: 'makewatch.shotAnim/1', graphBacked: true },
+    renderer,
+    audio,
+    characterRig: { ready: false, stage: 'planned-m2' },
+    environmentPackage: { ready: false, stage: 'planned-m2' },
+    alignment: { ready: false, stage: 'planned-m3' },
+    qc: { ready: false, stage: 'planned-m3' },
+    acceptanceRunner: { ready: false, stage: 'planned-m4' },
+  };
+}
 
 if (!Number.isInteger(port) || port < 1024 || port > 65535) {
   console.error(`[generation] invalid MAKEWATCH_GENERATION_PORT: ${process.env.MAKEWATCH_GENERATION_PORT ?? port}`);
@@ -154,6 +175,15 @@ function boundedId(value, label) {
     throw Object.assign(new Error(`${label} is invalid`), { code: 'invalid_argument' });
   }
   return value;
+}
+
+function decodedId(value, label) {
+  try {
+    return boundedId(decodeURIComponent(value), label);
+  } catch (error) {
+    if (error?.code === 'invalid_argument') throw error;
+    throw Object.assign(new Error(`${label} is invalid`), { code: 'invalid_argument' });
+  }
 }
 
 function optionalId(value, label) {
@@ -278,6 +308,10 @@ const server = createServer(async (request, response) => {
       sendJson(request, response, 200, { providers: await temporalService.providerStatuses() });
       return;
     }
+    if (request.method === 'GET' && url.pathname === '/api/anime/status') {
+      sendJson(request, response, 200, await animeProductionStatus());
+      return;
+    }
     if (request.method === 'GET' && url.pathname === '/api/jobs') {
       const limit = Number(url.searchParams.get('limit') ?? '20');
       sendJson(request, response, 200, { jobs: sceneService.list(Number.isInteger(limit) ? limit : 20) });
@@ -388,6 +422,19 @@ const server = createServer(async (request, response) => {
           ...(maxSegmentSeconds === undefined ? {} : { maxSegmentSeconds }),
         }),
       });
+      return;
+    }
+
+    const shotAnimPlanMatch = /^\/api\/anime\/shots\/([^/]+)\/plan$/.exec(url.pathname);
+    if (request.method === 'GET' && shotAnimPlanMatch) {
+      const shotId = decodedId(shotAnimPlanMatch[1], 'shotId');
+      sendJson(request, response, 200, await shotAnimService.plan(shotId));
+      return;
+    }
+    const shotAnimCompileMatch = /^\/api\/anime\/shots\/([^/]+)\/compile$/.exec(url.pathname);
+    if (request.method === 'POST' && shotAnimCompileMatch) {
+      const shotId = decodedId(shotAnimCompileMatch[1], 'shotId');
+      sendJson(request, response, 201, await shotAnimService.compile(shotId));
       return;
     }
 

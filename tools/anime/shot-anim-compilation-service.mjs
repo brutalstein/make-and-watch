@@ -40,7 +40,36 @@ export class ShotAnimCompilationService {
 
   async plan(shotId) {
     const snapshot = await this.bridge.snapshot();
-    return this.planner(snapshot, shotId, { projectRoot: this.projectRoot });
+    const plan = await this.planner(snapshot, shotId, { projectRoot: this.projectRoot });
+    const resolved = plan.resolved ?? {};
+    return {
+      ready: plan.ready,
+      shotId: plan.shotId,
+      projectRevision: plan.projectRevision,
+      issues: plan.issues,
+      inputAssetIds: plan.inputAssetIds,
+      resolved: {
+        shotRevision: resolved.shot?.revision ?? null,
+        scene: resolved.scene ? { id: resolved.scene.id, revision: resolved.scene.revision } : null,
+        characterRigs: (resolved.rigs ?? []).map((rig, index) => ({
+          assetId: resolved.rigAssets?.[index]?.id ?? null,
+          characterId: rig.characterId,
+          characterRevision: rig.characterRevision,
+          outfitState: rig.outfitState,
+        })),
+        environmentPackage: resolved.environment ? {
+          assetId: resolved.environmentAsset?.id ?? null,
+          locationId: resolved.environment.locationId,
+          locationRevision: resolved.environment.locationRevision,
+        } : null,
+        dialogue: (resolved.dialogue ?? []).map(({ unit, audioAsset, alignmentAsset }) => ({
+          dialogueUnitId: unit.id,
+          audioAssetId: audioAsset.id,
+          alignmentAssetId: alignmentAsset.id,
+        })),
+        correctiveKeyAssetIds: [...(resolved.correctiveKeyIds ?? [])],
+      },
+    };
   }
 
   async compile(shotId) {

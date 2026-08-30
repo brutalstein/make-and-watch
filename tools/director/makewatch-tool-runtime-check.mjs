@@ -27,6 +27,7 @@ const baseRuntime = {
   generationJobs: async () => ({}),
 };
 const temporalRuntime = {
+  audioProvider: async () => ({ provider: 'chatterbox', ready: true, languages: ['ja'] }),
   referenceProvider: async () => ({ provider: 'comfyui', ready: true, modes: ['T2I_REFERENCE', 'IMG2IMG_REFERENCE'] }),
   startReferenceGeneration: async (input) => ({ job: { id: 'reference-job', ...input, status: 'queued' } }),
   referenceJob: async ({ jobId }) => ({ job: { id: jobId, status: 'running' } }),
@@ -37,11 +38,16 @@ const temporalRuntime = {
   temporalJob: async ({ jobId }) => ({ job: { id: jobId, status: 'running' } }),
   temporalJobs: async () => ({ jobs: [] }),
 };
+const animeRuntime = {
+  productionStatus: async () => ({ ready: true, compiler: { ready: true } }),
+  shotAnimPlan: async ({ shotId }) => ({ ready: true, shotId }),
+  shotAnimCompile: async ({ shotId }) => ({ shotId, assetNodeId: 'asset.shot-anim' }),
+};
 
-configureMakeWatchToolRuntime(baseRuntime, { temporalRuntime });
+configureMakeWatchToolRuntime(baseRuntime, { temporalRuntime, animeRuntime });
 assert.equal(hasMakeWatchToolRuntime(), true);
 const specs = configuredMakeWatchDynamicToolSpecs();
-assert.deepEqual(specs.map((namespace) => namespace.name), ['makewatch', 'makewatch_media']);
+assert.deepEqual(specs.map((namespace) => namespace.name), ['makewatch', 'makewatch_media', 'makewatch_anime']);
 
 const base = JSON.parse(await handleConfiguredMakeWatchToolCall({
   namespace: 'makewatch', tool: 'project_snapshot', arguments: {},
@@ -52,6 +58,11 @@ const referenceProvider = JSON.parse(await handleConfiguredMakeWatchToolCall({
   namespace: 'makewatch_media', tool: 'reference_provider', arguments: {},
 }));
 assert.equal(referenceProvider.ready, true);
+
+const audioProvider = JSON.parse(await handleConfiguredMakeWatchToolCall({
+  namespace: 'makewatch_media', tool: 'audio_provider', arguments: {},
+}));
+assert.equal(audioProvider.languages[0], 'ja');
 
 const referenceStarted = JSON.parse(await handleConfiguredMakeWatchToolCall({
   namespace: 'makewatch_media',
@@ -83,6 +94,21 @@ const started = JSON.parse(await handleConfiguredMakeWatchToolCall({
   namespace: 'makewatch_media', tool: 'shot_generate_video', arguments: { shotId: 'shot.1', providerId: 'framepack' },
 }));
 assert.equal(started.job.status, 'queued');
+
+const animeStatus = JSON.parse(await handleConfiguredMakeWatchToolCall({
+  namespace: 'makewatch_anime', tool: 'production_status', arguments: {},
+}));
+assert.equal(animeStatus.compiler.ready, true);
+
+const animePlan = JSON.parse(await handleConfiguredMakeWatchToolCall({
+  namespace: 'makewatch_anime', tool: 'shot_anim_plan', arguments: { shotId: 'shot.1' },
+}));
+assert.equal(animePlan.shotId, 'shot.1');
+
+const animeCompile = JSON.parse(await handleConfiguredMakeWatchToolCall({
+  namespace: 'makewatch_anime', tool: 'shot_anim_compile', arguments: { shotId: 'shot.1' },
+}));
+assert.equal(animeCompile.assetNodeId, 'asset.shot-anim');
 
 clearMakeWatchToolRuntime();
 assert.equal(hasMakeWatchToolRuntime(), false);

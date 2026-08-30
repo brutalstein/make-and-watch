@@ -17,6 +17,11 @@ export function temporalMediaDynamicToolSpecs() {
     description: 'Bounded authoritative local media operations for Make & Watch: canonical Character/Location references and temporal Shot video. Use project tools for semantic authoring, then use these execution tools. Never claim media exists without a successful job result.',
     tools: [
       functionTool(
+        'audio_provider',
+        'Inspect the real local Chatterbox installation, model/runtime readiness and supported languages before starting Japanese performance generation.',
+        { type: 'object', additionalProperties: false, properties: {} },
+      ),
+      functionTool(
         'reference_provider',
         'Inspect the real local canonical-reference image provider. Check this before promising Character/Location reference generation. It reports whether ComfyUI can perform text-to-image and reference-guided img2img.',
         { type: 'object', additionalProperties: false, properties: {} },
@@ -170,6 +175,9 @@ export async function handleTemporalMediaToolCall(call, runtime) {
   const input = objectArguments(call.arguments);
   let result;
   switch (call.tool) {
+    case 'audio_provider':
+      result = await runtime.audioProvider();
+      break;
     case 'reference_provider':
       result = await runtime.referenceProvider();
       break;

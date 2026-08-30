@@ -8,6 +8,7 @@ import {
 
 const calls = [];
 const runtime = {
+  audioProvider: async () => ({ provider: 'chatterbox', ready: true, languages: ['ja'] }),
   referenceProvider: async () => ({ provider: 'comfyui', ready: true, modes: ['T2I_REFERENCE', 'IMG2IMG_REFERENCE'] }),
   startReferenceGeneration: async (input) => { calls.push(['reference-start', input]); return { job: { id: 'job-reference-1', status: 'queued', ...input } }; },
   referenceJob: async (input) => { calls.push(['reference-job', input]); return { job: { id: input.jobId, status: 'running', progress: 55 } }; },
@@ -25,11 +26,17 @@ assert.equal(specs[0].name, 'makewatch_media');
 assert.equal(temporalMediaToolLimits.namespace, 'makewatch_media');
 const names = new Set(specs[0].tools.map((tool) => tool.name));
 for (const required of [
+  'audio_provider',
   'reference_provider', 'reference_generate', 'reference_job', 'reference_jobs',
   'temporal_providers', 'shot_temporal_plan', 'shot_generate_video', 'temporal_job', 'temporal_jobs',
 ]) {
   assert.equal(names.has(required), true, `missing media tool ${required}`);
 }
+
+const audioProvider = JSON.parse(await handleTemporalMediaToolCall({
+  namespace: 'makewatch_media', tool: 'audio_provider', arguments: {},
+}, runtime));
+assert.equal(audioProvider.languages[0], 'ja');
 assert.deepEqual(
   temporalMediaToolLimits.referenceStylePresets,
   ['live-action-cinematic', 'anime-cinematic', 'illustration', 'stylized-3d'],

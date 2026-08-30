@@ -65,6 +65,7 @@ export class GenerationGatewayClient {
   referenceProviderStatus() { return this.request('/reference/provider'); }
   audioProviderStatus() { return this.request('/audio/provider'); }
   temporalProviders() { return this.request('/temporal/providers'); }
+  animeProductionStatus() { return this.request('/anime/status'); }
 
   startReferenceGeneration({ targetId, sourceAssetId = null, stylePreset = '', direction = '', denoise } = {}) {
     return this.request('/reference/generate', {
@@ -93,6 +94,11 @@ export class GenerationGatewayClient {
 
   temporalJob(jobId) { return this.request(`/temporal/jobs/${encodeURIComponent(jobId)}`); }
   temporalJobs(limit = 20) { return this.request(`/temporal/jobs?limit=${encodeURIComponent(String(limit))}`); }
+
+  shotAnimPlan(shotId) { return this.request(`/anime/shots/${encodeURIComponent(shotId)}/plan`); }
+  shotAnimCompile(shotId) {
+    return this.request(`/anime/shots/${encodeURIComponent(shotId)}/compile`, { method: 'POST' });
+  }
 
   startScene(sceneId) { return this.request('/scenes', { method: 'POST', body: JSON.stringify({ sceneId }) }); }
   startAudio(audioId) { return this.request('/audio', { method: 'POST', body: JSON.stringify({ audioId }) }); }

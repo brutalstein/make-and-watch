@@ -1,4 +1,9 @@
 import { GenerationGatewayClient } from '../generation/gateway-api-client.mjs';
+import {
+  animeProductionDynamicToolSpecs,
+  animeProductionToolLimits,
+  handleAnimeProductionToolCall,
+} from './anime-production-tools.mjs';
 import { handleMakeWatchToolCall, makeWatchDynamicToolSpecs } from './makewatch-tools.mjs';
 import {
   handleTemporalMediaToolCall,
@@ -8,9 +13,11 @@ import {
 
 let runtime = null;
 let temporalRuntime = null;
+let animeRuntime = null;
 
 function createTemporalRuntime(client = new GenerationGatewayClient()) {
   return {
+    audioProvider: () => client.audioProviderStatus(),
     referenceProvider: () => client.referenceProviderStatus(),
     startReferenceGeneration: (input) => client.startReferenceGeneration(input),
     referenceJob: ({ jobId }) => client.referenceJob(jobId),
@@ -20,6 +27,14 @@ function createTemporalRuntime(client = new GenerationGatewayClient()) {
     startTemporalShotGeneration: ({ shotId, providerId }) => client.startTemporalShot(shotId, providerId),
     temporalJob: ({ jobId }) => client.temporalJob(jobId),
     temporalJobs: ({ limit }) => client.temporalJobs(limit),
+  };
+}
+
+function createAnimeRuntime(client) {
+  return {
+    productionStatus: () => client.animeProductionStatus(),
+    shotAnimPlan: ({ shotId }) => client.shotAnimPlan(shotId),
+    shotAnimCompile: ({ shotId }) => client.shotAnimCompile(shotId),
   };
 }
 
@@ -40,12 +55,15 @@ export function configureMakeWatchToolRuntime(nextRuntime, options = {}) {
     }
   }
   runtime = nextRuntime;
-  temporalRuntime = options.temporalRuntime ?? createTemporalRuntime(options.generationGatewayClient);
+  const client = options.generationGatewayClient ?? new GenerationGatewayClient();
+  temporalRuntime = options.temporalRuntime ?? createTemporalRuntime(client);
+  animeRuntime = options.animeRuntime ?? createAnimeRuntime(client);
 }
 
 export function clearMakeWatchToolRuntime() {
   runtime = null;
   temporalRuntime = null;
+  animeRuntime = null;
 }
 
 export function hasMakeWatchToolRuntime() {
@@ -53,13 +71,16 @@ export function hasMakeWatchToolRuntime() {
 }
 
 export function configuredMakeWatchDynamicToolSpecs() {
-  return runtime ? [...makeWatchDynamicToolSpecs(), ...temporalMediaDynamicToolSpecs()] : [];
+  return runtime ? [...makeWatchDynamicToolSpecs(), ...temporalMediaDynamicToolSpecs(), ...animeProductionDynamicToolSpecs()] : [];
 }
 
 export async function handleConfiguredMakeWatchToolCall(call) {
   if (!runtime) throw new Error('Make & Watch project tool runtime is not configured');
   if (call?.namespace === temporalMediaToolLimits.namespace) {
     return handleTemporalMediaToolCall(call, temporalRuntime);
+  }
+  if (call?.namespace === animeProductionToolLimits.namespace) {
+    return handleAnimeProductionToolCall(call, animeRuntime);
   }
   return handleMakeWatchToolCall(call, runtime);
 }
