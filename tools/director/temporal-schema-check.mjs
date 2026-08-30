@@ -8,12 +8,13 @@ assert.equal(digest.schemaVersion, 2);
 const scene = digest.kinds.find((kind) => kind.kind === 'scene');
 const policy = scene.fields.find((field) => field.key === 'generationPolicy');
 assert.deepEqual(policy.options, ['i2v-first', 'keyframe-controlled', 'provider-native-video']);
-assert.equal(policy.defaultValue, 'i2v-first');
+assert.equal(policy.default, 'i2v-first');
+assert.equal(defaultMetadataForKind('scene').generationPolicy, 'i2v-first');
 
 const shot = digest.kinds.find((kind) => kind.kind === 'shot');
 const strategy = shot.fields.find((field) => field.key === 'generationStrategy');
 assert.deepEqual(strategy.options, ['I2V', 'FLF2V', 'VIDEO']);
-assert.equal(strategy.defaultValue, 'I2V');
+assert.equal(strategy.default, 'I2V');
 assert.equal(strategy.options.includes('STILL_MOTION'), false);
 assert.equal(strategy.options.includes('T2I'), false);
 assert.ok(shot.fields.some((field) => field.key === 'heroFrameAssetId'));
