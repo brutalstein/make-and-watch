@@ -123,8 +123,6 @@ await assert.rejects(
   /unknown dynamic tool namespace/,
 );
 
-// The production schema Codex reads must be the same table Studio renders, and
-// must actually carry the metadata keys the prompt compiler consumes.
 const schema = JSON.parse(await handleMakeWatchToolCall({
   namespace: 'makewatch',
   tool: 'production_schema',
@@ -137,7 +135,10 @@ for (const required of ['durationSeconds', 'framing', 'generationStrategy', 'see
   assert.equal(shotKeys.has(required), true, `shot schema is missing ${required}`);
 }
 const strategy = schema.kinds[0].fields.find((field) => field.key === 'generationStrategy');
-assert.equal(strategy.options.includes('STILL_MOTION'), true);
+assert.deepEqual(strategy.options, ['I2V', 'FLF2V', 'VIDEO']);
+assert.equal(strategy.defaultValue, 'I2V');
+assert.equal(strategy.options.includes('STILL_MOTION'), false);
+assert.equal(strategy.options.includes('T2I'), false);
 const characterKeys = new Set(schema.kinds[1].fields.map((field) => field.key));
 assert.equal(characterKeys.has('appearancePrompt'), true, 'character continuity anchor is missing');
 
@@ -148,8 +149,6 @@ assert.equal(fullSchema.kinds.length, 9);
 const generationSchema = fullSchema.kinds.find((entry) => entry.kind === 'generation');
 assert.ok(generationSchema.consumes.includes('episode'), 'episode render generations must match the capability hierarchy');
 
-// Generation must be delegated, never simulated: the tool has to hand the real
-// gateway job straight back so the Director cannot invent a success.
 const started = JSON.parse(await handleMakeWatchToolCall({
   namespace: 'makewatch',
   tool: 'scene_generate',
