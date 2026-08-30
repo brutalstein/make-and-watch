@@ -1,10 +1,5 @@
 const TEMPORAL_STRATEGIES = Object.freeze(['I2V', 'FLF2V', 'VIDEO']);
-const ALL_GENERATION_STRATEGIES = Object.freeze([
-  'STILL_MOTION', 'T2I', ...TEMPORAL_STRATEGIES, 'COMPOSITE',
-]);
-
 const TEMPORAL_STRATEGY_SET = new Set(TEMPORAL_STRATEGIES);
-const GENERATION_STRATEGY_SET = new Set(ALL_GENERATION_STRATEGIES);
 
 const MAX_REFERENCE_IDS_PER_ANCHOR = 8;
 const MAX_REFERENCE_IDS_TOTAL = 24;
@@ -220,11 +215,11 @@ export function buildTemporalShotRequest(snapshot, shotId, options = {}) {
   if (!shot || shot.kind !== 'shot') throw contractError('not_found', 'shot node was not found');
 
   const strategy = String(shot.metadata?.generationStrategy ?? '').trim();
-  if (!GENERATION_STRATEGY_SET.has(strategy)) {
-    throw contractError('invalid_argument', `Shot ${shot.id} has unsupported generationStrategy ${strategy || '<empty>'}`);
-  }
   if (!TEMPORAL_STRATEGY_SET.has(strategy)) {
-    throw contractError('invalid_argument', `Shot ${shot.id} is not configured for temporal generation`);
+    throw contractError(
+      'invalid_argument',
+      `Shot ${shot.id} must use one of ${TEMPORAL_STRATEGIES.join(', ')}; still-image output strategies were removed`,
+    );
   }
 
   const sceneOwners = dependenciesOf(index, shot.id, 'scene');
@@ -253,7 +248,7 @@ export function buildTemporalShotRequest(snapshot, shotId, options = {}) {
   const flattenedReferences = [...characters, ...locations].flatMap((anchor) => anchor.references).slice(0, MAX_REFERENCE_IDS_TOTAL);
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     projectRevision: snapshot.projectRevision,
     shot: {
       id: shot.id,
@@ -287,13 +282,15 @@ export function buildTemporalShotRequest(snapshot, shotId, options = {}) {
       mustReportContentHash: true,
       mustPreserveInputFrameIdentity: strategy !== 'VIDEO',
       tailFrameHandoffRequired: durationSeconds > resourcePolicy.maxSegmentSeconds,
+      stillImageFallbackAllowed: false,
     },
   };
 }
 
 export const temporalShotContract = Object.freeze({
-  strategies: ALL_GENERATION_STRATEGIES,
+  strategies: TEMPORAL_STRATEGIES,
   temporalStrategies: TEMPORAL_STRATEGIES,
+  stillImageFallbackAllowed: false,
   maxReferenceIdsPerAnchor: MAX_REFERENCE_IDS_PER_ANCHOR,
   maxReferenceIdsTotal: MAX_REFERENCE_IDS_TOTAL,
   maxTemporalShotSeconds: MAX_TEMPORAL_SHOT_SECONDS,
