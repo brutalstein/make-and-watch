@@ -1,5 +1,6 @@
 const NAMESPACE = 'makewatch_media';
 const MAX_RESULT_BYTES = 384 * 1024;
+const REFERENCE_STYLE_PRESETS = ['live-action-cinematic', 'anime-cinematic', 'illustration', 'stylized-3d'];
 
 const functionTool = (name, description, inputSchema, deferLoading = false) => ({
   type: 'function',
@@ -13,8 +14,48 @@ export function temporalMediaDynamicToolSpecs() {
   return [{
     type: 'namespace',
     name: NAMESPACE,
-    description: 'Bounded local temporal-video operations for Make & Watch. Use these after authoring Shot semantics through makewatch project tools. Media execution is authoritative: never claim video exists without a successful job result.',
+    description: 'Bounded authoritative local media operations for Make & Watch: canonical Character/Location references and temporal Shot video. Use project tools for semantic authoring, then use these execution tools. Never claim media exists without a successful job result.',
     tools: [
+      functionTool(
+        'reference_provider',
+        'Inspect the real local canonical-reference image provider. Check this before promising Character/Location reference generation. It reports whether ComfyUI can perform text-to-image and reference-guided img2img.',
+        { type: 'object', additionalProperties: false, properties: {} },
+      ),
+      functionTool(
+        'reference_generate',
+        'Generate and durably attach one canonical image reference to an existing Character or Location. sourceAssetId is optional: omit it for text-to-image design, or provide a durable image Asset for reference-guided img2img such as an anime adaptation. Returns a queued job; poll reference_job. The gateway writes Generation/Asset provenance and the target dependency itself.',
+        {
+          type: 'object',
+          additionalProperties: false,
+          required: ['targetId'],
+          properties: {
+            targetId: { type: 'string', minLength: 1, maxLength: 160 },
+            sourceAssetId: { type: 'string', minLength: 1, maxLength: 160 },
+            stylePreset: { type: 'string', enum: REFERENCE_STYLE_PRESETS },
+            direction: { type: 'string', maxLength: 4000 },
+            denoise: { type: 'number', minimum: 0.15, maximum: 0.9 },
+          },
+        },
+      ),
+      functionTool(
+        'reference_job',
+        'Read one canonical-reference generation job including target, source Asset, style, progress, produced Asset metadata and failure reason.',
+        {
+          type: 'object',
+          additionalProperties: false,
+          required: ['jobId'],
+          properties: { jobId: { type: 'string', minLength: 8, maxLength: 80 } },
+        },
+      ),
+      functionTool(
+        'reference_jobs',
+        'List recent canonical Character/Location reference-generation jobs. Authoritative provenance remains in the native project graph.',
+        {
+          type: 'object',
+          additionalProperties: false,
+          properties: { limit: { type: 'integer', minimum: 1, maximum: 50 } },
+        },
+      ),
       functionTool(
         'temporal_providers',
         'Inspect installed/ready temporal video providers and actual local hardware readiness. Provider selection is explicit; do not invent an unavailable provider.',
@@ -83,6 +124,13 @@ function boundedString(value, label, maximum) {
   return text;
 }
 
+function optionalString(value, label, maximum) {
+  if (value === undefined || value === null || value === '') return undefined;
+  const text = String(value).trim();
+  if (text.length > maximum) throw new Error(`${label} exceeds ${maximum} characters`);
+  return text || undefined;
+}
+
 function boundedLimit(value) {
   if (value === undefined || value === null) return 20;
   if (!Number.isInteger(value) || value < 1 || value > 50) throw new Error('limit must be an integer between 1 and 50');
@@ -95,20 +143,51 @@ function boundedSegmentSeconds(value) {
   return value;
 }
 
+function boundedDenoise(value) {
+  if (value === undefined || value === null) return undefined;
+  if (!Number.isFinite(value) || value < 0.15 || value > 0.9) throw new Error('denoise must be between 0.15 and 0.9');
+  return value;
+}
+
+function boundedReferenceStyle(value) {
+  if (value === undefined || value === null || value === '') return undefined;
+  const style = String(value);
+  if (!REFERENCE_STYLE_PRESETS.includes(style)) throw new Error(`stylePreset must be one of ${REFERENCE_STYLE_PRESETS.join(', ')}`);
+  return style;
+}
+
 function boundedResult(value) {
   const text = JSON.stringify(value);
   if (Buffer.byteLength(text, 'utf8') > MAX_RESULT_BYTES) {
-    throw new Error(`temporal media tool result exceeds ${MAX_RESULT_BYTES} bytes`);
+    throw new Error(`media tool result exceeds ${MAX_RESULT_BYTES} bytes`);
   }
   return text;
 }
 
 export async function handleTemporalMediaToolCall(call, runtime) {
-  if (!runtime) throw new Error('temporal media tool runtime is unavailable');
-  if (!call || call.namespace !== NAMESPACE) throw new Error('unknown temporal media tool namespace');
+  if (!runtime) throw new Error('media tool runtime is unavailable');
+  if (!call || call.namespace !== NAMESPACE) throw new Error('unknown media tool namespace');
   const input = objectArguments(call.arguments);
   let result;
   switch (call.tool) {
+    case 'reference_provider':
+      result = await runtime.referenceProvider();
+      break;
+    case 'reference_generate':
+      result = await runtime.startReferenceGeneration({
+        targetId: boundedString(input.targetId, 'targetId', 160),
+        sourceAssetId: optionalString(input.sourceAssetId, 'sourceAssetId', 160),
+        stylePreset: boundedReferenceStyle(input.stylePreset),
+        direction: optionalString(input.direction, 'direction', 4000),
+        denoise: boundedDenoise(input.denoise),
+      });
+      break;
+    case 'reference_job':
+      result = await runtime.referenceJob({ jobId: boundedString(input.jobId, 'jobId', 80) });
+      break;
+    case 'reference_jobs':
+      result = await runtime.referenceJobs({ limit: boundedLimit(input.limit) });
+      break;
     case 'temporal_providers':
       result = await runtime.temporalProviders();
       break;
@@ -131,7 +210,7 @@ export async function handleTemporalMediaToolCall(call, runtime) {
       result = await runtime.temporalJobs({ limit: boundedLimit(input.limit) });
       break;
     default:
-      throw new Error(`unknown temporal media tool: ${String(call.tool)}`);
+      throw new Error(`unknown media tool: ${String(call.tool)}`);
   }
   return boundedResult(result);
 }
@@ -139,4 +218,5 @@ export async function handleTemporalMediaToolCall(call, runtime) {
 export const temporalMediaToolLimits = Object.freeze({
   namespace: NAMESPACE,
   maxResultBytes: MAX_RESULT_BYTES,
+  referenceStylePresets: [...REFERENCE_STYLE_PRESETS],
 });
