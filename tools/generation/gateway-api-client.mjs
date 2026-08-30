@@ -62,8 +62,19 @@ export class GenerationGatewayClient {
   }
 
   providerStatus() { return this.request('/provider'); }
+  referenceProviderStatus() { return this.request('/reference/provider'); }
   audioProviderStatus() { return this.request('/audio/provider'); }
   temporalProviders() { return this.request('/temporal/providers'); }
+
+  startReferenceGeneration({ targetId, sourceAssetId = null, stylePreset = '', direction = '', denoise } = {}) {
+    return this.request('/reference/generate', {
+      method: 'POST',
+      body: JSON.stringify({ targetId, sourceAssetId, stylePreset, direction, denoise }),
+    });
+  }
+
+  referenceJob(jobId) { return this.request(`/reference/jobs/${encodeURIComponent(jobId)}`); }
+  referenceJobs(limit = 20) { return this.request(`/reference/jobs?limit=${encodeURIComponent(String(limit))}`); }
 
   temporalShotPlan(shotId, { totalVramMb, maxSegmentSeconds } = {}) {
     const query = new URLSearchParams();
