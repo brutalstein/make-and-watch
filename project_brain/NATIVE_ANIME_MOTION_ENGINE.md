@@ -2,7 +2,7 @@
 
 > Architecture decision + design
 > Created: 2026-08-30 (Europe/Istanbul)
-> Status of this document: **architecture selected; A foundation mechanically proven but visually rejected; production ShotAnim compilation, C, B and full QC are roadmap.**
+> Status of this document: **architecture selected; M1 graph-backed ShotAnim control plane implemented; renderer proof mechanically passes but the visual slice remains rejected; semantic rig building, alignment, C, B and full QC are roadmap.**
 
 This document supersedes the parts of `ANIME_TEMPORAL_PIPELINE.md` and `MEDIA_PIPELINE.md`
 that described a large temporal diffusion model (FramePack / Wan / Hunyuan / LTX class)
@@ -639,9 +639,12 @@ small (~100 MB, one-time per location). The existing anime SDXL checkpoint
   (`POST /free` to ComfyUI is already implemented), then the renderer runs GPU-free.
 - Bounded queues and stale-revision fail-closed checks exist in
   `TemporalShotGenerationService` and `EpisodeRenderService` (`MAX_PENDING_*`). The
-  native worker has a wall-clock cap and process-tree termination. Explicit user
-  cancellation is **not implemented** in those services and remains a resource-safety
-  milestone.
+  native worker has a wall-clock cap and process-tree termination. **[implemented,
+  M1]** `media_job_cancel` removes queued visual/reference/audio/temporal/anime/render
+  jobs immediately. Running Chatterbox, native-anime, FramePack and FFmpeg work is
+  marked `cancelled` only after its owned process tree exits; cancellation cannot
+  commit a new ready Generation/Asset. Abort-aware GPU waiters preserve exclusive
+  ordering. ComfyUI requests abort locally without killing the shared ComfyUI process.
 - Never keep SDXL + aligner + renderer GPU state resident simultaneously — same rule
   as `ANIME_TEMPORAL_PIPELINE.md` §17, now much easier because the render step needs
   no model.
@@ -715,11 +718,13 @@ output. Claiming that would be unserious.** What it can and cannot do:
   Verlet front hair + parallax push-in + burned Turkish subtitle -> one real 3-5 s
   1080p24 MP4, no video model. Inspect frames, measure storage/runtime, compare vs
   the old animated-still preview and vs the FramePack architecture.
-- **Milestone 1 — `native-anime` temporal provider:** the worker adapter is registered
-  behind `TemporalProviderRegistry` (`strategies: ['I2V']`) and fails closed today.
-  Finish ShotAnim compilation from the Shot graph via `buildShotAnimRequest()` alongside
-  `buildTemporalShotRequest()`; real provenance; render a full Scene through
-  `EpisodeRenderService`.
+- **Milestone 1 — control plane and compiler [implemented]:** strict CharacterRig,
+  EnvironmentPackage, Alignment, QC and Acceptance contracts; graph-backed
+  `planShotAnim()` / `buildShotAnimRequest()`; content-addressed ShotAnim Asset and
+  Generation provenance; native provider request wiring; bounded Codex tools and job
+  cancellation. The compiler accepts only current approved project-managed assets and
+  fails closed on rig domain violations. Full production readiness remains `false`
+  until the M2/M3/M4 builders and gates exist.
 - **Milestone 2 — corrective redraw (C):** ControlNet-SDXL pose conditioning;
   `rig.poseLibrary` promotion; tail-frame continuity scoring; auto-escalation from QC.
 - **Milestone 3 — subtitle layer:** deterministic Turkish subtitle render in
@@ -731,6 +736,27 @@ output. Claiming that would be unserious.** What it can and cannot do:
   Character layers; Depth Anything V2 environment plate split; rig-validity predictor.
 - **Milestone 6 — anime compositing + cadence:** full FX toolkit; on-2s/on-3s
   classifier; per-Series colour script enforcement; RIFE cadence pass.
+
+### 13.1 M1 verification (2026-08-31)
+
+- `makewatch_anime`: `production_status`, `shot_anim_plan`, `shot_anim_compile`.
+- `makewatch_media`: `audio_provider`, `media_job_cancel` in addition to the existing
+  reference and temporal tools. `anime` cancellation is an alias for a native-anime
+  job owned by `TemporalShotGenerationService`.
+- `ShotAnimCompilationService` persists `makewatch.shotAnim/1` by SHA-256 and attaches
+  exact input Asset dependencies after a fresh Shot revision check. Read-only plans
+  expose dependency IDs/revisions but never raw bytes or absolute paths.
+- `server.mjs` injects the compiler request builder into the native provider path.
+  The renderer may report ready when Python/FFmpeg are present, while the aggregate
+  production status truthfully remains not ready.
+- Fresh local gate: `verify.ps1` passed, including strict TypeScript, Studio production
+  build, all bridge/runtime checks and **11/11 native tests**. Deterministic worker
+  self-test passed twice with decoded-frame SHA prefix `29ca4625cf5535db` and zero
+  persisted intermediate frames.
+- Remaining M2 blockers: no production CharacterRig builder/decomposition, no
+  EnvironmentPackage builder/depth split, and therefore no accepted semantic asset
+  set for a real graph-authored Shot. M3 Japanese alignment/QC/corrective redraw and
+  M4 one-minute acceptance are also not implemented.
 
 ---
 
@@ -759,7 +785,7 @@ Every "cheaper / faster / higher quality" claim must be backed by a run recorded
 ## 15. Contracts (clean interfaces for the new engine)
 
 ```
-buildShotAnimRequest(snapshot, shotId, options) -> ShotAnim        // sibling of buildTemporalShotRequest
+buildShotAnimRequest(snapshot, shotId, options) -> {ShotAnim, inputAssetIds, compileReport}
 NativeAnimeProvider implements { id:'native-anime', displayName, strategies:['I2V'],
                                  status(context) -> {installed, ready, busy, detail, runtime, hardware},
                                  generate(request, context) -> ArtifactDescriptor }   // same contract FramePack returns
@@ -774,7 +800,7 @@ EnvironmentCompositor   { frame(package, camera, lighting, weather, t) -> RGBA p
 The provider contract and worker stdout protocol (`MW_TEMPORAL_RESULT_V1\t<json>`) are
 identical to FramePack's, so `server.mjs` registers both. The current temporal service
 still takes an exclusive GPU scheduler lease even for the CPU-first renderer; resource
-classification should be corrected when the ShotAnim compiler is wired.
+classification remains an optimization milestone now that the compiler is wired.
 
 ```js
 new TemporalProviderRegistry()
@@ -782,9 +808,10 @@ new TemporalProviderRegistry()
   .register(new FramePackTemporalProvider({ projectRoot, workerPath }));   // optional, off unless models present
 ```
 
-Default Shot metadata selects `native-anime`, but its status remains not-ready until
-the ShotAnim compiler is connected. This prevents the default from becoming a fake
-animated-still path.
+Default Shot metadata selects `native-anime`. The server connects the ShotAnim compiler
+and never falls back to an animated still. Aggregate `production_status.ready` remains
+false until CharacterRig/EnvironmentPackage builders, Japanese Alignment, QC and the
+one-minute acceptance runner are operational.
 
 ---
 

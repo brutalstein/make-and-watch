@@ -471,3 +471,56 @@ CPU target (measured 9.11) and fails visual inspection. It does **not** prove ge
 Japanese TTS/alignment, series-grade anime quality, or a full one-minute
 Episode; those remain planned milestones with the benchmark methodology in
 `NATIVE_ANIME_MOTION_ENGINE.md` §14.
+
+---
+
+## 2026-08-31 — Native Anime M1 control plane completed
+
+### Implemented
+
+- Strict versioned contracts now validate CharacterRig, EnvironmentPackage,
+  Japanese Alignment, QC and one-minute Acceptance assets without claiming that the
+  M2-M4 producers exist.
+- `planShotAnim()` resolves live Shot ownership and exact approved Character,
+  Location, Audio, Alignment and corrective-key dependencies. It rejects stale or
+  mismatched revisions, unmanaged paths, hash failures and acting curves outside a
+  rig's valid deformation domain.
+- `buildShotAnimRequest()` compiles the accepted plan into `makewatch.shotAnim/1`.
+  `ShotAnimCompilationService` persists it content-addressed and atomically registers
+  Generation/Asset provenance after a fresh Shot revision check.
+- `TemporalShotGenerationService` injects the compiled ShotAnim only for the
+  `native-anime` provider and carries the compiler's exact Asset IDs into temporal
+  provenance. Hero-only animated-still fallback remains forbidden.
+- New bounded Codex surface:
+  `makewatch_anime.production_status`, `shot_anim_plan`, `shot_anim_compile`, plus
+  `makewatch_media.audio_provider` and `media_job_cancel`.
+- `media_job_cancel` covers visual, reference, audio, temporal, anime and render jobs.
+  Queued work is removed immediately. Running Chatterbox/native-anime/FramePack/FFmpeg
+  work receives an AbortSignal and becomes cancelled only after the owned process tree
+  exits. Abort-aware GPU waiters retain exclusive ordering; cancelled temporal/render
+  fixtures write no ready provenance.
+
+### Commits
+
+- `5539f0b` — validate native anime production assets.
+- `cfa36a6` — compile ShotAnim from the project graph.
+- `632c32d` — persist compiled ShotAnim assets and provenance.
+- `4d2b2bd` — wire native ShotAnim generation.
+- `fa5be62` — expose bounded native-anime Codex tools.
+- `075171f` — add bounded media-job cancellation.
+
+### Verification
+
+- Fresh `verify.ps1`: passed on the product machine (RTX 5070 Laptop 8 GB), including
+  bridge/runtime checks, strict TypeScript, Studio production build and **11/11 native
+  tests**.
+- `python tools/anime/native-anime-worker-selftest.py`: passed; two renders produced
+  the same decoded-frame SHA-256 prefix `29ca4625cf5535db`, with zero persisted frames.
+
+### Truth boundary / next milestone
+
+M1 proves a deterministic graph-to-ShotAnim control plane, not production anime
+quality. Aggregate anime production readiness intentionally remains false. M2 must
+build and validate reusable semantic CharacterRig and EnvironmentPackage assets on the
+real product machine. Japanese forced alignment, multi-mouth-state rendering, QC,
+corrective redraw and the one-minute acceptance run remain M3/M4 work.
