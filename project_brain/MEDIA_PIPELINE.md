@@ -1,262 +1,272 @@
-# Series Continuity and Media Pipeline
+# Series Continuity and Temporal Media Pipeline
 
-> Current status: 2026-08-30 04:09 TRT (Europe/Istanbul)
+> Current status: 2026-08-30 04:26 TRT (Europe/Istanbul)
 
-## Purpose
+## Product rule
 
-Make & Watch treats long-form production as a dependency graph, not one giant prompt-to-video request.
+Make & Watch no longer treats a still image, animated crop, Ken Burns move, pan/zoom filter, or repeated frozen frame as valid Shot video.
+
+The only renderable visual contract is:
 
 ```text
 Series / Episode / Scene / Shot / Character / Location
                          |
                          v
-          canonical reference + continuity Assets
+            canonical reference Assets
                          |
                          v
-          storyboard / voice / temporal Shot media
+             hero/start/end frames
+                 (preparation only)
                          |
                          v
-                 Episode composition
+           I2V / FLF2V / VIDEO synthesis
                          |
                          v
-                    render Asset
+              real temporal video Asset
+                         |
+                         v
+            Scene / Episode composition
+                         |
+                         v
+                 temporal MP4 master
 ```
 
-Semantic authoring and media execution remain separate. Native project state is authoritative; local media services may create artifacts only through bounded jobs and native provenance commits.
+A hero/reference image is an input to temporal synthesis. It can never satisfy Episode render readiness by itself.
+
+## Retired animated-still path
+
+The previous animated-still fallback is intentionally removed.
+
+Retired behavior:
+
+```text
+single image
+ -> FFmpeg loop
+ -> zoom / pan / push / orbit approximation
+ -> repeated/frozen visual frames
+ -> pretend Shot video
+```
+
+Removed runtime pieces include the dedicated `camera-motion` renderer and its regression tests. Episode composition no longer prefers or accepts an image Asset when a temporal video Asset is missing.
+
+Legacy project history may still contain old image Generation/Asset nodes. They remain provenance/history and may be reused as hero frames, but they are not renderable Shot media.
+
+## Final Shot strategies
+
+Only three final Shot generation strategies are exposed by the merged production schema:
+
+- `I2V` — animate a canonical hero/start image into a temporal clip;
+- `FLF2V` — constrain both start and end images for controlled action/cut endpoints;
+- `VIDEO` — provider-native temporal synthesis.
+
+Default for new Shots is `I2V`.
+
+`STILL_MOTION`, `T2I`, and `COMPOSITE` are not valid final Shot synthesis strategies. T2I/img2img remain useful preparation operations for references and hero frames, not Episode output.
+
+Scene generation policy is temporal-only:
+
+- `i2v-first`;
+- `keyframe-controlled`;
+- `provider-native-video`.
+
+## Hero-frame preparation
+
+The existing ComfyUI Scene image path remains useful but its product meaning is now **hero-frame preparation**, not final preview video.
+
+It may generate one high-quality image for each Shot from:
+
+- Series style preset and visual language;
+- Episode/Scene story context;
+- Shot framing, purpose, camera intent and action;
+- canonical Character references;
+- canonical Location references.
+
+Those images become candidate `heroFrameAssetId` / start-frame inputs for I2V or FLF2V.
 
 ## Canonical continuity
 
-Characters and Locations are canonical graph entities, not copied per Scene/Episode. Their dependencies point to reusable reference Assets. A semantic revision therefore invalidates downstream work through native dependency propagation rather than silently creating divergent copies.
+Characters and Locations are canonical graph entities shared across Scenes and Episodes.
 
-Locked/stale/approval state remains part of readiness. Media workers never bypass those rules.
+Durable identity/environment controls include:
 
-## Director reference library
+- `canonicalImageAssetIds`;
+- `acceptedReferenceAssetIds`;
+- `continuityPolicy`;
+- semantic node revision;
+- lock/approval/stale state;
+- Shot/Scene dependencies.
 
-Images attached in Director Room are durable project media, not ephemeral prompt strings.
+A reference image attached in Director Room is content-addressed, registered as a native Asset, and can be promoted into Character/Location continuity. Source references remain immutable.
 
-Upload path:
+## Temporal Shot request
 
-```text
-Studio file / paste / drop
-   -> media gateway :4178
-   -> bounded image validation
-   -> SHA-256 content-addressed storage under .makewatch
-   -> native Asset registration
-   -> conversation attachment stores Asset ID + hash metadata
-   -> Codex receives actual localImage input
-```
+`buildTemporalShotRequest()` is the provider-neutral contract for expensive video work.
 
-The source image remains immutable. Re-uploading the same bytes reuses content identity instead of creating arbitrary duplicate blobs.
+It resolves:
 
-## Canonical Character/Location reference generation
+- current authoritative Shot revision;
+- exactly one owning Scene;
+- strategy: I2V / FLF2V / VIDEO;
+- authored duration;
+- hero/start frame;
+- optional end frame;
+- Character reference Assets;
+- Location reference Assets;
+- chronological temporal action prompt;
+- quality/continuity priorities;
+- bounded temporal segments;
+- GPU/RAM resource policy.
 
-The local gateway owns `AnchorReferenceGenerationService`.
+Provider output contract requires:
 
-Two explicit strategies exist:
+- `mediaType=video`;
+- measured duration;
+- content hash;
+- real generated video provenance;
+- no still-image fallback.
 
-- `T2I_REFERENCE`: Character/Location is designed from its written canonical metadata.
-- `IMG2IMG_REFERENCE`: an existing durable image Asset is uploaded to local ComfyUI and guides the canonical output.
+## Segmentation and drift control
 
-Current style presets:
-
-- `live-action-cinematic`
-- `anime-cinematic`
-- `illustration`
-- `stylized-3d`
-
-Reference-guided ComfyUI workflow uses standard primitives:
-
-```text
-source Asset bytes
-   -> ComfyUI /upload/image
-   -> LoadImage
-   -> VAEEncode
-   -> KSampler (bounded denoise)
-   -> VAEDecode
-   -> SaveImage
-   -> downloaded bytes
-```
-
-Text-only reference design uses the existing bounded T2I workflow.
-
-### Reference provenance topology
-
-Successful reference generation records provenance without creating a cycle:
+Long Shot requests are split into bounded temporal sections. Default segment target is 6 seconds.
 
 ```text
-Character / Location
-        |
-        v depends on
- generated image Asset
-        |
-        v depends on
- reference Generation
-        |
-        v depends on (when img2img)
- source image Asset
+hero frame
+   -> temporal segment 0
+   -> accepted tail frame
+   -> temporal segment 1
+   -> accepted tail frame
+   -> ...
+   -> complete Shot video
 ```
 
-The Generation node does **not** depend on the Character/Location target. Target identity/revision is stored as generation metadata instead, avoiding a `target -> asset -> generation -> target` graph cycle.
+Later segments use previous-tail-frame handoff. This limits context growth, supports bounded VRAM, and creates checkpoints where identity/motion drift can later be scored or rejected.
 
-### Reference safety invariants
+For a 20-minute Episode, Make & Watch should continue to produce many short editorial Shots rather than one 20-minute model invocation.
 
-- target must be an existing unlocked Character or Location;
-- optional source must be an image Asset;
-- target/source revisions are captured at job submission;
-- revisions are rechecked before generation, after expensive inference, and before canonical registration;
-- if target/source changed, job fails as stale and output is not attached;
-- failed/running jobs do not publish an artifact endpoint;
-- generated bytes are SHA-256 addressed;
-- a pre-existing hash path must be a regular file and is re-hashed before reuse;
-- output Asset becomes visible to the job only after native canonical registration succeeds;
-- source reference bytes are never overwritten;
-- final lock/revision/cycle enforcement remains native authority.
+## Current temporal provider
 
-Gateway endpoints:
+The current local provider path is FramePack.
 
-- `GET /api/reference/provider`
-- `POST /api/reference/generate`
-- `GET /api/reference/jobs`
-- `GET /api/reference/jobs/:jobId`
-- `GET /api/reference/artifacts/:jobId`
+FramePack is treated as a bounded provider adapter, not as project truth. Make & Watch owns:
 
-Codex reaches the same path through typed `makewatch_media` tools:
+- request validation;
+- reference resolution;
+- GPU admission;
+- process lifetime;
+- output verification;
+- hashing/provenance;
+- native graph registration.
 
-- `reference_provider`
-- `reference_generate`
-- `reference_job`
-- `reference_jobs`
+Provider code/model availability is checked explicitly. Large model downloads must never occur silently as a side effect of pressing Generate.
 
-## Scene storyboard preview
+## Resource policy for the 8 GB class
 
-Scene preview remains the lightweight visual-development path: one real local ComfyUI frame per Shot.
+Temporal generation uses exclusive GPU admission.
 
-Prompt context is compiled from canonical project data such as:
+The current safety model includes:
 
-- Series visual language/style;
-- Episode/Scene identity and summary;
-- Shot framing/camera/purpose;
-- linked Characters and Locations.
+- one temporal heavy job at a time;
+- release other local GPU model/cache state before temporal launch when possible;
+- explicit VRAM reserve rather than allocating to theoretical 100%;
+- bounded segment duration;
+- bounded process timeout;
+- owned subprocess termination;
+- measured output validation before provenance commit.
 
-Generated frames are written under `.makewatch/artifacts/scenes` and recorded as downstream Generation/Asset provenance. A Scene with no Shots is rejected.
+Throughput is intentionally secondary to avoiding random OOM, corrupted state, or competing resident models.
 
-Storyboard preview is not final video synthesis.
+## Composition readiness
 
-## GPU scheduling
+`compileEpisodeComposition()` is fail-closed.
 
-GPU-heavy paths share a local exclusive scheduling boundary. Reference generation does not create its own uncontrolled GPU queue outside the scheduler. Storyboard/reference/temporal workers therefore cannot all assume exclusive VRAM simultaneously.
+Every Shot must have:
 
-Queues and retained in-memory job histories are bounded.
+1. a positive authored duration;
+2. an I2V/FLF2V/VIDEO strategy;
+3. a ready non-stale video Generation;
+4. a ready non-stale video Asset;
+5. valid video duration metadata;
+6. enough generated duration to cover the authored Shot duration within one-frame tolerance.
 
-## Temporal Shot generation
+A still image does not count toward `generatedVisualCount`.
 
-Temporal video is exposed through the `makewatch_media` namespace:
+A temporal video shorter than the authored duration is a readiness error. The user/Director must regenerate the Shot instead of freezing the final frame.
 
-- `temporal_providers`
-- `shot_temporal_plan`
-- `shot_generate_video`
-- `temporal_job`
-- `temporal_jobs`
+## Episode renderer
 
-Current implementation includes the local FramePack temporal provider path. A temporal plan resolves the authored Shot strategy, reference/frame Assets, bounded segments and resource policy before an expensive generation starts.
+The FFmpeg renderer now consumes video Shot Assets only.
 
-The Director must inspect actual provider/hardware readiness. It may not invent a provider or claim a video exists before a completed job and registered provenance.
+Responsibilities:
+
+- normalize temporal clips to delivery dimensions/FPS;
+- trim to editorial duration;
+- apply cuts/fades/dissolves;
+- use a very small time-stretch when a dissolve requires extra overlap instead of cloning/freeze-padding the last frame;
+- mix timed Audio Assets;
+- cache Scene masters by temporal source hashes, durations, transitions, profile and audio;
+- concatenate Scene masters;
+- hash/register the Episode Generation and Asset.
+
+The removed image-to-video branch cannot be selected by runtime state.
 
 ## Audio
 
-Chatterbox voice/audio generation is a separate bounded local job path. Audio nodes remain semantic project entities; generated WAV Assets and Generation provenance are downstream artifacts.
+Audio remains an independent semantic/generation layer.
 
-Voice/media workers are not invoked directly by Codex shell commands. Typed tools delegate through the local gateway.
+Current local path includes Chatterbox voice generation. Dialogue/narration Assets are timed against Scene/Shot structure and mixed during Episode assembly.
 
-## Episode composition and render
+Future anime dialogue quality work is described in `ANIME_TEMPORAL_PIPELINE.md` and includes performance-aware speech, shot-specific acting motion, audio-driven face/lip control and QC.
 
-Episode composition compiles ordered Scenes/Shots, resolved visual Assets, Audio Assets, timings, camera motion and transitions without fabricating missing media.
+## Director tools
 
-The deterministic preview/render path:
+Codex must use authoritative typed tools.
 
-1. inspect Episode composition/readiness;
-2. resolve generated Shot media and timed Audio Assets;
-3. render each Shot to the Episode profile/duration;
-4. apply authored camera/motion and bounded transitions;
-5. mix timed audio or silence bed;
-6. cache Scene masters using render-affecting inputs;
-7. assemble Episode output;
-8. hash MP4 and register Generation + Asset provenance through native revision checks.
+Project/workflow truth remains under `makewatch`.
 
-This is a real preview/animatic assembly path. It is not a claim that every Shot has already been synthesized by a final production-grade generative video model.
+Heavy temporal media execution remains under `makewatch_media`:
 
-## Workflow context actions
+- `temporal_providers`;
+- `shot_temporal_plan`;
+- `shot_generate_video`;
+- `temporal_job`;
+- `temporal_jobs`;
+- canonical reference tools.
 
-Studio right-click actions map to native project semantics.
+The intended Director sequence is:
 
-- **Selected → this node**: clicked node depends on the other selected nodes.
-- **This node → selected**: other selected nodes depend on the clicked node.
-- Add Shot/Audio respect Scene locks.
-- Add Scene is self-sufficient: if a non-empty workflow has no Episode, Studio creates the missing Series/Episode scope and the Scene in one native transaction instead of exposing a dead action.
-- Clean workflow still offers the dedicated Quick Start Episode transaction.
-- Delete/Backspace local React Flow mutation is intercepted; authoritative deletion uses native commands.
-- visible mutation actions are disabled while a context-menu mutation is already busy.
+```text
+production_schema
+ -> project authoring
+ -> prepare/choose references
+ -> prepare hero frames where needed
+ -> shot_temporal_plan
+ -> shot_generate_video
+ -> poll temporal_job
+ -> episode_compose
+ -> repair missing/failed Shots
+ -> episode_render
+```
 
-Cycle detection, lock rejection and revision conflicts remain native authority.
+The Director must never report a Scene/Episode as visually complete merely because hero images exist.
 
-## Bounds and failure behavior
+## Verification contract
 
-Representative hard bounds/fail-closed behavior:
+CI must protect these invariants:
 
-- localhost-only media/provider addresses by default;
-- bounded JSON/image responses and upload sizes;
-- bounded Scene Shot count and job queues;
-- bounded reference denoise/style/direction inputs;
-- content-addressed media integrity verification;
-- malformed/missing media returns explicit job/readiness errors;
-- stale reference output cannot attach to a changed Character/Location;
-- no generated output is treated as approved semantic truth automatically;
-- media/provider failure never marks a job successful merely because a file was partially written.
+- merged Shot schema exposes only I2V / FLF2V / VIDEO;
+- default new Shot strategy is I2V;
+- temporal request rejects legacy STILL_MOTION/T2I/COMPOSITE strategies;
+- still-only Shot data cannot satisfy Episode composition;
+- missing/short/unprobed temporal video blocks render readiness;
+- renderer accepts video Shot media only;
+- transition/cache behavior remains deterministic;
+- native Linux and Windows tests remain green;
+- Studio typecheck/build remains green.
 
-## Environment controls
+Product-machine smoke testing is still required for actual installed FramePack/ComfyUI/Chatterbox GPU inference because CI intentionally does not run multi-gigabyte model inference.
 
-Core ComfyUI/gateway controls include:
+## Anime quality design
 
-- `MAKEWATCH_COMFYUI_URL`
-- `MAKEWATCH_COMFYUI_CHECKPOINT`
-- `MAKEWATCH_COMFYUI_TIMEOUT_MS`
-- `MAKEWATCH_GENERATION_PORT`
-- `MAKEWATCH_PREVIEW_WIDTH`
-- `MAKEWATCH_PREVIEW_HEIGHT`
-- `MAKEWATCH_ARTIFACT_DIR`
+For the full technical theory and roadmap for a real authored-anime look rather than generic AI video, see:
 
-`dev.ps1` / `tools/dev-runner.mjs` owns the Make & Watch bridge/gateway/Studio lifecycle. External inference runtimes are probed and their real readiness is surfaced.
-
-## Public-repository IP boundary
-
-The public runtime uses explicit strategies, generic deterministic queues, content-addressed provenance and resource safety. It must not disclose or invent unpublished patent-sensitive adaptive synthesis-selection/scheduling algorithms.
-
-## Verification
-
-CI gates currently cover, among other areas:
-
-- deterministic ComfyUI T2I and img2img workflow construction;
-- reference library persistence/content hashing;
-- canonical reference Generation/Asset topology;
-- stale target/source rejection after an expensive generation race;
-- failed reference artifact non-publication;
-- reference and temporal Director tool schemas/runtime wiring;
-- Scene prompt/provenance behavior;
-- FramePack provider and temporal planning/service contracts;
-- camera motion / transition composition;
-- Director project/media tool boundaries;
-- Studio TypeScript/build;
-- native Linux and Windows builds/tests.
-
-Real product-machine smoke testing is still required for actual installed Codex/ComfyUI/FramePack/Chatterbox GPU environments because CI intentionally uses deterministic fakes for external inference services.
-
-## Next media-runtime work
-
-Remaining production-hardening work includes:
-
-- stronger persistent checkpoint/resume for active local media jobs;
-- garbage collection for unlinked content-addressed artifacts (for example a stale job that produced bytes but correctly refused canonical registration);
-- richer reference/QC workflows and selection among multiple candidate references;
-- stronger final-video synthesis provider coverage and quality validation;
-- subtitle sidecars/burn-in and richer ambience/music mixing;
-- continued hardware validation on supported local GPU configurations.
+`project_brain/ANIME_TEMPORAL_PIPELINE.md`
