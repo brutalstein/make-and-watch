@@ -58,6 +58,16 @@ function normalizeStatus(provider, value) {
   };
 }
 
+function validRelativeArtifactPath(value) {
+  const text = String(value ?? '').trim();
+  if (!text || text.length > 2048 || text.includes('\0')) return null;
+  const normalized = text.replaceAll('\\', '/');
+  if (normalized.startsWith('/') || /^[A-Za-z]:\//.test(normalized)) return null;
+  const segments = normalized.split('/');
+  if (segments.some((segment) => segment === '..' || segment === '')) return null;
+  return normalized;
+}
+
 function validateArtifact(request, artifact) {
   if (!artifact || typeof artifact !== 'object') {
     throw registryError('provider_error', 'temporal provider returned no artifact');
@@ -65,8 +75,8 @@ function validateArtifact(request, artifact) {
   if (artifact.mediaType !== 'video') {
     throw registryError('provider_error', 'temporal provider must return mediaType=video');
   }
-  const relativePath = String(artifact.relativePath ?? '').trim();
-  if (!relativePath || relativePath.length > 2048 || relativePath.startsWith('/') || /^[A-Za-z]:[\\/]/.test(relativePath) || relativePath.includes('\0')) {
+  const relativePath = validRelativeArtifactPath(artifact.relativePath);
+  if (!relativePath) {
     throw registryError('provider_error', 'temporal provider returned an invalid project-relative artifact path');
   }
   const sha256 = String(artifact.sha256 ?? '').trim();
