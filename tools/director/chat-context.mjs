@@ -5,6 +5,7 @@ const MAX_MESSAGE_CHARS = 6_000;
 const MAX_NODES = 36;
 const MAX_DEPENDENCIES = 72;
 const MAX_METADATA_VALUE_CHARS = 120;
+const MAX_ATTACHMENT_IDS = 8;
 
 const USEFUL_METADATA_KEYS = new Set([
   'index',
@@ -14,36 +15,43 @@ const USEFUL_METADATA_KEYS = new Set([
   'role',
   'status',
   'generationStrategy',
+  'stylePreset',
+  'continuityPriority',
   'city',
   'time',
   'mode',
 ]);
 
 const CHAT_DIRECTIVE = [
-  'You are the Make & Watch creative Director and project operator.',
-  'Discuss story, episode structure, character continuity, shot design and production choices naturally with the user.',
+  'You are the Make & Watch Director Room: a natural screenwriter, director, visual-development partner and project operator.',
+  'Talk like an experienced creative collaborator, not a form wizard. Explore premise, character, performance, visual identity, scene rhythm, camera language and production intent conversationally.',
+  'Ask one focused creative question when the answer materially changes the result. Do not interrogate the user for details that you can infer safely. If the user says you should decide, make a strong coherent choice and continue.',
+  'A user may describe a Character entirely in text, attach one or more visual references, or give no reference at all. All three are valid. Never require a reference image to create a Character or Location.',
+  'Attached images are real visual references delivered separately as image input. Inspect observable visual traits, composition and style; do not invent biographical or identity facts that are not visible or supplied by the user.',
+  'When the user wants an adaptation such as an anime version, preserve the approved identity/visual anchors while changing only the requested rendering language. Keep the original reference Asset durable rather than replacing it.',
   'Native Make & Watch project state is authoritative. Never edit project files or use shell commands to mutate project state.',
-  'When the user asks for an actual project or workflow change, use the available makewatch tools directly instead of merely describing what Studio could do.',
+  'When the user asks for an actual project or workflow change, use the available makewatch or makewatch_media tools directly instead of merely describing what Studio could do.',
   'Inspect the live project revision before mutation and pass that exact revision to mutation tools. If a revision conflict occurs, inspect live state again before retrying.',
   'Use workflow_new/load only when the user clearly intends to replace the active workflow; Make & Watch creates recovery checkpoints before those operations.',
-  'Use workflow_save/list/delete for named workflow management. Never claim a project change, save, load or deletion succeeded unless the corresponding tool returned success.',
+  'Use workflow_save/list/delete for named workflow management. Never claim a project change, save, load, generation or deletion succeeded unless the corresponding tool returned success.',
   'Locks, approvals, dependency validation, journaling and persistence remain native authority. If a native tool rejects an action, explain the rejection instead of bypassing it.',
-  'If makewatch tools are unavailable in this turn, remain advisory and explicitly say direct mutation requires the App Server tool runtime; never pretend a mutation happened.',
-  'Do not mutate the project merely because the user is brainstorming or asking a question. Use tools when intent is to apply, create, change, remove, save, load, organize or reset project state.',
-  'Keep answers useful and concise unless the user asks for detail.',
+  'If Make & Watch tools are unavailable in this turn, remain advisory and explicitly say direct mutation requires the App Server tool runtime; never pretend a mutation happened.',
+  'Do not mutate the project merely because the user is brainstorming or asking a question. Use tools when intent is to apply, create, change, remove, save, load, organize, generate or reset project state.',
+  'Keep answers conversational and compact unless the user asks for detail.',
 ].join(' ');
 
 const PRODUCTION_DIRECTIVE = [
   'Production model: Series owns Episodes; an Episode owns ordered Scenes; a Scene owns ordered Shots.',
   'Character and Location are reusable continuity anchors, not per-scene copies. Attach them with dependency.add so prompt compilation inherits them; never paste identity text into each Shot.',
+  'Imported Director reference images are durable Asset nodes. When a reference belongs to a Character or Location, link that semantic anchor to the Asset rather than treating the image as disposable chat context.',
   'Dependency direction is dependent -> dependency: a Shot depends on its Scene, a Scene depends on its Episode, an Episode depends on its Series, and a Shot or Scene depends on each Character/Location it uses.',
-  'Generation and Asset nodes are written by Make & Watch during real generation. Never hand-create them to imply output exists.',
+  'Generation and generated Asset nodes are written by Make & Watch during real generation. Never hand-create them to imply output exists.',
   'Metadata keys are a fixed schema. Call production_schema before authoring metadata and use only its keys and enum values; unknown keys are stored but ignored by prompt compilation, timing and rendering.',
   'For a preview-generatable Scene the minimum is: Series.stylePreset, Series.visualLanguage, Scene.summary, Shot.generationStrategy, Shot.durationSeconds, and an appearancePrompt on each Character and environmentPrompt on each Location involved.',
-  'Series.stylePreset picks the rendering idiom (live-action-cinematic, anime-cinematic, illustration, stylized-3d) and sets the prompt scaffold and sampler defaults for every Shot. Set it once from the stated intent; visualLanguage then refines the look within that idiom rather than restating it.',
-  'Continuity: keep one Series masterSeed, reuse existing Character/Location anchors instead of creating near-duplicates, and prefer node.lock true on identity anchors the user approves so later episodes inherit them.',
-  'Shot seeds are derived deterministically from the Series masterSeed and the Shot identity, so identical inputs reproduce identical frames. Only set Shot.seed explicitly when the user wants to pin one frame.',
-  'Generation flow: check generation_provider, then scene_generate for the Scene, then poll generation_job until it is completed or failed. Report the real job status. If the visual runtime is offline, say the workflow is ready but generation cannot run yet.',
+  'Series.stylePreset picks the rendering idiom (live-action-cinematic, anime-cinematic, illustration, stylized-3d) and sets the prompt scaffold and sampler defaults for every Shot. Set it once from stated intent; visualLanguage refines the look rather than repeating it.',
+  'Continuity: keep one Series masterSeed, reuse existing Character/Location anchors instead of creating near-duplicates, preserve approved reference Assets, and prefer node.lock true on identity anchors the user approves so later episodes inherit them.',
+  'Shot seeds are derived deterministically from the Series masterSeed and Shot identity. Only set Shot.seed explicitly when the user wants to pin one result.',
+  'Generation flow for storyboard imagery: check generation_provider, then scene_generate, then poll generation_job. For real motion, inspect makewatch_media temporal providers/plan and use a compatible temporal provider. Report the real job status.',
   'Timing: a Scene duration should equal the sum of its Shot durationSeconds. When the user asks for a target runtime, distribute Shot durations so they actually add up to it.',
 ].join(' ');
 
@@ -105,13 +113,23 @@ function compactDependencies(snapshot, allowedIds, limit) {
     .map((edge) => ({ dependent: boundedText(edge.dependent, 160), dependency: boundedText(edge.dependency, 160) }));
 }
 
-function makePrompt({ message, snapshot, selectedId, firstTurn, nodeLimit, dependencyLimit }) {
+function safeAttachmentIds(values) {
+  if (!Array.isArray(values)) return [];
+  return [...new Set(values
+    .slice(0, MAX_ATTACHMENT_IDS)
+    .map((value) => boundedText(value, 180))
+    .filter(Boolean))];
+}
+
+function makePrompt({ message, snapshot, selectedId, attachmentAssetIds, firstTurn, nodeLimit, dependencyLimit }) {
   const nodes = compactNodes(snapshot, selectedId, nodeLimit);
   const ids = new Set(nodes.map((node) => node.id));
   const dependencies = compactDependencies(snapshot, ids, dependencyLimit);
+  const attachments = safeAttachmentIds(attachmentAssetIds);
   const liveContext = {
     projectRevision: snapshot.projectRevision,
     selectedId: selectedId && ids.has(selectedId) ? selectedId : null,
+    attachmentAssetIds: attachments,
     nodes,
     dependencies,
   };
@@ -122,14 +140,15 @@ function makePrompt({ message, snapshot, selectedId, firstTurn, nodeLimit, depen
     sections.push(stableStringify(liveContext));
   } else {
     sections.push(`Live project revision is ${snapshot.projectRevision}.${selectedId ? ` Current Studio selection: ${boundedText(selectedId, 160)}.` : ''}`);
-    sections.push('Continue from the existing conversation history. Discussion alone does not change native state; successful makewatch tool calls do. Query live state when the exact current graph matters.');
+    if (attachments.length) sections.push(`This turn includes ${attachments.length} durable image reference Asset(s): ${attachments.join(', ')}. The actual images are attached to the model input.`);
+    sections.push('Continue from the existing conversation history. Discussion alone does not change native state; successful Make & Watch tool calls do. Query live state when the exact current graph matters.');
   }
   sections.push('User message:');
   sections.push(boundedText(message, MAX_MESSAGE_CHARS));
-  return { prompt: sections.join('\n\n'), nodes, dependencies };
+  return { prompt: sections.join('\n\n'), nodes, dependencies, attachments };
 }
 
-export function buildDirectorChatTurn({ message, snapshot, selectedId = null, firstTurn = false }) {
+export function buildDirectorChatTurn({ message, snapshot, selectedId = null, attachmentAssetIds = [], firstTurn = false }) {
   if (!snapshot || snapshot.schemaVersion !== 1 || !Number.isInteger(snapshot.projectRevision)) {
     throw new Error('Director chat requires a valid project snapshot');
   }
@@ -137,12 +156,12 @@ export function buildDirectorChatTurn({ message, snapshot, selectedId = null, fi
 
   let nodeLimit = firstTurn ? MAX_NODES : Math.min(12, MAX_NODES);
   let dependencyLimit = firstTurn ? MAX_DEPENDENCIES : 24;
-  let result = makePrompt({ message, snapshot, selectedId, firstTurn, nodeLimit, dependencyLimit });
+  let result = makePrompt({ message, snapshot, selectedId, attachmentAssetIds, firstTurn, nodeLimit, dependencyLimit });
 
   while (result.prompt.length > MAX_PROMPT_CHARS && (nodeLimit > 4 || dependencyLimit > 0)) {
     if (dependencyLimit > 0) dependencyLimit = Math.max(0, dependencyLimit - 12);
     else nodeLimit = Math.max(4, nodeLimit - 4);
-    result = makePrompt({ message, snapshot, selectedId, firstTurn, nodeLimit, dependencyLimit });
+    result = makePrompt({ message, snapshot, selectedId, attachmentAssetIds, firstTurn, nodeLimit, dependencyLimit });
   }
   if (result.prompt.length > MAX_PROMPT_CHARS) throw new Error('Director chat context cannot fit the hard prompt budget');
 
@@ -153,5 +172,6 @@ export function buildDirectorChatTurn({ message, snapshot, selectedId = null, fi
     estimatedTokens: Math.ceil(result.prompt.length / 4),
     nodeCountIncluded: result.nodes.length,
     dependencyCountIncluded: result.dependencies.length,
+    attachmentCount: result.attachments.length,
   };
 }
