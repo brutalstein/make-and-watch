@@ -46,7 +46,7 @@ function publicJob(job) {
 }
 
 export class TemporalShotGenerationService {
-  constructor({ bridge, registry, scheduler, hardware = () => ({ totalVramMb: 8192 }) }) {
+  constructor({ bridge, registry, scheduler, hardware = () => ({ totalVramMb: 8192 }), providerRequestBuilders = {} }) {
     if (!bridge || typeof bridge.snapshot !== 'function' || typeof bridge.apply !== 'function') {
       throw new Error('TemporalShotGenerationService requires a project bridge');
     }
@@ -60,6 +60,7 @@ export class TemporalShotGenerationService {
     this.registry = registry;
     this.scheduler = scheduler;
     this.hardware = hardware;
+    this.providerRequestBuilders = Object.freeze({ ...providerRequestBuilders });
     this.jobs = new Map();
     this.pending = [];
     this.activeJobId = null;
@@ -87,8 +88,10 @@ export class TemporalShotGenerationService {
     }
     const snapshot = await this.bridge.snapshot();
     const hardware = await this.hardware();
+    const normalizedProviderId = providerId.trim();
     const request = buildTemporalShotRequest(snapshot, shotId, {
       totalVramMb: hardware?.totalVramMb ?? 8192,
+      allowMissingStartFrame: Boolean(this.providerRequestBuilders[normalizedProviderId]),
     });
     const shot = nodeById(snapshot, request.shot.id);
     if (!shot) throw serviceError('not_found', 'shot disappeared while temporal request was being planned');
@@ -100,7 +103,7 @@ export class TemporalShotGenerationService {
       shotTitle: request.shot.title,
       shotRevision: request.shot.revision,
       projectRevision: request.projectRevision,
-      providerId: providerId.trim(),
+      providerId: normalizedProviderId,
       strategy: request.shot.strategy,
       status: 'queued',
       progress: 0,
@@ -170,14 +173,26 @@ export class TemporalShotGenerationService {
   async #run(job) {
     const before = await this.bridge.snapshot();
     const hardware = await this.hardware();
-    const request = buildTemporalShotRequest(before, job.shotId, {
+    const requestBuilder = this.providerRequestBuilders[job.providerId];
+    let request = buildTemporalShotRequest(before, job.shotId, {
       totalVramMb: hardware?.totalVramMb ?? 8192,
+      allowMissingStartFrame: Boolean(requestBuilder),
     });
     if (request.shot.revision !== job.shotRevision) {
       throw serviceError(
         'stale_request',
         `Shot ${job.shotId} changed from revision ${job.shotRevision} to ${request.shot.revision} while queued; regenerate the temporal plan`,
       );
+    }
+
+    let providerInputAssetIds = [];
+    if (requestBuilder) {
+      const built = await requestBuilder({ snapshot: before, request, job: publicJob(job), hardware });
+      if (!built?.request || typeof built.request !== 'object' || !Array.isArray(built.inputAssetIds)) {
+        throw serviceError('provider_error', `temporal request builder for ${job.providerId} returned an invalid result`);
+      }
+      request = built.request;
+      providerInputAssetIds = built.inputAssetIds;
     }
 
     job.progress = 10;
@@ -240,6 +255,7 @@ export class TemporalShotGenerationService {
       request.inputs.startFrame?.id,
       request.inputs.endFrame?.id,
       ...request.inputs.referenceAssets.map((asset) => asset.id),
+      ...providerInputAssetIds,
     ].filter(Boolean));
     for (const inputAssetId of inputAssetIds) {
       commands.push({ type: 'dependency.add', dependent: generationNodeId, dependency: inputAssetId });

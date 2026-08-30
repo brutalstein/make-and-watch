@@ -12,6 +12,7 @@ Not wired into verify.ps1 because it needs numpy + Pillow + OpenCV + ffmpeg. Run
 from __future__ import annotations
 
 import json
+import runpy
 import shutil
 import struct
 import subprocess
@@ -69,11 +70,16 @@ def main() -> int:
         shape_layer(media / "anime" / "mouth.png", lambda d: d.ellipse([150, 120, 170, 130], fill=(150, 60, 60, 255)))
         shape_layer(media / "anime" / "hair.png", lambda d: d.polygon([(118, 70), (200, 70), (196, 40), (122, 40)], fill=(60, 40, 30, 255)))
         sine_wav(media / "anime" / "line.wav")
-        (media / "anime" / "line.align.json").write_text(json.dumps({
-            "tokens": [{"text": "a", "start": 0.1, "end": 0.3, "conf": 1.0},
-                       {"text": "o", "start": 0.35, "end": 0.55, "conf": 1.0}],
-            "speechStart": 0.1, "speechEnd": 0.55,
+        alignment_path = media / "anime" / "line.align.json"
+        alignment_path.write_text(json.dumps({
+            "schema": "makewatch.alignment/1", "sampleRate": 16000,
+            "tokens": [{"text": "a", "readingKana": "ア", "startSample": 1600, "endSample": 4800, "confidence": 1.0},
+                       {"text": "o", "readingKana": "オ", "startSample": 5600, "endSample": 8800, "confidence": 1.0}],
+            "speechStartSample": 1600, "speechEndSample": 8800,
         }), encoding="utf-8")
+        loaded_alignment = runpy.run_path(str(WORKER))["load_alignment"](alignment_path)
+        assert loaded_alignment["tokens"][0]["start"] == 0.1, loaded_alignment
+        assert loaded_alignment["tokens"][1]["end"] == 0.55, loaded_alignment
 
         shot_anim = {
             "schema": "makewatch.shotAnim/1", "shotId": "shot.selftest", "durationSeconds": DUR,

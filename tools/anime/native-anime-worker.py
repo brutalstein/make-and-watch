@@ -170,18 +170,29 @@ def over(dst_rgb: np.ndarray, src_rgba: np.ndarray) -> None:
 
 def load_alignment(path: Path) -> dict:
     data = json.loads(path.read_text(encoding="utf-8"))
+    sample_rate = float(data.get("sampleRate", 0.0) or 0.0)
+
+    def timing(value: dict, sample_key: str, seconds_key: str) -> float:
+        if sample_rate > 0 and sample_key in value:
+            return float(value[sample_key]) / sample_rate
+        return float(value.get(seconds_key, 0.0))
+
     tokens = []
     for token in data.get("tokens", []):
         tokens.append({
             "text": str(token.get("text", "")).strip().lower(),
-            "start": float(token.get("start", 0.0)),
-            "end": float(token.get("end", 0.0)),
-            "conf": float(token.get("conf", 1.0)),
+            "start": timing(token, "startSample", "start"),
+            "end": timing(token, "endSample", "end"),
+            "conf": float(token.get("confidence", token.get("conf", 1.0))),
         })
     return {
         "tokens": tokens,
-        "speechStart": float(data.get("speechStart", tokens[0]["start"] if tokens else 0.0)),
-        "speechEnd": float(data.get("speechEnd", tokens[-1]["end"] if tokens else 0.0)),
+        "speechStart": (float(data["speechStartSample"]) / sample_rate
+                        if sample_rate > 0 and "speechStartSample" in data
+                        else float(data.get("speechStart", tokens[0]["start"] if tokens else 0.0))),
+        "speechEnd": (float(data["speechEndSample"]) / sample_rate
+                      if sample_rate > 0 and "speechEndSample" in data
+                      else float(data.get("speechEnd", tokens[-1]["end"] if tokens else 0.0))),
     }
 
 

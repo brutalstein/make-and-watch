@@ -236,7 +236,8 @@ export function buildTemporalShotRequest(snapshot, shotId, options = {}) {
   const startFrame = explicitStart ?? generatedStart;
   const endFrame = explicitFrameAsset(index, shot, ['endFrameAssetId']);
 
-  if ((strategy === 'I2V' || strategy === 'FLF2V') && !startFrame) {
+  const startFrameOptional = strategy === 'I2V' && options.allowMissingStartFrame === true;
+  if ((strategy === 'I2V' || strategy === 'FLF2V') && !startFrame && !startFrameOptional) {
     throw contractError('not_ready', `Shot ${shot.id} needs a ready hero/start image Asset before ${strategy}`);
   }
   if (strategy === 'FLF2V' && !endFrame) {
@@ -280,7 +281,7 @@ export function buildTemporalShotRequest(snapshot, shotId, options = {}) {
       mustReturnMediaType: 'video',
       mustReportDuration: true,
       mustReportContentHash: true,
-      mustPreserveInputFrameIdentity: strategy !== 'VIDEO',
+      mustPreserveInputFrameIdentity: strategy !== 'VIDEO' && Boolean(startFrame),
       tailFrameHandoffRequired: durationSeconds > resourcePolicy.maxSegmentSeconds,
       stillImageFallbackAllowed: false,
     },

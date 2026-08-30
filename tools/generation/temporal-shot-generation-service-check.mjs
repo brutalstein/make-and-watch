@@ -54,6 +54,7 @@ const registry = {
   generate: async (providerId, request) => {
     assert.equal(providerId, 'fixture');
     assert.equal(request.inputs.startFrame.id, 'asset.hero');
+    assert.equal(request.shotAnim, shotAnim);
     return {
       provider: 'fixture',
       artifact: {
@@ -76,12 +77,23 @@ const scheduler = {
     return operation();
   },
 };
+const shotAnim = { schema: 'makewatch.shotAnim/1', shotId: 'shot.1' };
+const providerRequestBuilders = {
+  fixture: async ({ snapshot, request }) => {
+    assert.equal(snapshot.projectRevision, 9);
+    return {
+      request: { ...request, shotAnim },
+      inputAssetIds: ['asset.rig', 'asset.environment', 'asset.alignment'],
+    };
+  },
+};
 
 const service = new TemporalShotGenerationService({
   bridge,
   registry,
   scheduler,
   hardware: async () => ({ totalVramMb: 8192 }),
+  providerRequestBuilders,
 });
 const started = await service.startShot({ shotId: 'shot.1', providerId: 'fixture' });
 const completed = await waitFor(service, started.id);
@@ -92,6 +104,9 @@ assert.equal(applies[0].context.source, 'temporal-shot-generation');
 assert.ok(applies[0].commands.some((command) => command.type === 'node.create' && command.node.kind === 'generation'));
 assert.ok(applies[0].commands.some((command) => command.type === 'node.create' && command.node.kind === 'asset'));
 assert.ok(applies[0].commands.some((command) => command.type === 'dependency.add' && command.dependency === 'asset.face'));
+for (const dependency of ['asset.rig', 'asset.environment', 'asset.alignment']) {
+  assert.ok(applies[0].commands.some((command) => command.type === 'dependency.add' && command.dependency === dependency));
+}
 const generationCreate = applies[0].commands.find((command) => command.type === 'node.create' && command.node.kind === 'generation');
 const assetCreate = applies[0].commands.find((command) => command.type === 'node.create' && command.node.kind === 'asset');
 assert.equal(generationCreate.node.metadata.providerMetadata, JSON.stringify({ engine: 'fixture', deterministic: true }));
@@ -115,5 +130,55 @@ const staleStarted = await staleService.startShot({ shotId: 'shot.1', providerId
 const staleJob = await waitFor(staleService, staleStarted.id);
 assert.equal(staleJob.status, 'failed');
 assert.match(staleJob.error, /changed from revision 3 to 4/);
+
+let builderRegistryCalls = 0;
+const builderErrorApplies = [];
+const builderErrorService = new TemporalShotGenerationService({
+  bridge: {
+    snapshot: async () => structuredClone(stable),
+    apply: async (...args) => { builderErrorApplies.push(args); },
+  },
+  registry: {
+    statuses: registry.statuses,
+    generate: async () => { builderRegistryCalls += 1; throw new Error('registry must not run'); },
+  },
+  scheduler,
+  hardware: async () => ({ totalVramMb: 8192 }),
+  providerRequestBuilders: {
+    fixture: async () => { throw Object.assign(new Error('compiler blocked the Shot'), { code: 'not_ready' }); },
+  },
+});
+const builderErrorStarted = await builderErrorService.startShot({ shotId: 'shot.1', providerId: 'fixture' });
+const builderErrorJob = await waitFor(builderErrorService, builderErrorStarted.id);
+assert.equal(builderErrorJob.status, 'failed');
+assert.match(builderErrorJob.error, /compiler blocked/);
+assert.equal(builderRegistryCalls, 0);
+assert.equal(builderErrorApplies.length, 0);
+
+const layeredSnapshot = fixtureSnapshot();
+layeredSnapshot.nodes = layeredSnapshot.nodes.filter(({ id }) => !['generation.hero', 'asset.hero'].includes(id));
+layeredSnapshot.dependencies = layeredSnapshot.dependencies.filter(({ dependent, dependency }) => !['generation.hero', 'asset.hero'].includes(dependent) && !['generation.hero', 'asset.hero'].includes(dependency));
+let layeredRequest = null;
+const layeredService = new TemporalShotGenerationService({
+  bridge: {
+    snapshot: async () => structuredClone(layeredSnapshot),
+    apply: async () => ({ projectRevision: 10 }),
+  },
+  registry: {
+    statuses: registry.statuses,
+    generate: async (_providerId, request) => {
+      layeredRequest = request;
+      return registry.generate('fixture', { ...request, inputs: { ...request.inputs, startFrame: { id: 'asset.hero' } } });
+    },
+  },
+  scheduler,
+  hardware: async () => ({ totalVramMb: 8192 }),
+  providerRequestBuilders,
+});
+const layeredStarted = await layeredService.startShot({ shotId: 'shot.1', providerId: 'fixture' });
+const layeredJob = await waitFor(layeredService, layeredStarted.id);
+assert.equal(layeredJob.status, 'completed');
+assert.equal(layeredRequest.inputs.startFrame, null);
+assert.equal(layeredRequest.shotAnim, shotAnim);
 
 console.log('temporal shot generation service checks passed');

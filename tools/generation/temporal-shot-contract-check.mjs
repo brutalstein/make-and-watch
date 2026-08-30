@@ -95,6 +95,14 @@ missingEnd.nodes = missingEnd.nodes.map((candidate) => candidate.id === 'shot.1'
   : candidate);
 assert.throws(() => buildTemporalShotRequest(missingEnd, 'shot.1'), /endFrameAssetId/);
 
+const nativeLayered = structuredClone(snapshot);
+nativeLayered.nodes = nativeLayered.nodes.filter(({ id }) => id !== 'generation.hero' && id !== 'asset.hero');
+nativeLayered.dependencies = nativeLayered.dependencies.filter(({ dependent, dependency }) => !['generation.hero', 'asset.hero'].includes(dependent) && !['generation.hero', 'asset.hero'].includes(dependency));
+assert.throws(() => buildTemporalShotRequest(nativeLayered, 'shot.1'), /ready hero\/start image/);
+const nativeLayeredRequest = buildTemporalShotRequest(nativeLayered, 'shot.1', { allowMissingStartFrame: true });
+assert.equal(nativeLayeredRequest.inputs.startFrame, null);
+assert.equal(nativeLayeredRequest.providerContract.mustPreserveInputFrameIdentity, false);
+
 for (const legacy of ['STILL_MOTION', 'T2I', 'COMPOSITE']) {
   const old = structuredClone(snapshot);
   old.nodes = old.nodes.map((candidate) => candidate.id === 'shot.1'

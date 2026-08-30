@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import { resolve } from 'node:path';
 
 import { NativeAnimeTemporalProvider } from '../anime/native-anime-provider.mjs';
+import { buildShotAnimRequest } from '../anime/shot-anim-compiler.mjs';
 import { AudioGenerationService } from '../audio/audio-generation-service.mjs';
 import { compileEpisodeComposition } from '../composition/episode-composition.mjs';
 import { EpisodeRenderService } from '../composition/episode-render-service.mjs';
@@ -57,14 +58,15 @@ const renderService = new EpisodeRenderService({
   artifactRoot: episodeArtifactRoot,
   cacheRoot: renderCacheRoot,
 });
-// `native-anime` is the deterministic target default (no resident video model), but
-// reports not-ready until the native graph -> ShotAnim compiler is connected.
+// `native-anime` is the deterministic target default (no resident video model); this
+// server wires its native graph -> ShotAnim compiler before enabling readiness.
 // FramePack stays an optional experiment and reports not-ready unless its ~30-40 GB
 // models are explicitly present.
 const temporalRegistry = new TemporalProviderRegistry()
   .register(new NativeAnimeTemporalProvider({
     projectRoot: root,
     workerPath: resolve(root, 'tools/anime/native-anime-worker.py'),
+    acceptsProductionRequests: true,
   }))
   .register(new FramePackTemporalProvider({
     projectRoot: root,
@@ -75,6 +77,15 @@ const temporalService = new TemporalShotGenerationService({
   registry: temporalRegistry,
   scheduler,
   hardware: async () => localGpuTelemetry(),
+  providerRequestBuilders: {
+    'native-anime': async ({ snapshot, request }) => {
+      const compiled = await buildShotAnimRequest(snapshot, request.shot.id, { projectRoot: root });
+      return {
+        request: { ...request, shotAnim: compiled.shotAnim },
+        inputAssetIds: compiled.inputAssetIds,
+      };
+    },
+  },
 });
 
 if (!Number.isInteger(port) || port < 1024 || port > 65535) {
