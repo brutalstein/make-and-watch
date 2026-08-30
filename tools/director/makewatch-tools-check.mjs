@@ -75,7 +75,8 @@ const applyText = await handleMakeWatchToolCall({
     expectedProjectRevision: 7,
     reason: 'rename opening scene',
     commands: [{ type: 'node.patch', id: 'scene.one', expectedRevision: 2, title: 'New opening' }],
-  }, runtime);
+  },
+}, runtime);
 assert.equal(JSON.parse(applyText).projectRevision, 8);
 assert.deepEqual(calls[0], ['apply', {
   expectedProjectRevision: 7,
