@@ -94,7 +94,7 @@ export interface CompositionMedia {
 }
 
 export interface EpisodeCompositionManifest {
-  schemaVersion: 1;
+  schemaVersion: 2;
   projectRevision: number;
   episode: {
     id: string;
@@ -120,7 +120,7 @@ export interface EpisodeCompositionManifest {
     shots: Array<{
       id: string;
       title: string;
-      strategy: string;
+      strategy: 'I2V' | 'FLF2V' | 'VIDEO' | string;
       startSeconds: number;
       durationSeconds: number;
       media: CompositionMedia | null;
