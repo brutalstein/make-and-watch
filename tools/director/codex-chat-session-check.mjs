@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { resolve } from 'node:path';
 
-import { CodexChatSession } from './codex-chat-session.mjs';
+import { CodexChatSession, codexDirectorModelPolicy } from './codex-chat-session.mjs';
 
 class FakeClient extends EventEmitter {
   constructor() {
@@ -28,6 +29,23 @@ class FakeClient extends EventEmitter {
   readOnlyTurnSecurityParams() { return { permissions: ':read-only' }; }
   async request(method, params) {
     this.requests.push({ method, params });
+    if (method === 'model/list') {
+      return {
+        data: [
+          {
+            id: 'gpt-5.6-sol', model: 'gpt-5.6-sol', displayName: 'GPT-5.6 Sol', hidden: false, isDefault: true,
+            inputModalities: ['text', 'image'], defaultReasoningEffort: 'medium',
+            supportedReasoningEfforts: [{ reasoningEffort: 'medium', description: 'Medium' }, { reasoningEffort: 'high', description: 'High' }],
+          },
+          {
+            id: 'gpt-5.6-luna', model: 'gpt-5.6-luna', displayName: 'GPT-5.6 Luna', hidden: false, isDefault: false,
+            inputModalities: ['text', 'image'], defaultReasoningEffort: 'low',
+            supportedReasoningEfforts: [{ reasoningEffort: 'none', description: 'None' }, { reasoningEffort: 'low', description: 'Low' }],
+          },
+        ],
+        nextCursor: null,
+      };
+    }
     if (method === 'thread/start') return { thread: { id: 'chat-thread-1' } };
     if (method === 'thread/resume') return { thread: { id: params.threadId, turns: [] } };
     if (method === 'thread/read') return { thread: { id: params.threadId, turns: params.includeTurns ? [{ id: 'old-turn' }] : [] } };
@@ -53,11 +71,17 @@ class FakeClient extends EventEmitter {
 
 const client = new FakeClient();
 const chat = new CodexChatSession(client);
+const profile = await chat.directorProfile();
+assert.equal(profile.model, 'gpt-5.6-luna', 'Director chat should prefer the efficient Luna tier when Codex advertises it');
+assert.equal(profile.effort, 'low', 'Director chat should use low reasoning by default to preserve tokens');
+assert.equal(profile.inputModalities.includes('image'), true);
+assert.equal(codexDirectorModelPolicy.preferredModel, 'gpt-5.6-luna');
+
 const threadId = await chat.createThread();
 assert.equal(threadId, 'chat-thread-1');
-
 const threadStart = client.requests.find((request) => request.method === 'thread/start');
 assert.ok(threadStart, 'chat must create a Codex thread');
+assert.equal(threadStart.params.model, 'gpt-5.6-luna');
 assert.equal(threadStart.params.approvalPolicy, 'never');
 assert.equal(threadStart.params.permissions, ':read-only');
 assert.equal(Object.prototype.hasOwnProperty.call(threadStart.params, 'sandbox'), false);
@@ -65,11 +89,22 @@ assert.equal(Object.prototype.hasOwnProperty.call(threadStart.params, 'ephemeral
 assert.deepEqual(threadStart.params.dynamicTools, client.tools, 'chat thread must advertise only host-provided Make & Watch dynamic tools');
 
 assert.equal(await chat.send(threadId, 'first message'), 'reply 1');
-assert.equal(await chat.send(threadId, 'second message'), 'reply 2');
+const managedImage = resolve('.makewatch', 'director-assets', 'aa', `${'a'.repeat(64)}.png`);
+assert.equal(await chat.send(threadId, 'use this reference', { localImages: [managedImage] }), 'reply 2');
 const turns = client.requests.filter((request) => request.method === 'turn/start');
 assert.equal(turns.length, 2);
 assert.equal(turns[0].params.threadId, turns[1].params.threadId, 'multi-turn chat must keep one Codex thread');
+assert.equal(turns[0].params.model, 'gpt-5.6-luna');
+assert.equal(turns[0].params.effort, 'low');
+assert.deepEqual(turns[1].params.input, [
+  { type: 'text', text: 'use this reference' },
+  { type: 'localImage', path: managedImage },
+]);
 assert.equal(client.requests.filter((request) => request.method === 'thread/resume').length, 0, 'freshly started attached thread must not pay a redundant resume round-trip');
+await assert.rejects(
+  chat.send(threadId, 'bad image', { localImages: [resolve('outside.png')] }),
+  /managed reference library/,
+);
 
 await chat.nameThread(threadId, 'Mira continuity');
 const nameRequest = client.requests.find((request) => request.method === 'thread/name/set');
