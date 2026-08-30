@@ -5,6 +5,15 @@ import { join } from 'node:path';
 
 import { AnchorReferenceGenerationService } from './anchor-reference-generation-service.mjs';
 
+async function waitForJob(service, id) {
+  for (let i = 0; i < 80; i += 1) {
+    const job = service.get(id);
+    if (job.status === 'completed' || job.status === 'failed') return job;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+  }
+  return service.get(id);
+}
+
 const root = await mkdtemp(join(tmpdir(), 'makewatch-anchor-reference-'));
 try {
   await mkdir(join(root, '.makewatch', 'director-assets', 'aa'), { recursive: true });
@@ -77,12 +86,7 @@ try {
     denoise: 0.6,
   });
   assert.ok(['queued', 'running'].includes(started.status));
-  let job;
-  for (let i = 0; i < 50; i += 1) {
-    job = service.get(started.id);
-    if (job.status === 'completed' || job.status === 'failed') break;
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
-  }
+  const job = await waitForJob(service, started.id);
   assert.equal(job.status, 'completed', job.error);
   assert.equal(comfyCalls[0][0], 'img2img');
   assert.match(comfyCalls[0][1].prompt, /anime/i);
@@ -101,6 +105,45 @@ try {
   assert.ok(snapshot.dependencies.some((edge) => edge.dependent === 'character.mira' && edge.dependency === outputAsset.id));
   assert.equal(snapshot.dependencies.some((edge) => edge.dependent === generation.id && edge.dependency === 'character.mira'), false, 'provenance must not create a Character→Asset→Generation→Character cycle');
   assert.ok(applies.every((entry) => entry.context.source === 'reference-generation'));
+
+  const canonicalDependenciesBeforeStaleRun = snapshot.dependencies
+    .filter((edge) => edge.dependent === 'character.mira' && edge.dependency.startsWith('asset.'))
+    .map((edge) => edge.dependency)
+    .sort();
+
+  const staleComfy = {
+    capabilities: async () => ({ checkpoint: 'anime.safetensors' }),
+    generateReferenceImage: async () => {
+      const character = snapshot.nodes.find((node) => node.id === 'character.mira');
+      character.revision += 1;
+      character.metadata.wardrobe = 'red coat';
+      snapshot.projectRevision += 1;
+      return {
+        bytes: Buffer.alloc(4096, 7), contentType: 'image/png', promptId: 'prompt-stale', checkpoint: 'anime.safetensors', sampler: 'euler', scheduler: 'normal',
+      };
+    },
+    generateStoryboardFrame: async () => {
+      throw new Error('unexpected t2i call');
+    },
+  };
+  const staleService = new AnchorReferenceGenerationService({ bridge, comfy: staleComfy, scheduler, projectRoot: root });
+  const staleStarted = await staleService.start({
+    targetId: 'character.mira',
+    sourceAssetId: 'asset.reference.source',
+    stylePreset: 'anime-cinematic',
+  });
+  const staleJob = await waitForJob(staleService, staleStarted.id);
+  assert.equal(staleJob.status, 'failed');
+  assert.match(staleJob.error, /reference target changed while generation was running/);
+  assert.equal(staleJob.artifact, null, 'failed stale generation must never publish an artifact');
+  assert.throws(() => staleService.artifact(staleStarted.id), /reference artifact is not ready/);
+  const staleGeneration = snapshot.nodes.find((node) => node.id === `generation.reference.${staleStarted.id}`);
+  assert.equal(staleGeneration.metadata.status, 'failed');
+  const canonicalDependenciesAfterStaleRun = snapshot.dependencies
+    .filter((edge) => edge.dependent === 'character.mira' && edge.dependency.startsWith('asset.'))
+    .map((edge) => edge.dependency)
+    .sort();
+  assert.deepEqual(canonicalDependenciesAfterStaleRun, canonicalDependenciesBeforeStaleRun, 'stale output must not attach a new canonical Asset');
 
   const character = snapshot.nodes.find((node) => node.id === 'character.mira');
   character.locked = true;
