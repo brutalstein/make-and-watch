@@ -2,12 +2,18 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
+const LEGACY_SCHEMA_VERSION = 1;
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
 const MAX_TITLE_CHARS = 120;
 const MAX_MESSAGE_CHARS = 40_000;
 const MAX_PROVIDER_THREAD_ID_CHARS = 512;
+const MAX_ATTACHMENTS_PER_MESSAGE = 8;
+const MAX_ATTACHMENT_FILENAME_CHARS = 180;
+const MAX_ATTACHMENT_PATH_CHARS = 2048;
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+const ASSET_ID_PATTERN = /^[A-Za-z0-9._:-]{1,180}$/;
+const SHA256_PATTERN = /^[a-f0-9]{64}$/i;
 const PROVIDERS = new Set(['codex', 'claude']);
 const RUNTIME_MODES = new Set(['app_server', 'exec_fallback', 'none']);
 const MESSAGE_ROLES = new Set(['user', 'assistant', 'system']);
@@ -49,6 +55,41 @@ function deriveTitle(value) {
   return compact.length <= MAX_TITLE_CHARS ? compact : `${compact.slice(0, MAX_TITLE_CHARS - 1)}…`;
 }
 
+function validateAttachment(attachment) {
+  if (!attachment || typeof attachment !== 'object') throw new Error('conversation attachment must be an object');
+  const assetNodeId = String(attachment.assetNodeId ?? '');
+  if (!ASSET_ID_PATTERN.test(assetNodeId)) throw new Error('conversation attachment Asset id is invalid');
+  const filename = boundedText(attachment.filename, MAX_ATTACHMENT_FILENAME_CHARS, 'conversation attachment filename', { required: true });
+  const mimeType = boundedText(attachment.mimeType, 80, 'conversation attachment mime type', { required: true }).toLowerCase();
+  if (!mimeType.startsWith('image/')) throw new Error('conversation attachment must be an image');
+  const sha256 = String(attachment.sha256 ?? '').toLowerCase();
+  if (!SHA256_PATTERN.test(sha256)) throw new Error('conversation attachment SHA-256 is invalid');
+  const relativePath = boundedText(attachment.relativePath, MAX_ATTACHMENT_PATH_CHARS, 'conversation attachment path', { required: true }).replaceAll('\\', '/');
+  if (relativePath.startsWith('/') || /^[A-Za-z]:\//.test(relativePath) || relativePath.split('/').includes('..') || relativePath.includes('\0')) {
+    throw new Error('conversation attachment path must be project-relative');
+  }
+  const byteSize = Number(attachment.byteSize ?? 0);
+  if (!Number.isSafeInteger(byteSize) || byteSize < 1) throw new Error('conversation attachment byteSize is invalid');
+  return { assetNodeId, filename, mimeType, sha256, relativePath, byteSize };
+}
+
+function validateAttachments(value) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new Error('conversation attachments must be an array');
+  if (value.length > MAX_ATTACHMENTS_PER_MESSAGE) {
+    throw new Error(`conversation message supports at most ${MAX_ATTACHMENTS_PER_MESSAGE} attachments`);
+  }
+  const seen = new Set();
+  const result = [];
+  for (const candidate of value) {
+    const attachment = validateAttachment(candidate);
+    if (seen.has(attachment.assetNodeId)) continue;
+    seen.add(attachment.assetNodeId);
+    result.push(attachment);
+  }
+  return result;
+}
+
 function safeSummary(document) {
   const last = [...document.messages].reverse().find((message) => message.role === 'assistant' || message.role === 'user');
   return {
@@ -64,6 +105,7 @@ function safeSummary(document) {
     providerThreadArchived: document.providerThreadArchived,
     lastProjectRevision: document.lastProjectRevision,
     messageCount: document.messages.length,
+    attachmentCount: document.messages.reduce((count, message) => count + message.attachments.length, 0),
     preview: last ? String(last.text).replace(/\s+/g, ' ').slice(0, 180) : '',
   };
 }
@@ -82,11 +124,12 @@ function validateMessage(message) {
     throw new Error('conversation message projectRevision is invalid');
   }
   const delivery = message.delivery === 'failed' ? 'failed' : 'complete';
-  return { id, role, text, createdAt, projectRevision, delivery };
+  const attachments = validateAttachments(message.attachments);
+  return { id, role, text, createdAt, projectRevision, delivery, attachments };
 }
 
 function validateDocument(value) {
-  if (!value || typeof value !== 'object' || value.schemaVersion !== SCHEMA_VERSION) {
+  if (!value || typeof value !== 'object' || ![LEGACY_SCHEMA_VERSION, SCHEMA_VERSION].includes(value.schemaVersion)) {
     throw new Error('conversation archive schema is unsupported');
   }
   const id = validateId(value.id);
@@ -229,7 +272,7 @@ export class ConversationStore {
     return this.#serialize(async () => {
       const current = await this.#readUnsafe(id);
       const next = await mutator(structuredClone(current));
-      const normalized = validateDocument({ ...next, id: current.id, updatedAt: isoNow() });
+      const normalized = validateDocument({ ...next, id: current.id, schemaVersion: SCHEMA_VERSION, updatedAt: isoNow() });
       await this.#writeUnsafe(normalized);
       return normalized;
     });
@@ -245,12 +288,21 @@ export class ConversationStore {
     return safeSummary(document);
   }
 
-  async appendTurn(id, { userText, assistantText, projectRevision = null, runtimeMode, providerThreadId }) {
+  async appendTurn(id, {
+    userText,
+    assistantText,
+    userAttachments = [],
+    assistantAttachments = [],
+    projectRevision = null,
+    runtimeMode,
+    providerThreadId,
+  }) {
     const document = await this.mutate(id, (current) => {
       current.messages.push(validateMessage({
         id: randomUUID(),
         role: 'user',
         text: userText,
+        attachments: userAttachments,
         createdAt: isoNow(),
         projectRevision,
       }));
@@ -258,6 +310,7 @@ export class ConversationStore {
         id: randomUUID(),
         role: 'assistant',
         text: assistantText,
+        attachments: assistantAttachments,
         createdAt: isoNow(),
         projectRevision,
       }));
@@ -271,12 +324,13 @@ export class ConversationStore {
     return safeSummary(document);
   }
 
-  async appendFailure(id, { userText, message, projectRevision = null }) {
+  async appendFailure(id, { userText, userAttachments = [], message, projectRevision = null }) {
     const document = await this.mutate(id, (current) => {
       current.messages.push(validateMessage({
         id: randomUUID(),
         role: 'user',
         text: userText,
+        attachments: userAttachments,
         createdAt: isoNow(),
         projectRevision,
         delivery: 'failed',
@@ -329,5 +383,9 @@ export class ConversationStore {
     });
   }
 }
+
+export const conversationStoreLimits = Object.freeze({
+  maxAttachmentsPerMessage: MAX_ATTACHMENTS_PER_MESSAGE,
+});
 
 export { deriveTitle };
