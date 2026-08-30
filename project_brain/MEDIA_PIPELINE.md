@@ -1,6 +1,6 @@
 # Series Continuity and Temporal Media Pipeline
 
-> Current status: 2026-08-30 04:26 TRT (Europe/Istanbul)
+> Current status: 2026-08-30 14:04 TRT (Europe/Istanbul)
 
 ## Product rule
 
@@ -32,6 +32,39 @@ Series / Episode / Scene / Shot / Character / Location
 ```
 
 A hero/reference image is an input to temporal synthesis. It can never satisfy Episode render readiness by itself.
+
+## Multilingual anime product profile
+
+For an authentic-anime Turkish audience profile, the recommended default is now conceptually:
+
+```text
+Authoring language:          tr-TR
+Original performance audio: ja-JP
+Primary subtitle:           tr-TR
+Optional subtitles:         en-US / additional BCP-47 languages
+Optional dubs:              tr-TR / en-US / additional languages
+```
+
+`anime-cinematic` should recommend Japanese original performance when the user has not specified a preference, but language remains explicitly user-overridable.
+
+One generic `language` field is not sufficient for the long-term product. The detailed multilingual/synchronization architecture lives in:
+
+`project_brain/LOCALIZATION_SYNC_ARCHITECTURE.md`
+
+The core synchronization rule is:
+
+```text
+DialogueUnit
+ -> actual generated Japanese speech
+ -> forced alignment
+ -> lip/face/performance timing
+
+same DialogueUnit
+ -> Turkish localized subtitle text
+ -> audio/shot-aware subtitle timing
+```
+
+Lip sync and subtitle sync share semantic identity and timing anchors, but they are not forced to use identical out-times. Mouth motion follows actual speech; subtitle timing may remain slightly longer for readability where edit boundaries permit.
 
 ## Retired animated-still path
 
@@ -97,6 +130,54 @@ Durable identity/environment controls include:
 - Shot/Scene dependencies.
 
 A reference image attached in Director Room is content-addressed, registered as a native Asset, and can be promoted into Character/Location continuity. Source references remain immutable.
+
+## Dialogue and localization direction
+
+The current Audio node can represent language and subtitle intent, but premium localization needs a stronger semantic contract.
+
+The roadmap introduces a stable `DialogueUnit` concept that binds:
+
+- speaker identity;
+- dramatic/semantic intent;
+- authoring text;
+- Japanese performance adaptation;
+- generated Japanese speech Asset;
+- forced-alignment Asset;
+- Turkish/English subtitle adaptations;
+- optional dub Assets;
+- QC/approval/revision.
+
+This prevents script, TTS, subtitles and lip motion from becoming unrelated copies.
+
+For dialogue-heavy anime, the recommended production order is audio-first:
+
+```text
+DialogueUnits
+ -> final Japanese performance text
+ -> Japanese TTS
+ -> forced alignment
+ -> Shot duration/acting refinement
+ -> hero/start frame
+ -> temporal video
+ -> Turkish subtitle segmentation/timing
+ -> Episode mix/render
+```
+
+This is a roadmap architecture. The forced-alignment and first-class multi-track localization layer are not yet claimed as implemented.
+
+## Timed text direction
+
+Canonical subtitles should eventually be structured project data, not SRT files used as project truth.
+
+Recommended export surfaces:
+
+- WebVTT for web/browser preview;
+- IMSC/TTML for professional timed-text master output;
+- SRT for compatibility only.
+
+Language tags should use BCP-47 at product boundaries.
+
+Professional QC targets for Turkish subtitle adaptation are documented in `LOCALIZATION_SYNC_ARCHITECTURE.md`, including reading speed, maximum line count, timing to audio/shot and forced-narrative handling.
 
 ## Temporal Shot request
 
@@ -194,7 +275,7 @@ A temporal video shorter than the authored duration is a readiness error. The us
 
 ## Episode renderer
 
-The FFmpeg renderer now consumes video Shot Assets only.
+The FFmpeg renderer consumes video Shot Assets only.
 
 Responsibilities:
 
@@ -213,9 +294,18 @@ The removed image-to-video branch cannot be selected by runtime state.
 
 Audio remains an independent semantic/generation layer.
 
-Current local path includes Chatterbox voice generation. Dialogue/narration Assets are timed against Scene/Shot structure and mixed during Episode assembly.
+Current local path includes Chatterbox multilingual voice generation. Dialogue/narration Assets are timed against Scene/Shot structure and mixed during Episode assembly.
 
-Future anime dialogue quality work is described in `ANIME_TEMPORAL_PIPELINE.md` and includes performance-aware speech, shot-specific acting motion, audio-driven face/lip control and QC.
+Chatterbox currently documents Japanese and Turkish among its supported languages. This makes Japanese original performance technically plausible through the current provider family, but pronunciation/acting quality still requires real product-machine QC.
+
+Future dialogue quality work includes:
+
+- forced alignment;
+- performance-aware speech adaptation;
+- audio-first Shot timing;
+- stylized anime mouth-state timing;
+- audio-conditioned face/lip providers;
+- language-specific dub face layers.
 
 ## Director tools
 
@@ -238,6 +328,7 @@ The intended Director sequence is:
 production_schema
  -> project authoring
  -> prepare/choose references
+ -> finalize dialogue/audio intent
  -> prepare hero frames where needed
  -> shot_temporal_plan
  -> shot_generate_video
@@ -248,6 +339,33 @@ production_schema
 ```
 
 The Director must never report a Scene/Episode as visually complete merely because hero images exist.
+
+## Real-user proof gate
+
+Repository tests and CI verify contracts, but they do not prove subjective series quality on the user's GPU.
+
+The mandatory local proof specification is:
+
+`project_brain/ONE_MINUTE_ANIME_ACCEPTANCE.md`
+
+A PASS requires:
+
+- a newly generated ~1-minute MP4;
+- real temporal video for every final Shot;
+- Japanese dialogue;
+- Turkish subtitle behavior;
+- browser playback;
+- visual frame inspection;
+- mechanical media checks;
+- Character/Location continuity review;
+- audio/subtitle review;
+- timestamped defects;
+- repair + revalidation after the final fix;
+- exact final commit CI green.
+
+The executable Claude real-user QA instructions are in:
+
+`project_brain/CLAUDE_REAL_USER_ANIME_QA_PROMPT.md`
 
 ## Verification contract
 
@@ -265,8 +383,9 @@ CI must protect these invariants:
 
 Product-machine smoke testing is still required for actual installed FramePack/ComfyUI/Chatterbox GPU inference because CI intentionally does not run multi-gigabyte model inference.
 
-## Anime quality design
+## Design documents
 
-For the full technical theory and roadmap for a real authored-anime look rather than generic AI video, see:
-
-`project_brain/ANIME_TEMPORAL_PIPELINE.md`
+- Anime visual/temporal quality roadmap: `project_brain/ANIME_TEMPORAL_PIPELINE.md`
+- Localization, Japanese/Turkish sync and timed-text architecture: `project_brain/LOCALIZATION_SYNC_ARCHITECTURE.md`
+- Real one-minute product acceptance: `project_brain/ONE_MINUTE_ANIME_ACCEPTANCE.md`
+- Claude real-user execution prompt: `project_brain/CLAUDE_REAL_USER_ANIME_QA_PROMPT.md`
