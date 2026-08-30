@@ -10,6 +10,7 @@ import {
   CircleAlert,
   ExternalLink,
   History,
+  ImagePlus,
   KeyRound,
   LoaderCircle,
   MessageSquareText,
@@ -23,11 +24,13 @@ import {
   Sparkles,
   Trash2,
   WandSparkles,
+  X,
 } from 'lucide-react';
 
 import { engineClient } from '../engineClient';
 import { resolveWorkflowPositions, workflowProjectKey } from '../workflowLayout';
 import { validateAutopilotPlan } from './autopilotValidation';
+import { directorReferenceClient, directorReferenceClientLimits } from './referenceClient';
 import type {
   DirectorContextStats,
   DirectorConversationDocument,
@@ -35,6 +38,7 @@ import type {
   DirectorConversationSummary,
   DirectorProviderId,
   DirectorProviderStatus,
+  DirectorReferenceAttachment,
 } from './providerTypes';
 
 const LOGIN_POLL_INTERVAL_MS = 1_000;
@@ -48,6 +52,16 @@ interface ChatMessage {
   text: string;
   meta?: string;
   failed?: boolean;
+  attachments?: DirectorReferenceAttachment[];
+}
+
+interface ReferenceDraft {
+  id: string;
+  filename: string;
+  previewUrl: string;
+  status: 'uploading' | 'ready' | 'error';
+  reference?: DirectorReferenceAttachment;
+  error?: string;
 }
 
 function providerLabel(provider: DirectorProviderId) {
@@ -65,23 +79,39 @@ function statusLabel(status: DirectorProviderStatus | undefined) {
   return status.detail;
 }
 
+function modelLabel(status: DirectorProviderStatus | null) {
+  if (!status?.model) return '';
+  const short = status.model
+    .replace(/^gpt-/i, 'GPT-')
+    .replace(/5\.6-luna/i, '5.6 Luna')
+    .replace(/5\.6-terra/i, '5.6 Terra')
+    .replace(/5\.6-sol/i, '5.6 Sol');
+  return `${short}${status.reasoningEffort ? ` · ${status.reasoningEffort}` : ''}`;
+}
+
 function delay(ms: number) {
   return new Promise<void>((resolvePromise) => window.setTimeout(resolvePromise, ms));
 }
 
-function makeMessage(role: ChatMessage['role'], text: string, meta?: string): ChatMessage {
+function makeMessage(
+  role: ChatMessage['role'],
+  text: string,
+  meta?: string,
+  attachments: DirectorReferenceAttachment[] = [],
+): ChatMessage {
   return {
     id: `${role}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     role,
     text,
     meta,
+    attachments,
   };
 }
 
 function welcomeMessage(provider: DirectorProviderId): ChatMessage {
   return makeMessage(
     'system',
-    `New ${providerLabel(provider)} Director conversation. Ask naturally about the project or request a real workflow change. Project mutations are executed only through typed Make & Watch tools and native revision checks.`,
+    `New ${providerLabel(provider)} Director Room. Describe a character, paste a visual reference, or start with only a story idea. Your Director can make creative choices when you want it to, while real project changes stay behind typed Make & Watch tools and native revision checks.`,
   );
 }
 
@@ -92,6 +122,7 @@ function archivedMessage(message: DirectorConversationMessage): ChatMessage {
     role: message.role,
     text: message.text,
     failed: message.delivery === 'failed',
+    attachments: message.attachments ?? [],
     meta: `${new Date(message.createdAt).toLocaleString()}${revision}${message.delivery === 'failed' ? ' · failed' : ''}`,
   };
 }
@@ -117,6 +148,29 @@ function relativeUpdatedAt(value: string) {
   return new Date(time).toLocaleDateString();
 }
 
+function MessageAttachments({ attachments }: { attachments: DirectorReferenceAttachment[] }) {
+  if (!attachments.length) return null;
+  return (
+    <div className={`director-chat__message-media ${attachments.length === 1 ? 'director-chat__message-media--single' : ''}`}>
+      {attachments.map((attachment) => {
+        const url = directorReferenceClient.url(attachment.assetNodeId);
+        return (
+          <button
+            type="button"
+            key={attachment.assetNodeId}
+            className="director-chat__message-image"
+            onClick={() => { if (url) window.open(url, '_blank', 'noopener,noreferrer'); }}
+            title={`Open ${attachment.filename}`}
+          >
+            <img src={url} alt={attachment.filename} loading="lazy" />
+            <span>{attachment.filename}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export function DirectorProviderDock() {
   const [mountTarget, setMountTarget] = useState<HTMLElement | null>(null);
   const [open, setOpen] = useState(initialOpenState);
@@ -132,6 +186,10 @@ export function DirectorProviderDock() {
   const [conversationTitle, setConversationTitle] = useState('New Director conversation');
   const [composer, setComposer] = useState('');
   const [pendingText, setPendingText] = useState<string | null>(null);
+  const [pendingQueuedAttachments, setPendingQueuedAttachments] = useState<DirectorReferenceAttachment[]>([]);
+  const [referenceDrafts, setReferenceDrafts] = useState<ReferenceDraft[]>([]);
+  const referenceDraftsRef = useRef<ReferenceDraft[]>([]);
+  const [dragActive, setDragActive] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([welcomeMessage('codex')]);
   const [providerBusy, setProviderBusy] = useState(false);
   const [chatBusy, setChatBusy] = useState(false);
@@ -143,7 +201,23 @@ export function DirectorProviderDock() {
   const [lastContext, setLastContext] = useState<DirectorContextStats | null>(null);
   const pollGeneration = useRef(0);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const initialConversationLoaded = useRef(false);
+
+  const updateReferenceDrafts = useCallback((updater: (current: ReferenceDraft[]) => ReferenceDraft[]) => {
+    setReferenceDrafts((current) => {
+      const next = updater(current);
+      referenceDraftsRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const clearReferenceDrafts = useCallback(() => {
+    for (const draft of referenceDraftsRef.current) URL.revokeObjectURL(draft.previewUrl);
+    referenceDraftsRef.current = [];
+    setReferenceDrafts([]);
+    setDragActive(false);
+  }, []);
 
   useLayoutEffect(() => {
     const workspace = document.querySelector<HTMLElement>('.workspace');
@@ -158,6 +232,7 @@ export function DirectorProviderDock() {
 
     return () => {
       pollGeneration.current += 1;
+      for (const draft of referenceDraftsRef.current) URL.revokeObjectURL(draft.previewUrl);
       workspace.classList.remove('workspace--director-chat-open', 'workspace--director-chat-closed');
       slot.remove();
     };
@@ -179,7 +254,7 @@ export function DirectorProviderDock() {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' });
-  }, [messages, pendingText, chatBusy]);
+  }, [messages, pendingText, chatBusy, referenceDrafts]);
 
   const refreshProviders = useCallback(async () => {
     const result = await engineClient.directorProviders();
@@ -207,6 +282,7 @@ export function DirectorProviderDock() {
       }
       const result = await engineClient.readDirectorConversation(summary.id);
       const document: DirectorConversationDocument = result.conversation;
+      clearReferenceDrafts();
       setConversationId(document.id);
       setConversationTitle(document.title);
       setSelectedProvider(document.provider);
@@ -214,13 +290,14 @@ export function DirectorProviderDock() {
       setLastContext(null);
       setComposer('');
       setPendingText(null);
+      setPendingQueuedAttachments([]);
       setStatusMessage(`${document.archivedAt ? 'Archived' : 'Conversation loaded'} · ${document.turnCount} turns · ${document.runtimeMode}`);
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : String(error));
     } finally {
       setArchiveBusy(false);
     }
-  }, [archiveBusy, chatBusy, conversationId, selectedProvider]);
+  }, [archiveBusy, chatBusy, clearReferenceDrafts, conversationId, selectedProvider]);
 
   useEffect(() => {
     let active = true;
@@ -273,6 +350,14 @@ export function DirectorProviderDock() {
     [providers],
   );
 
+  const readyReferences = useMemo(
+    () => referenceDrafts.flatMap((draft) => draft.status === 'ready' && draft.reference ? [draft.reference] : []),
+    [referenceDrafts],
+  );
+  const referenceUploadActive = referenceDrafts.some((draft) => draft.status === 'uploading');
+  const referenceUploadErrors = referenceDrafts.some((draft) => draft.status === 'error');
+  const canSend = !chatBusy && !archiveBusy && !referenceUploadActive && Boolean(composer.trim() || readyReferences.length);
+
   const filteredArchive = useMemo(() => {
     const query = archiveSearch.trim().toLowerCase();
     if (!query) return conversationArchive;
@@ -282,11 +367,73 @@ export function DirectorProviderDock() {
       || providerLabel(item.provider).toLowerCase().includes(query));
   }, [archiveSearch, conversationArchive]);
 
+  const addReferenceFiles = useCallback(async (files: File[]) => {
+    const images = files.filter((file) => file.type.startsWith('image/'));
+    if (!images.length) {
+      setStatusMessage('Director references accept PNG, JPEG, WebP or GIF images.');
+      return;
+    }
+    const available = Math.max(0, directorReferenceClientLimits.maxAttachmentsPerMessage - referenceDraftsRef.current.length);
+    if (available === 0) {
+      setStatusMessage(`A Director message can carry up to ${directorReferenceClientLimits.maxAttachmentsPerMessage} reference images.`);
+      return;
+    }
+    const selected = images.slice(0, available);
+    if (images.length > selected.length) {
+      setStatusMessage(`Only the first ${selected.length} image(s) were added; the per-message limit is ${directorReferenceClientLimits.maxAttachmentsPerMessage}.`);
+    }
+
+    const pairs = selected.map((file) => ({
+      file,
+      draft: {
+        id: `reference-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        filename: file.name || 'reference-image',
+        previewUrl: URL.createObjectURL(file),
+        status: 'uploading' as const,
+      },
+    }));
+    updateReferenceDrafts((current) => [...current, ...pairs.map(({ draft }) => draft)]);
+
+    // Import sequentially. A message can carry several large references, and a
+    // bounded upload lane avoids 8 simultaneous 24 MiB copies in browser + Node.
+    for (const { file, draft } of pairs) {
+      try {
+        const result = await directorReferenceClient.importImage(file);
+        updateReferenceDrafts((current) => current.map((candidate) => candidate.id === draft.id
+          ? { ...candidate, status: 'ready', reference: result.reference, error: undefined }
+          : candidate));
+        setStatusMessage(`Reference archived · ${result.reference.filename}`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        updateReferenceDrafts((current) => current.map((candidate) => candidate.id === draft.id
+          ? { ...candidate, status: 'error', error: message }
+          : candidate));
+        setStatusMessage(message);
+      }
+    }
+  }, [updateReferenceDrafts]);
+
+  const removeReferenceDraft = useCallback((id: string) => {
+    updateReferenceDrafts((current) => {
+      const removed = current.find((draft) => draft.id === id);
+      if (removed) URL.revokeObjectURL(removed.previewUrl);
+      return current.filter((draft) => draft.id !== id);
+    });
+  }, [updateReferenceDrafts]);
+
+  const retryReferenceDraft = useCallback(async (draft: ReferenceDraft) => {
+    // Browser File objects are intentionally not persisted after a failed upload.
+    // Re-open the picker instead of keeping hidden binary blobs in component state.
+    removeReferenceDraft(draft.id);
+    fileInputRef.current?.click();
+  }, [removeReferenceDraft]);
+
   const selectProvider = useCallback(async (providerId: DirectorProviderId) => {
     if (providerId === selectedProvider) return;
     if (conversationId) {
       await engineClient.closeDirectorChat(selectedProvider, conversationId).catch(() => undefined);
     }
+    clearReferenceDrafts();
     setConversationId(null);
     setConversationTitle('New Director conversation');
     setMessages([welcomeMessage(providerId)]);
@@ -295,7 +442,7 @@ export function DirectorProviderDock() {
     setPendingAuthUrl(null);
     const status = providers.find((provider) => provider.provider === providerId);
     setStatusMessage(status?.detail ?? `Preparing ${providerLabel(providerId)}…`);
-  }, [conversationId, providers, selectedProvider]);
+  }, [clearReferenceDrafts, conversationId, providers, selectedProvider]);
 
   const waitForProviderReady = useCallback(async (provider: DirectorProviderId, generation: number) => {
     for (let attempt = 0; attempt < LOGIN_POLL_ATTEMPTS; attempt += 1) {
@@ -345,7 +492,7 @@ export function DirectorProviderDock() {
       const status = await waitForProviderReady(provider, generation);
       setConnectingProvider(null);
       setPendingAuthUrl(null);
-      setStatusMessage(`${providerLabel(provider)} connected${status.planType ? ` · ${status.planType}` : ''}. Director chat is ready.`);
+      setStatusMessage(`${providerLabel(provider)} connected${status.planType ? ` · ${status.planType}` : ''}. Director Room is ready.`);
       return status;
     } catch (error) {
       popup?.close();
@@ -371,7 +518,8 @@ export function DirectorProviderDock() {
 
   const sendChat = useCallback(async () => {
     const text = composer.trim();
-    if (!text || chatBusy) return;
+    const attachments = readyReferences;
+    if ((!text && attachments.length === 0) || chatBusy || archiveBusy || referenceUploadActive) return;
 
     if (selectedProvider === 'claude' && selectedStatus?.policy === 'api_required') {
       setConnectionsOpen(true);
@@ -385,10 +533,12 @@ export function DirectorProviderDock() {
       : null;
     if (popup) popup.opener = null;
 
+    const visibleText = text || 'Reference image';
     setComposer('');
-    setPendingText(text);
+    setPendingText(visibleText);
+    setPendingQueuedAttachments(attachments);
     setChatBusy(true);
-    setActivityLabel(needsConnection ? 'Preparing secure Director connection…' : 'Thinking with project context and tools…');
+    setActivityLabel(needsConnection ? 'Preparing secure Director connection…' : 'Thinking with project context, references and tools…');
     let submittedToProvider = false;
 
     try {
@@ -396,17 +546,23 @@ export function DirectorProviderDock() {
       if (!ready?.chatAvailable) ready = await connectAndWait(selectedProvider, popup);
       else popup?.close();
       if (!ready.chatAvailable) throw new Error(`${providerLabel(selectedProvider)} is not ready for Director chat`);
+      if (attachments.length && !ready.inputModalities.includes('image')) {
+        throw new Error(`${providerLabel(selectedProvider)} is connected, but the selected Director model does not advertise image input.`);
+      }
 
-      setMessages((current) => [...current, makeMessage('user', text)].slice(-MAX_VISIBLE_MESSAGES));
+      setMessages((current) => [...current, makeMessage('user', visibleText, undefined, attachments)].slice(-MAX_VISIBLE_MESSAGES));
       setPendingText(null);
-      setActivityLabel('Thinking with project context and tools…');
+      setPendingQueuedAttachments([]);
+      setActivityLabel('Thinking with project context, references and tools…');
       submittedToProvider = true;
+      clearReferenceDrafts();
 
       const result = await engineClient.directorChat({
         provider: selectedProvider,
         conversationId,
-        message: text,
+        message: text || '[Reference image attached]',
         selectedId: null,
+        attachmentAssetIds: attachments.map((attachment) => attachment.assetNodeId),
       });
       setConversationId(result.conversationId);
       setConversationTitle(result.title);
@@ -416,19 +572,20 @@ export function DirectorProviderDock() {
         makeMessage(
           'assistant',
           result.reply,
-          `${providerLabel(result.provider)} · turn ${result.turnCount} · native rev ${result.projectRevision}`,
+          `${providerLabel(result.provider)}${result.model ? ` · ${result.model}` : ''}${result.reasoningEffort ? ` · ${result.reasoningEffort}` : ''} · turn ${result.turnCount} · native rev ${result.projectRevision}`,
         ),
       ].slice(-MAX_VISIBLE_MESSAGES));
-      setStatusMessage(`Conversation saved · turn ${result.turnCount} · ${result.runtimeMode}`);
+      setStatusMessage(`Conversation saved · turn ${result.turnCount} · ${result.runtimeMode}${result.model ? ` · ${result.model}` : ''}`);
       void refreshArchive(false).catch(() => undefined);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setPendingText(null);
+      setPendingQueuedAttachments([]);
       if (!submittedToProvider) setComposer((current) => current || text);
       setMessages((current) => [...current, makeMessage(
         'system',
         message,
-        submittedToProvider ? 'Failure recorded in the conversation archive; review before retrying.' : 'Message was not submitted.',
+        submittedToProvider ? 'Failure recorded in the conversation archive with its reference links; review before retrying.' : 'Message was not submitted.',
       )].slice(-MAX_VISIBLE_MESSAGES));
       setStatusMessage(message);
       if (submittedToProvider) void refreshArchive(false).catch(() => undefined);
@@ -436,21 +593,23 @@ export function DirectorProviderDock() {
       setActivityLabel('');
       setChatBusy(false);
     }
-  }, [chatBusy, composer, connectAndWait, conversationId, refreshArchive, selectedProvider, selectedStatus]);
+  }, [archiveBusy, chatBusy, clearReferenceDrafts, composer, connectAndWait, conversationId, readyReferences, referenceUploadActive, refreshArchive, selectedProvider, selectedStatus]);
 
   const newConversation = useCallback(async () => {
     if (chatBusy || archiveBusy) return;
     if (conversationId) {
       await engineClient.closeDirectorChat(selectedProvider, conversationId).catch(() => undefined);
     }
+    clearReferenceDrafts();
     setConversationId(null);
     setConversationTitle('New Director conversation');
     setLastContext(null);
     setMessages([welcomeMessage(selectedProvider)]);
     setComposer('');
     setPendingText(null);
-    setStatusMessage('New conversation ready. The previous conversation remains saved in Recent.');
-  }, [archiveBusy, chatBusy, conversationId, selectedProvider]);
+    setPendingQueuedAttachments([]);
+    setStatusMessage('New Director Room ready. The previous conversation remains saved in Recent.');
+  }, [archiveBusy, chatBusy, clearReferenceDrafts, conversationId, selectedProvider]);
 
   const renameConversation = useCallback(async () => {
     if (!conversationId || chatBusy || archiveBusy) return;
@@ -474,6 +633,7 @@ export function DirectorProviderDock() {
     setArchiveBusy(true);
     try {
       const result = await engineClient.archiveDirectorConversation(conversationId);
+      clearReferenceDrafts();
       setStatusMessage(result.providerWarning || 'Conversation archived.');
       setConversationId(null);
       setConversationTitle('New Director conversation');
@@ -485,7 +645,7 @@ export function DirectorProviderDock() {
     } finally {
       setArchiveBusy(false);
     }
-  }, [archiveBusy, chatBusy, conversationId, refreshArchive, selectedProvider, showArchived]);
+  }, [archiveBusy, chatBusy, clearReferenceDrafts, conversationId, refreshArchive, selectedProvider, showArchived]);
 
   const restoreConversation = useCallback(async (summary: DirectorConversationSummary) => {
     if (chatBusy || archiveBusy) return;
@@ -498,6 +658,7 @@ export function DirectorProviderDock() {
       const restoredResult = await engineClient.readDirectorConversation(summary.id);
       const document = restoredResult.conversation;
       const active = await engineClient.directorConversations(false, 200);
+      clearReferenceDrafts();
       setConversationArchive(active.conversations);
       setShowArchived(false);
       setConversationId(document.id);
@@ -507,21 +668,23 @@ export function DirectorProviderDock() {
       setLastContext(null);
       setComposer('');
       setPendingText(null);
+      setPendingQueuedAttachments([]);
       setStatusMessage(result.providerWarning || `Conversation restored · ${document.turnCount} turns · ${document.runtimeMode}`);
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : String(error));
     } finally {
       setArchiveBusy(false);
     }
-  }, [archiveBusy, chatBusy, conversationId, selectedProvider]);
+  }, [archiveBusy, chatBusy, clearReferenceDrafts, conversationId, selectedProvider]);
 
   const deleteConversation = useCallback(async (summary: DirectorConversationSummary) => {
     if (chatBusy || archiveBusy) return;
-    if (!window.confirm(`Delete “${summary.title}” permanently? This removes the Make & Watch archive and requests provider-thread deletion.`)) return;
+    if (!window.confirm(`Delete “${summary.title}” permanently? This removes the Make & Watch archive and requests provider-thread deletion. Imported project reference Assets remain safe unless you explicitly remove them from the project.`)) return;
     setArchiveBusy(true);
     try {
       const result = await engineClient.deleteDirectorConversation(summary.id);
       if (conversationId === summary.id) {
+        clearReferenceDrafts();
         setConversationId(null);
         setConversationTitle('New Director conversation');
         setMessages([welcomeMessage(selectedProvider)]);
@@ -534,7 +697,7 @@ export function DirectorProviderDock() {
     } finally {
       setArchiveBusy(false);
     }
-  }, [archiveBusy, chatBusy, conversationId, refreshArchive, selectedProvider, showArchived]);
+  }, [archiveBusy, chatBusy, clearReferenceDrafts, conversationId, refreshArchive, selectedProvider, showArchived]);
 
   const createAssistPlan = useCallback(async () => {
     const objective = composer.trim();
@@ -579,35 +742,44 @@ export function DirectorProviderDock() {
 
   if (!open) {
     return createPortal(
-      <div className="director-chat-rail" aria-label="Open AI Director chat">
-        <button className="director-chat-rail__button" onClick={() => setOpen(true)} title="Open Director Chat">
+      <div className="director-chat-rail" aria-label="Open AI Director Room">
+        <button className="director-chat-rail__button" onClick={() => setOpen(true)} title="Open Director Room">
           <span className={`director-chat-rail__status ${codexStatus?.chatAvailable ? 'director-chat-rail__status--ready' : ''}`} />
           <MessageSquareText size={19} />
         </button>
         <span>DIRECTOR</span>
-        <span>CHAT</span>
+        <span>ROOM</span>
       </div>,
       mountTarget,
     );
   }
 
+  const currentModel = modelLabel(selectedStatus);
+  const planDisabledReason = !composer.trim()
+    ? 'Write an objective first'
+    : !selectedStatus?.planningAvailable
+      ? `${providerLabel(selectedProvider)} planning is not ready`
+      : planBusy || chatBusy || archiveBusy
+        ? 'Director is busy'
+        : 'Preview a typed Assist plan without applying it';
+
   const content = (
-    <section className="director-chat" aria-label="AI Director chat">
+    <section className="director-chat" aria-label="AI Director Room">
       <header className="director-chat__header">
         <div className="director-chat__identity">
           <span className="director-chat__orb"><WandSparkles size={18} /></span>
           <div>
-            <span className="director-chat__eyebrow">AI DIRECTOR</span>
+            <span className="director-chat__eyebrow">DIRECTOR ROOM</span>
             <strong title={conversationTitle}>{conversationTitle}</strong>
-            <small>{conversationId ? 'Persistent conversation · resumable session' : 'New conversation · saved after first turn'}</small>
+            <small>{conversationId ? 'Persistent conversation · durable references · resumable session' : 'Story, cast and visual development in one room'}</small>
           </div>
         </div>
         <div className="director-chat__header-actions">
-          {conversationId ? <button onClick={() => void renameConversation()} disabled={chatBusy || archiveBusy} title="Rename conversation"><Pencil size={14} /></button> : null}
-          {conversationId ? <button onClick={() => void archiveCurrent()} disabled={chatBusy || archiveBusy} title="Archive conversation"><Archive size={14} /></button> : null}
+          {conversationId ? <button onClick={() => void renameConversation()} disabled={chatBusy || archiveBusy} title={chatBusy || archiveBusy ? 'Director is busy' : 'Rename conversation'}><Pencil size={14} /></button> : null}
+          {conversationId ? <button onClick={() => void archiveCurrent()} disabled={chatBusy || archiveBusy} title={chatBusy || archiveBusy ? 'Director is busy' : 'Archive conversation'}><Archive size={14} /></button> : null}
           <button onClick={() => setArchiveOpen((current) => !current)} title="Conversation archive"><History size={15} /></button>
-          <button onClick={() => void newConversation()} disabled={chatBusy || archiveBusy} title="New Director conversation"><Plus size={16} /></button>
-          <button onClick={() => setOpen(false)} title="Collapse Director Chat"><ChevronLeft size={17} /></button>
+          <button onClick={() => void newConversation()} disabled={chatBusy || archiveBusy} title={chatBusy || archiveBusy ? 'Director is busy' : 'New Director conversation'}><Plus size={16} /></button>
+          <button onClick={() => setOpen(false)} title="Collapse Director Room"><ChevronLeft size={17} /></button>
         </div>
       </header>
 
@@ -617,7 +789,7 @@ export function DirectorProviderDock() {
             <button className={!showArchived ? 'is-active' : ''} onClick={() => setShowArchived(false)} disabled={archiveBusy}>Recent</button>
             <button className={showArchived ? 'is-active' : ''} onClick={() => setShowArchived(true)} disabled={archiveBusy}>Archived</button>
           </div>
-          <button className="director-conversations__refresh" onClick={() => void refreshArchive(showArchived)} disabled={archiveBusy} title="Refresh conversations">
+          <button className="director-conversations__refresh" onClick={() => void refreshArchive(showArchived)} disabled={archiveBusy} title={archiveBusy ? 'Archive is loading' : 'Refresh conversations'}>
             <RefreshCw size={13} className={archiveBusy ? 'spin' : ''} />
           </button>
         </div>
@@ -630,10 +802,10 @@ export function DirectorProviderDock() {
             <div className="director-conversations__empty">{archiveBusy ? 'Loading conversations…' : showArchived ? 'No archived conversations' : 'No saved conversations yet'}</div>
           ) : filteredArchive.map((item) => (
             <div key={item.id} className={`director-conversation ${conversationId === item.id ? 'director-conversation--active' : ''}`}>
-              <button className="director-conversation__open" onClick={() => void loadConversation(item)} disabled={chatBusy || archiveBusy || Boolean(item.archivedAt)}>
+              <button className="director-conversation__open" onClick={() => void loadConversation(item)} disabled={chatBusy || archiveBusy || Boolean(item.archivedAt)} title={item.archivedAt ? 'Restore this conversation before opening it' : 'Open conversation'}>
                 <span className="director-conversation__title">{item.title}</span>
                 <span className="director-conversation__preview">{item.preview || 'No completed messages yet'}</span>
-                <span className="director-conversation__meta">{providerLabel(item.provider)} · {item.turnCount} turns · {relativeUpdatedAt(item.updatedAt)}</span>
+                <span className="director-conversation__meta">{providerLabel(item.provider)} · {item.turnCount} turns{item.attachmentCount ? ` · ${item.attachmentCount} refs` : ''} · {relativeUpdatedAt(item.updatedAt)}</span>
               </button>
               <div className="director-conversation__actions">
                 {item.archivedAt ? (
@@ -649,7 +821,7 @@ export function DirectorProviderDock() {
       <div className="director-chat__readiness">
         <div className={`director-chat__live-dot ${selectedStatus?.chatAvailable ? 'director-chat__live-dot--ready' : ''}`} />
         <div>
-          <strong>{providerLabel(selectedProvider)}</strong>
+          <strong>{providerLabel(selectedProvider)} {currentModel ? <em className="director-chat__model-pill">{currentModel}</em> : null}</strong>
           <span>{statusLabel(selectedStatus ?? undefined)}</span>
         </div>
         <button onClick={() => setConnectionsOpen((current) => !current)}>
@@ -670,13 +842,14 @@ export function DirectorProviderDock() {
                 className={`director-chat__provider ${selected ? 'director-chat__provider--selected' : ''} ${ready ? 'director-chat__provider--ready' : ''}`}
                 onClick={() => void selectProvider(providerId)}
                 disabled={chatBusy || providerBusy || archiveBusy}
+                title={chatBusy || providerBusy || archiveBusy ? 'Director is busy' : `Use ${providerLabel(providerId)}`}
               >
                 <span className="director-chat__provider-icon">
                   {connecting ? <LoaderCircle size={15} className="spin" /> : ready ? <Check size={15} /> : <KeyRound size={15} />}
                 </span>
                 <span>
                   <strong>{providerLabel(providerId)}</strong>
-                  <small>{statusLabel(status)}</small>
+                  <small>{status?.model ? `${modelLabel(status)} · ` : ''}{statusLabel(status)}</small>
                 </span>
               </button>
             );
@@ -709,6 +882,7 @@ export function DirectorProviderDock() {
               {message.role === 'assistant' ? <Bot size={14} /> : message.role === 'user' ? <MessageSquareText size={14} /> : <Sparkles size={14} />}
               <span>{message.role === 'assistant' ? providerLabel(selectedProvider) : message.role === 'user' ? 'You' : 'Studio'}</span>
             </div>
+            <MessageAttachments attachments={message.attachments ?? []} />
             <p>{message.text}</p>
             {message.meta ? <small>{message.meta}</small> : null}
           </article>
@@ -717,6 +891,7 @@ export function DirectorProviderDock() {
         {pendingText ? (
           <article className="director-chat__message director-chat__message--user director-chat__message--pending">
             <div className="director-chat__message-label"><MessageSquareText size={14} /><span>You · queued</span></div>
+            <MessageAttachments attachments={pendingQueuedAttachments} />
             <p>{pendingText}</p>
             <small>Waiting for the secure Director connection. This message has not been submitted yet.</small>
           </article>
@@ -731,35 +906,123 @@ export function DirectorProviderDock() {
         <div ref={bottomRef} />
       </div>
 
-      <footer className="director-chat__composer">
+      <footer
+        className={`director-chat__composer ${dragActive ? 'director-chat__composer--dragging' : ''}`}
+        onDragEnter={(event) => { event.preventDefault(); setDragActive(true); }}
+        onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setDragActive(true); }}
+        onDragLeave={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragActive(false);
+        }}
+        onDrop={(event) => {
+          event.preventDefault();
+          setDragActive(false);
+          void addReferenceFiles(Array.from(event.dataTransfer.files));
+        }}
+      >
         {lastContext ? (
           <div className="director-chat__context-line">
             <span>~{lastContext.estimatedTokens.toLocaleString()} ctx</span>
             <span>{lastContext.nodeCountIncluded} nodes</span>
             <span>{lastContext.dependencyCountIncluded} edges</span>
+            {lastContext.attachmentCount ? <span>{lastContext.attachmentCount} refs</span> : null}
           </div>
         ) : null}
+
+        {referenceDrafts.length ? (
+          <div className="director-reference-tray" aria-label="Reference images for this message">
+            {referenceDrafts.map((draft) => (
+              <div key={draft.id} className={`director-reference-card director-reference-card--${draft.status}`} title={draft.error || draft.filename}>
+                <img src={draft.previewUrl} alt={draft.filename} />
+                <span className="director-reference-card__scrim" />
+                <span className="director-reference-card__name">{draft.filename}</span>
+                {draft.status === 'uploading' ? <span className="director-reference-card__state"><LoaderCircle size={15} className="spin" /></span> : null}
+                {draft.status === 'ready' ? <span className="director-reference-card__state director-reference-card__state--ready"><Check size={14} /></span> : null}
+                {draft.status === 'error' ? (
+                  <button className="director-reference-card__retry" type="button" onClick={() => void retryReferenceDraft(draft)} title="Choose this reference again"><RefreshCw size={13} /></button>
+                ) : null}
+                <button className="director-reference-card__remove" type="button" onClick={() => removeReferenceDraft(draft.id)} title="Remove reference"><X size={13} /></button>
+              </div>
+            ))}
+            <button
+              className="director-reference-add"
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={referenceDrafts.length >= directorReferenceClientLimits.maxAttachmentsPerMessage}
+              title={referenceDrafts.length >= directorReferenceClientLimits.maxAttachmentsPerMessage ? 'Reference limit reached' : 'Add another reference'}
+            >
+              <ImagePlus size={17} />
+              <span>Add</span>
+            </button>
+          </div>
+        ) : null}
+
         <div className="director-chat__input-shell">
+          <input
+            ref={fileInputRef}
+            className="director-chat__file-input"
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/gif"
+            multiple
+            onChange={(event) => {
+              const files = Array.from(event.currentTarget.files ?? []);
+              event.currentTarget.value = '';
+              void addReferenceFiles(files);
+            }}
+          />
+          <button
+            className="director-chat__attach-button"
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={chatBusy || archiveBusy || referenceDrafts.length >= directorReferenceClientLimits.maxAttachmentsPerMessage}
+            title={referenceDrafts.length >= directorReferenceClientLimits.maxAttachmentsPerMessage ? 'Reference limit reached' : 'Attach character or visual reference'}
+          >
+            <ImagePlus size={18} />
+          </button>
           <textarea
             value={composer}
             onChange={(event) => setComposer(event.target.value.slice(0, 6000))}
+            onPaste={(event) => {
+              const imageFiles = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith('image/'));
+              if (!imageFiles.length) return;
+              event.preventDefault();
+              void addReferenceFiles(imageFiles);
+            }}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault();
-                void sendChat();
+                if (canSend) void sendChat();
               }
             }}
-            placeholder="Talk to your Director or ask it to change the workflow…"
+            placeholder="Describe a character, paste a reference, or talk through your scene…"
             rows={3}
             aria-label="Message the AI Director"
           />
-          <button className="director-chat__send-button" onClick={() => void sendChat()} disabled={chatBusy || archiveBusy || !composer.trim()} title="Send to Director">
-            {chatBusy ? <LoaderCircle size={17} className="spin" /> : <Send size={17} />}
+          <button
+            className="director-chat__send-button"
+            onClick={() => void sendChat()}
+            disabled={!canSend}
+            title={referenceUploadActive ? 'Wait for reference upload to finish' : !composer.trim() && !readyReferences.length ? 'Write a message or attach a reference' : 'Send to Director'}
+          >
+            {chatBusy || referenceUploadActive ? <LoaderCircle size={17} className="spin" /> : <Send size={17} />}
           </button>
         </div>
+        {dragActive ? <div className="director-chat__drop-hint"><ImagePlus size={18} /> Drop visual references here</div> : null}
         <div className="director-chat__composer-actions">
-          <span>{selectedStatus?.chatAvailable ? 'Enter to send · conversations auto-save' : 'Type now · first Send prepares Codex automatically'}</span>
-          <button className="director-chat__plan-button" onClick={() => void createAssistPlan()} disabled={planBusy || chatBusy || archiveBusy || !composer.trim() || !selectedStatus?.planningAvailable}>
+          <span>
+            {referenceUploadActive
+              ? 'Archiving reference securely…'
+              : referenceUploadErrors
+                ? 'A reference failed to archive · remove or retry it'
+                : selectedStatus?.chatAvailable
+                  ? 'Enter to send · Shift+Enter newline · paste or drop images'
+                  : 'Type now · first Send prepares Codex automatically'}
+          </span>
+          <button
+            className="director-chat__plan-button"
+            onClick={() => void createAssistPlan()}
+            disabled={planBusy || chatBusy || archiveBusy || !composer.trim() || !selectedStatus?.planningAvailable}
+            title={planDisabledReason}
+          >
             {planBusy ? <LoaderCircle size={14} className="spin" /> : <Sparkles size={14} />} Preview plan
           </button>
         </div>
