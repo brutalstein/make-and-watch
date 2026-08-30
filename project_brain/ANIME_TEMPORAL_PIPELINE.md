@@ -1,7 +1,17 @@
 # Make & Watch — Premium Anime Temporal Production Design
 
 > Architecture / quality roadmap
-> Updated: 2026-08-30 04:26 TRT (Europe/Istanbul)
+> Updated: 2026-08-30 (Europe/Istanbul)
+
+> **Direction change (2026-08-30):** the mandatory temporal path is no longer a large
+> temporal diffusion model. It is the deterministic **Native Anime Motion Engine**
+> (`project_brain/NATIVE_ANIME_MOTION_ENGINE.md`, provider `native-anime`). FramePack
+> and any Wan/Hunyuan/LTX-class stack are retained only as **optional experimental
+> providers**, off unless their models are explicitly present. The quality goals in
+> this document still stand; the primary route to them is the native engine, which
+> treats the anime SDXL/ComfyUI stack as a key-animation department. Sections below
+> that read "FramePack is the current local temporal foundation" are superseded on
+> that one point.
 
 ## Goal
 
@@ -623,24 +633,28 @@ These are future provider research candidates and should not be silently downloa
 
 ---
 
-# 16. FramePack role
+# 16. FramePack role — optional experimental provider only
 
-Current local temporal foundation uses FramePack.
+**Status: research-candidate / optional fallback. Not installed by default, not on the
+render-readiness path.** The mandatory temporal path is the Native Anime Motion Engine
+(`NATIVE_ANIME_MOTION_ENGINE.md`).
 
-Why it fits the local-first architecture:
+FramePack stays registered as provider `framepack` (`strategies: ['I2V']`) and reports
+`ready: false` unless its ~30–40 GB Hugging Face model set is explicitly present
+(`framePackRuntimeStatus.bootstrapPolicy = 'explicit-only'` — Make & Watch never
+auto-downloads it). It exists for local engineering comparison and as an escape hatch
+for a shot the native engine + corrective redraw genuinely cannot stage.
 
-- progressive next-frame-section generation;
-- bounded context packing;
-- official project documents RTX 30/40/50 support;
-- official project states a 6 GB minimum VRAM target;
-- generated sections provide progressive visual feedback.
+Why it was not chosen as the foundation: a mandatory 20–40 GB temporal-diffusion
+dependency, ~1 GPU-hour per rendered minute on an 8 GB card, identity drift between
+segments, full-frame boiling, opaque failure, and zero reuse across Episodes. The
+scoring that led here is in `NATIVE_ANIME_MOTION_ENGINE.md` §1.
 
-Official project:
-https://github.com/lllyasviel/FramePack
+Official project: https://github.com/lllyasviel/FramePack
 
-Make & Watch should use FramePack primarily as a provider implementation behind its own contract rather than letting FramePack own project semantics.
-
-The provider may evolve; the Series/Shot/Asset graph must remain stable.
+Make & Watch uses FramePack only as a provider implementation behind its own contract;
+it never owns project semantics. The provider may evolve; the Series/Shot/Asset graph
+must remain stable.
 
 ---
 
@@ -814,15 +828,31 @@ That failure is preferable to a fake completed video.
 
 ## Phase A — now / foundation
 
+**Implemented now:**
 - temporal-only Shot schema;
 - I2V default;
 - image fallback removed from Episode composition;
 - animated-still FFmpeg renderer deleted;
 - temporal video duration mandatory;
-- FramePack local provider;
 - canonical Character/Location reference Assets;
 - content-addressed provenance;
-- GPU-exclusive jobs.
+- GPU-exclusive jobs;
+- provider-neutral `TemporalProviderRegistry` (drop-in providers behind one artifact contract).
+
+**Validated experimentally (vertical slice, not production-wired):**
+- Native Anime Motion Engine deterministic renderer mechanics — see
+  `NATIVE_ANIME_MOTION_ENGINE.md` §8. The visual/anime gate failed on semantic face
+  decomposition, so this is not a quality acceptance.
+
+**Planned:**
+- native project graph -> ShotAnim compiler; the registered `native-anime` adapter
+  remains fail-closed/not-ready until this exists;
+- corrective-redraw (C) escalation and PoseLibrary promotion;
+- deterministic subtitle render + WebVTT sidecar.
+
+**Research candidate / optional:**
+- FramePack `framepack` provider (off unless models present);
+- Wan 2.2 / LTX-2 / HunyuanVideo FLF2V/VIDEO providers.
 
 ## Phase B — anime continuity QC
 

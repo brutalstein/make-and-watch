@@ -380,3 +380,94 @@ The documentation explicitly forbids calling a test PASS when:
 - Japanese audio/subtitle behavior was fabricated;
 - an external provider was offline;
 - the exact final commit was not verified.
+
+---
+
+## 2026-08-30 — Native Anime Motion Engine architecture; FramePack demoted to optional
+
+### Objective
+
+Redesign the long-term anime temporal architecture around a storage-efficient,
+compute-efficient, deterministic animation system that does **not** require a large
+generative video model (FramePack / Wan / Hunyuan / LTX class, 20–40+ GB) as a
+mandatory dependency.
+
+### Trigger
+
+Real temporal proof was blocked: the only registered temporal provider
+(`FramePackTemporalProvider`) needs a ~30–40 GB Hugging Face model set that the
+product deliberately refuses to auto-download (`bootstrapPolicy: 'explicit-only'`).
+Swapping in another heavy video model keeps every structural weakness (segment
+identity drift, full-frame boiling, opaque failure, no cross-Episode reuse,
+~1 GPU-hour per rendered minute on 8 GB).
+
+### Decision
+
+Adopt the **Native Anime Motion Engine** — a deterministic 2D-animation renderer
+(sparse AI key drawings + layered-mesh deformation + Verlet secondary motion + 2.5D
+parallax environment + forced-alignment lip sync + sparse corrective redraw). Target
+architecture A+B+C; foundation A+C now; B (motion retargeting) later. The image model
+becomes the key-animation department, not a per-frame generator. Full rationale and
+7×16 architecture scoring: `project_brain/NATIVE_ANIME_MOTION_ENGINE.md`.
+
+The engine is a drop-in `TemporalProviderRegistry` provider (`native-anime`) returning
+the existing `{mediaType:'video', …}` artifact contract, so composition, render and
+provenance are unchanged.
+
+### Implemented now (this change)
+
+- `project_brain/NATIVE_ANIME_MOTION_ENGINE.md` — architecture decision document.
+- Five `project_brain/` documents updated so FramePack is no longer the mandatory
+  future (this log, `MEDIA_PIPELINE.md`, `ANIME_TEMPORAL_PIPELINE.md`,
+  `AI_DIRECTOR_CONTEXT.md`, `ONE_MINUTE_ANIME_ACCEPTANCE.md`).
+- P0 fix: `validateProvider()` in `tools/generation/temporal-provider-registry.mjs`
+  spread `{...provider}`, dropping prototype `status()`/`generate()` off class-based
+  providers — the live gateway logged `FramePack I2V provider.status is not a
+  function`. Fixed to delegate; regression test added.
+- `tools/anime/` — `native-anime-contract.mjs` (ShotAnim validation contract),
+  `native-anime-provider.mjs` (`NativeAnimeTemporalProvider`), `native-anime-worker.py`
+  (deterministic renderer), plus `*-check` tests wired into `verify.ps1`.
+- `tools/generation/server.mjs` registers `native-anime` as the target default temporal
+  provider, but it reports `ready: false` until the graph -> ShotAnim compiler is
+  wired. It refuses a hero-only animated-still fallback. `framepack` remains registered
+  but reports `ready: false` unless its models are explicitly present.
+- Native provider metadata (determinism, frame hash, render time, cache posture) is
+  persisted on the Generation node; output FPS is persisted on the video Asset.
+
+### Validated experimentally (not production-wired)
+
+- Vertical slice: one anime Character key drawing + hand-split layers + a 2-plane
+  environment + one proxy Japanese-timing tone + eye/blink/mouth/head/hair motion + 2.5D
+  parallax push-in + burned Turkish subtitle → one real animated 1080p24 MP4 rendered
+  with **no generative video model**. Latest measurement: 4.000 s / 96 frames,
+  36.46 s render, 14,902,976 B total persistent proof state, zero frame cache.
+  Mechanical gate passed; visual gate failed because automatic eye inpainting leaves
+  a face seam and the affine layers still read as a puppet. Measurements and notes:
+  `NATIVE_ANIME_MOTION_ENGINE.md` §8, `.makewatch/reports/`.
+
+### Planned
+
+- ShotAnim compiled from the Shot graph (`buildShotAnimRequest()` beside
+  `buildTemporalShotRequest()`); `native-anime` wired through
+  `TemporalShotGenerationService` end to end.
+- Corrective-redraw (C) escalation + `rig.poseLibrary` promotion.
+- Deterministic Turkish subtitle render + WebVTT sidecar in `EpisodeRenderService`
+  (still an open gap).
+- Motion retargeting (B): MotionClip schema, skeleton IK/foot-lock, cross-character
+  retarget.
+
+### Research candidate / optional
+
+- FramePack `framepack` provider — off unless models present, never on the
+  render-readiness path.
+- See-through auto-rig, Depth Anything V2 environment split, Practical-RIFE cadence
+  pass, MFA / WhisperX forced aligners.
+
+### Truth boundary
+
+The vertical slice proves the renderer path produces real deterministic animation
+without a video model and without persisted frames. It misses the <4 s/output-second
+CPU target (measured 9.11) and fails visual inspection. It does **not** prove genuine
+Japanese TTS/alignment, series-grade anime quality, or a full one-minute
+Episode; those remain planned milestones with the benchmark methodology in
+`NATIVE_ANIME_MOTION_ENGINE.md` §14.

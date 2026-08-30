@@ -1,6 +1,11 @@
 # Series Continuity and Temporal Media Pipeline
 
-> Current status: 2026-08-30 14:04 TRT (Europe/Istanbul)
+> Current status: 2026-08-30 (Europe/Istanbul)
+
+> **Temporal provider direction (2026-08-30):** the mandatory temporal path is the
+> deterministic **Native Anime Motion Engine** (`NATIVE_ANIME_MOTION_ENGINE.md`,
+> provider `native-anime`), not a large temporal diffusion model. FramePack is an
+> optional experimental fallback only. See "Current temporal provider" below.
 
 ## Product rule
 
@@ -226,9 +231,23 @@ For a 20-minute Episode, Make & Watch should continue to produce many short edit
 
 ## Current temporal provider
 
-The current local provider path is FramePack.
+**Mandatory path: the Native Anime Motion Engine** — provider `native-anime`, a
+deterministic 2D-animation renderer (numpy + Pillow + OpenCV, CPU-first, no resident
+video model). Design and status: `NATIVE_ANIME_MOTION_ENGINE.md`. It is a drop-in
+`TemporalProviderRegistry` provider returning the same `{mediaType:'video', …}`
+artifact contract, so composition, render and provenance are unchanged.
 
-FramePack is treated as a bounded provider adapter, not as project truth. Make & Watch owns:
+Implementation status: the adapter is **registered** and the renderer is
+**mechanically validated** by a 4 s MP4, but its visual gate failed and production
+status deliberately reports `ready: false` until full ShotAnim compilation from the
+native Shot graph exists. A lone hero image is rejected; there is no animated-still
+fallback.
+
+**Optional experimental fallback: FramePack** — provider `framepack`, `ready: false`
+unless its ~30–40 GB models are explicitly present. Never bootstrapped automatically,
+never on the render-readiness path. Kept for local comparison and hard-pose escape.
+
+Every provider is a bounded adapter, not project truth. Make & Watch owns:
 
 - request validation;
 - reference resolution;

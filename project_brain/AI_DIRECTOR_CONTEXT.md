@@ -109,7 +109,10 @@ The local runtime owns:
 
 - GPU admission;
 - ComfyUI reference/hero preparation;
-- FramePack temporal I2V;
+- temporal Shot video target via the deterministic **Native Anime Motion Engine**
+  (provider `native-anime`); its production status is currently fail-closed until the
+  graph -> ShotAnim compiler exists, and Director must never substitute an animated
+  still; FramePack is an optional experimental fallback only;
 - voice/audio generation;
 - FFmpeg composition;
 - worker/process lifetime;

@@ -3,6 +3,20 @@
 > Release acceptance specification
 > Updated: 2026-08-30 (Europe/Istanbul)
 
+> **Temporal provider note (2026-08-30):** the mandatory temporal path is the
+> deterministic **Native Anime Motion Engine** (provider `native-anime`,
+> `project_brain/NATIVE_ANIME_MOTION_ENGINE.md`), not FramePack. A `native-anime` MP4
+> **is** real temporal video for this gate — deterministic 2D animation with real eye
+> / mouth / head / hair / camera / parallax motion, frames streamed to the encoder.
+> It is explicitly *not* a looped still, Ken Burns move, or frozen-frame pad, and the
+> "no still-motion fallback" rule is unchanged. FramePack is an optional experimental
+> provider only; "use only if a validated provider is available" now also covers any
+> heavy I2V/FLF2V diffusion stack.
+> The current 4 s native renderer proof is **not** a pass for this gate: it uses proxy
+> tone audio and fails visual inspection on semantic face-layer seams. `native-anime`
+> remains production-not-ready until ShotAnim compilation and the visual defects are
+> resolved.
+
 ## Mission
 
 Before claiming that Make & Watch can create a real anime episode, prove a **~60 second end-to-end mini episode** on the product machine.
@@ -74,7 +88,8 @@ fps: 24
 aspect: 16:9
 target: 60 seconds ± 8 seconds
 Shot temporal strategy: I2V default
-FLF2V: use only if a validated provider is actually available
+Temporal provider target: native-anime (must report ready; currently fail-closed)
+FLF2V / heavy diffusion I2V (FramePack etc.): use only if a validated provider is actually available
 Audio: Chatterbox Multilingual V3 Japanese
 Subtitle: Turkish
 Render: current Make & Watch temporal Episode path
