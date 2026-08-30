@@ -2,16 +2,25 @@ import assert from 'node:assert/strict';
 
 import { defaultMetadataForKind, productionSchemaDigest } from './production-schema.mjs';
 
-const digest = productionSchemaDigest(['shot', 'character', 'location']);
+const digest = productionSchemaDigest(['scene', 'shot', 'character', 'location']);
 assert.equal(digest.schemaVersion, 2);
+
+const scene = digest.kinds.find((kind) => kind.kind === 'scene');
+const policy = scene.fields.find((field) => field.key === 'generationPolicy');
+assert.deepEqual(policy.options, ['i2v-first', 'keyframe-controlled', 'provider-native-video']);
+assert.equal(policy.defaultValue, 'i2v-first');
 
 const shot = digest.kinds.find((kind) => kind.kind === 'shot');
 const strategy = shot.fields.find((field) => field.key === 'generationStrategy');
-assert.ok(strategy.options.includes('FLF2V'));
+assert.deepEqual(strategy.options, ['I2V', 'FLF2V', 'VIDEO']);
+assert.equal(strategy.defaultValue, 'I2V');
+assert.equal(strategy.options.includes('STILL_MOTION'), false);
+assert.equal(strategy.options.includes('T2I'), false);
 assert.ok(shot.fields.some((field) => field.key === 'heroFrameAssetId'));
 assert.ok(shot.fields.some((field) => field.key === 'endFrameAssetId'));
 assert.ok(shot.fields.some((field) => field.key === 'temporalPrompt'));
 assert.ok(shot.fields.some((field) => field.key === 'temporalProvider'));
+assert.equal(defaultMetadataForKind('shot').generationStrategy, 'I2V');
 
 const character = digest.kinds.find((kind) => kind.kind === 'character');
 assert.ok(character.fields.some((field) => field.key === 'canonicalImageAssetIds'));
@@ -22,4 +31,4 @@ const location = digest.kinds.find((kind) => kind.kind === 'location');
 assert.equal(defaultMetadataForKind('location').continuityPolicy, 'prefer-reference');
 assert.ok(location.invariants.some((value) => value.includes('reference Assets')));
 
-console.log('temporal production schema checks passed');
+console.log('temporal-only production schema checks passed');
