@@ -135,6 +135,14 @@ export function compileEpisodeComposition(snapshot, episodeId) {
       const { generation, asset } = mediaForShot(snapshot, shot);
       if (!asset) {
         issues.push(`Shot ${shot.id} has no ready temporal video Asset. Prepare hero/reference frames, then run temporal video generation.`);
+      } else {
+        const generatedDuration = numeric(asset.metadata.durationSeconds, 0);
+        const frameTolerance = 1 / Math.max(1, profile.fps);
+        if (!(generatedDuration > 0)) {
+          issues.push(`Shot ${shot.id} temporal video Asset has no valid duration metadata.`);
+        } else if (durationSeconds > 0 && generatedDuration + frameTolerance < durationSeconds) {
+          issues.push(`Shot ${shot.id} temporal video is ${generatedDuration.toFixed(2)}s but authored duration is ${durationSeconds.toFixed(2)}s; regenerate the Shot instead of freezing frames.`);
+        }
       }
       const startSeconds = sceneStart + shotCursor;
       const safeDuration = Math.max(0, durationSeconds);
@@ -240,8 +248,8 @@ export function compileEpisodeComposition(snapshot, episodeId) {
       sceneCount: sceneManifest.length,
       shotCount: totalShots,
       audioCueCount: totalAudioCues,
-      generatedVisualCount: sceneManifest.flatMap((scene) => scene.shots).filter((shot) => shot.media?.mediaType === 'video').length,
-      generatedAudioCount: sceneManifest.flatMap((scene) => scene.audio).filter((cue) => cue.media).length,
+      generatedVisualCount: sceneManifest.flatMap((entry) => entry.shots).filter((shot) => shot.media?.mediaType === 'video').length,
+      generatedAudioCount: sceneManifest.flatMap((entry) => entry.audio).filter((cue) => cue.media).length,
     },
     issues,
     warnings,
