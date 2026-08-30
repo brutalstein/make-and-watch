@@ -1,5 +1,7 @@
 {
   "scene": {
+    "purpose": "Narrative and continuity block that decomposes a dramatic beat into ordered real temporal video Shots plus dialogue, ambience and transition intent.",
+    "primaryOutput": "A Scene package containing temporal Shot video Assets, timed audio and scene-level continuity state.",
     "invariants": [
       "Scene visual output is assembled only from real temporal video Shot Assets; still images are preparation/reference inputs, never final Shot media."
     ],
@@ -20,6 +22,8 @@
     ]
   },
   "shot": {
+    "purpose": "Smallest visual editorial unit. It owns one time-bounded real temporal video synthesis contract and is later placed on the Episode timeline.",
+    "primaryOutput": "One validated temporal video Asset with deterministic Generation provenance.",
     "invariants": [
       "Final Shot media must be a real video Asset produced by temporal synthesis.",
       "Still images may only act as hero/start/end/reference anchors and can never satisfy Episode render readiness.",
