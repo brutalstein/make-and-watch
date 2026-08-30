@@ -13,6 +13,7 @@ try {
 
   const runtimeResolver = async () => ({
     installed: true,
+    modelsReady: true,
     selected: {
       root: join(root, 'FramePack'),
       kind: 'source',
@@ -46,6 +47,7 @@ try {
 
   const status = await provider.status({ hardware: { totalVramMb: 8192 } });
   assert.equal(status.ready, true);
+  assert.equal(status.runtime.modelsReady, true);
   assert.deepEqual(provider.strategies, ['I2V']);
 
   const artifact = await provider.generate({
@@ -75,6 +77,7 @@ try {
   assert.match(artifact.relativePath, /^artifacts\/video\/shot.1\//);
   assert.equal(artifact.providerMetadata.teacache, true);
   assert.equal(artifact.providerMetadata.comfyMemoryReleased, true);
+  assert.equal(artifact.providerMetadata.offlineModelExecution, true);
 
   await assert.rejects(() => provider.generate({
     shot: { id: 'shot.long', strategy: 'I2V', durationSeconds: 9, temporalPrompt: 'move' },
@@ -97,6 +100,24 @@ try {
     shot: { id: 'shot.2', revision: 1, strategy: 'I2V', durationSeconds: 5, temporalPrompt: 'move', qualityTier: 'preview' },
     inputs: { startFrame: { relativePath: 'artifacts/hero.png', sha256: 'hero' } },
   }, { hardware: { totalVramMb: 8192 } }), /could not release resident GPU models/);
+
+  const missingModels = new FramePackTemporalProvider({
+    projectRoot: root,
+    workerPath: join(root, 'worker.py'),
+    runtimeResolver: async () => ({
+      ...(await runtimeResolver()),
+      modelsReady: false,
+      detail: 'explicit model setup required',
+    }),
+    workerRunner: async () => { throw new Error('worker must not launch without local models'); },
+    videoProbe,
+    gpuReleaser,
+  });
+  assert.equal((await missingModels.status({ hardware: { totalVramMb: 8192 } })).ready, false);
+  await assert.rejects(() => missingModels.generate({
+    shot: { id: 'shot.3', revision: 1, strategy: 'I2V', durationSeconds: 5, temporalPrompt: 'move', qualityTier: 'preview' },
+    inputs: { startFrame: { relativePath: 'artifacts/hero.png', sha256: 'hero' } },
+  }, { hardware: { totalVramMb: 8192 } }), /explicit model setup required/);
 } finally {
   await rm(root, { recursive: true, force: true });
 }
