@@ -30,6 +30,8 @@ pnpm bridge:check
 Assert-NativeSuccess "pnpm bridge:check"
 pnpm runtime:cancel-check
 Assert-NativeSuccess "pnpm runtime:cancel-check"
+pnpm anime:semantic-check
+Assert-NativeSuccess "pnpm anime:semantic-check"
 
 Step 4 7 "Strict TypeScript contracts"
 pnpm typecheck
