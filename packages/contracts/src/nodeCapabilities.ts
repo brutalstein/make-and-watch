@@ -30,7 +30,7 @@ export interface ProjectNodeCapability {
   fields: readonly NodeMetadataFieldSpec[];
 }
 
-type CapabilityOverlay = Partial<Pick<ProjectNodeCapability, 'invariants' | 'fields'>>;
+type CapabilityOverlay = Partial<Pick<ProjectNodeCapability, 'purpose' | 'primaryOutput' | 'invariants' | 'fields'>>;
 
 function mergeFields(
   baseFields: readonly NodeMetadataFieldSpec[],
@@ -54,6 +54,7 @@ function mergedCapabilities(): Record<ProjectNodeKind, ProjectNodeCapability> {
       if (!patch) return [kind, capability];
       return [kind, {
         ...capability,
+        ...patch,
         invariants: [...capability.invariants, ...(patch.invariants ?? [])],
         fields: mergeFields(capability.fields, patch.fields),
       } satisfies ProjectNodeCapability];
@@ -61,10 +62,9 @@ function mergedCapabilities(): Record<ProjectNodeKind, ProjectNodeCapability> {
   ) as Record<ProjectNodeKind, ProjectNodeCapability>;
 }
 
-// The stable semantic node model lives in nodeCapabilities.json. Additive
-// temporal-video evolution lives in temporalNodeCapabilities.json so older
-// projects keep the same defaults while Studio and Director can expose new
-// temporal/continuity fields from one shared overlay.
+// The base table preserves stable semantic field history for old project data.
+// The temporal overlay is authoritative for current Studio/Director production
+// semantics, including the removal of animated-still final Shot output.
 export const PROJECT_NODE_CAPABILITIES = mergedCapabilities();
 
 export function defaultMetadataForKind(kind: ProjectNodeKind): Record<string, string> {
