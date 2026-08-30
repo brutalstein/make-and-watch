@@ -1,8 +1,9 @@
-import { dirname, resolve } from 'node:path';
+import { isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const root = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const directorRuntimeRoot = resolve(root, 'tools', 'director', 'runtime');
+const directorReferenceRoot = resolve(root, '.makewatch', 'director-assets');
 
 // One Director chat turn may create a whole scene: several authoritative
 // project tool calls plus Codex reasoning between them. This budget must stay
@@ -12,6 +13,12 @@ const CHAT_TURN_TIMEOUT_MS = Number(process.env.MAKEWATCH_DIRECTOR_TURN_TIMEOUT_
 const TURN_START_TIMEOUT_MS = 20_000;
 const INTERRUPT_TIMEOUT_MS = 2_500;
 const THREAD_TIMEOUT_MS = 15_000;
+const MODEL_TIMEOUT_MS = 15_000;
+const MODEL_CACHE_MS = 5 * 60 * 1000;
+const MAX_LOCAL_IMAGES = 8;
+const DEFAULT_DIRECTOR_MODEL = 'gpt-5.6-luna';
+const FALLBACK_DIRECTOR_MODELS = ['gpt-5.6-terra', 'gpt-5.4-mini'];
+const EFFORT_PREFERENCE = ['low', 'minimal', 'none'];
 
 function safeText(value, fallback = 'Codex Director chat failed') {
   const text = String(value ?? '').trim();
@@ -22,12 +29,90 @@ function invalidParams(error) {
   return error?.code === -32602 || /invalid params|unknown field|excludeTurns/i.test(String(error?.message ?? ''));
 }
 
+function modelName(model) {
+  return String(model?.model ?? model?.id ?? '').trim();
+}
+
+function modelEfforts(model) {
+  return Array.isArray(model?.supportedReasoningEfforts)
+    ? model.supportedReasoningEfforts
+      .map((option) => String(option?.reasoningEffort ?? '').trim())
+      .filter(Boolean)
+    : [];
+}
+
+function inputModalities(model) {
+  return Array.isArray(model?.inputModalities) && model.inputModalities.length
+    ? model.inputModalities.map((value) => String(value))
+    : ['text', 'image'];
+}
+
+function chooseEffort(model) {
+  const supported = modelEfforts(model);
+  const requested = String(process.env.MAKEWATCH_DIRECTOR_CHAT_EFFORT ?? '').trim();
+  if (requested && supported.includes(requested)) return requested;
+  for (const candidate of EFFORT_PREFERENCE) if (supported.includes(candidate)) return candidate;
+  const fallback = String(model?.defaultReasoningEffort ?? '').trim();
+  if (fallback && supported.includes(fallback)) return fallback;
+  return supported[0] ?? '';
+}
+
+function chooseDirectorModel(models) {
+  const visible = models.filter((model) => model && model.hidden !== true);
+  const imageCapable = visible.filter((model) => inputModalities(model).includes('image'));
+  const pool = imageCapable.length ? imageCapable : visible;
+  if (!pool.length) return null;
+
+  const requested = String(process.env.MAKEWATCH_DIRECTOR_CHAT_MODEL ?? '').trim();
+  const priorities = [requested, DEFAULT_DIRECTOR_MODEL, ...FALLBACK_DIRECTOR_MODELS].filter(Boolean);
+  let selected = null;
+  for (const name of priorities) {
+    selected = pool.find((model) => modelName(model) === name || String(model.id ?? '') === name) ?? null;
+    if (selected) break;
+  }
+  selected ??= pool.find((model) => model.isDefault === true) ?? pool[0];
+  const model = modelName(selected);
+  if (!model) return null;
+  return {
+    model,
+    id: String(selected.id ?? model),
+    displayName: String(selected.displayName ?? model),
+    effort: chooseEffort(selected),
+    inputModalities: inputModalities(selected),
+    defaultReasoningEffort: String(selected.defaultReasoningEffort ?? ''),
+    source: requested && (model === requested || selected.id === requested) ? 'environment' : model === DEFAULT_DIRECTOR_MODEL ? 'director-default' : 'catalog-fallback',
+  };
+}
+
+function safeLocalImages(values) {
+  if (values === undefined || values === null) return [];
+  if (!Array.isArray(values)) throw new Error('Director local images must be an array');
+  if (values.length > MAX_LOCAL_IMAGES) throw new Error(`Director supports at most ${MAX_LOCAL_IMAGES} reference images per message`);
+  const result = [];
+  const seen = new Set();
+  for (const value of values) {
+    if (typeof value !== 'string' || !isAbsolute(value)) throw new Error('Director reference image path must be absolute');
+    const candidate = resolve(value);
+    const rel = relative(directorReferenceRoot, candidate);
+    if (!rel || rel.startsWith('..') || isAbsolute(rel)) {
+      throw new Error('Director reference image must come from the managed reference library');
+    }
+    if (!seen.has(candidate)) {
+      seen.add(candidate);
+      result.push(candidate);
+    }
+  }
+  return result;
+}
+
 export class CodexChatSession {
   constructor(client) {
     if (!client) throw new Error('Codex chat requires an App Server client');
     this.client = client;
     this.activeTurn = null;
     this.attachedThreads = new Set();
+    this.profileCache = null;
+    this.profileCachedAt = 0;
   }
 
   threadSecurityParams() {
@@ -38,11 +123,36 @@ export class CodexChatSession {
     };
   }
 
+  async directorProfile({ force = false } = {}) {
+    const now = Date.now();
+    if (!force && this.profileCache && now - this.profileCachedAt < MODEL_CACHE_MS) return { ...this.profileCache };
+    await this.client.start();
+    let data = [];
+    let cursor = null;
+    do {
+      const result = await this.client.request('model/list', {
+        limit: 100,
+        cursor,
+        includeHidden: false,
+      }, MODEL_TIMEOUT_MS);
+      if (Array.isArray(result?.data)) data.push(...result.data);
+      cursor = typeof result?.nextCursor === 'string' && result.nextCursor ? result.nextCursor : null;
+    } while (cursor && data.length < 300);
+
+    const selected = chooseDirectorModel(data);
+    if (!selected) throw new Error('Codex App Server did not advertise a usable Director chat model');
+    this.profileCache = selected;
+    this.profileCachedAt = now;
+    return { ...selected };
+  }
+
   async createThread() {
     await this.client.start();
     const dynamicTools = this.client.dynamicToolSpecs?.() ?? [];
+    const profile = await this.directorProfile();
     const result = await this.client.request('thread/start', {
       ...this.threadSecurityParams(),
+      model: profile.model,
       ...(dynamicTools.length > 0 ? { dynamicTools } : {}),
       serviceName: 'make_and_watch_director_chat',
     }, THREAD_TIMEOUT_MS);
@@ -133,10 +243,15 @@ export class CodexChatSession {
     this.attachedThreads.delete(threadId);
   }
 
-  async send(threadId, prompt) {
+  async send(threadId, prompt, { localImages = [] } = {}) {
     if (this.activeTurn) throw new Error('Codex Director already has an active turn');
     if (typeof threadId !== 'string' || !threadId) throw new Error('Director chat thread ID is required');
     if (typeof prompt !== 'string' || !prompt.trim()) throw new Error('Director chat prompt is required');
+    const images = safeLocalImages(localImages);
+    const profile = await this.directorProfile();
+    if (images.length && !profile.inputModalities.includes('image')) {
+      throw new Error(`${profile.displayName} does not advertise image input; Director reference images cannot be silently ignored`);
+    }
     await this.resumeThread(threadId);
 
     let resolveCompletion;
@@ -192,13 +307,18 @@ export class CodexChatSession {
     this.activeTurn = turn;
 
     try {
+      const input = [
+        { type: 'text', text: prompt },
+        ...images.map((path) => ({ type: 'localImage', path })),
+      ];
       const result = await this.client.request('turn/start', {
         threadId,
-        input: [{ type: 'text', text: prompt }],
+        input,
         cwd: directorRuntimeRoot,
         approvalPolicy: 'never',
         ...this.client.readOnlyTurnSecurityParams(),
-        effort: 'medium',
+        model: profile.model,
+        ...(profile.effort ? { effort: profile.effort } : {}),
         summary: 'concise',
       }, TURN_START_TIMEOUT_MS);
       const returnedTurnId = result?.turn?.id;
@@ -233,3 +353,9 @@ export class CodexChatSession {
     this.attachedThreads.clear();
   }
 }
+
+export const codexDirectorModelPolicy = Object.freeze({
+  preferredModel: DEFAULT_DIRECTOR_MODEL,
+  effortPreference: [...EFFORT_PREFERENCE],
+  maxLocalImages: MAX_LOCAL_IMAGES,
+});
