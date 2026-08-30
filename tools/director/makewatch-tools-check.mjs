@@ -75,8 +75,7 @@ const applyText = await handleMakeWatchToolCall({
     expectedProjectRevision: 7,
     reason: 'rename opening scene',
     commands: [{ type: 'node.patch', id: 'scene.one', expectedRevision: 2, title: 'New opening' }],
-  },
-}, runtime);
+  }, runtime);
 assert.equal(JSON.parse(applyText).projectRevision, 8);
 assert.deepEqual(calls[0], ['apply', {
   expectedProjectRevision: 7,
@@ -136,7 +135,7 @@ for (const required of ['durationSeconds', 'framing', 'generationStrategy', 'see
 }
 const strategy = schema.kinds[0].fields.find((field) => field.key === 'generationStrategy');
 assert.deepEqual(strategy.options, ['I2V', 'FLF2V', 'VIDEO']);
-assert.equal(strategy.defaultValue, 'I2V');
+assert.equal(strategy.default, 'I2V');
 assert.equal(strategy.options.includes('STILL_MOTION'), false);
 assert.equal(strategy.options.includes('T2I'), false);
 const characterKeys = new Set(schema.kinds[1].fields.map((field) => field.key));
