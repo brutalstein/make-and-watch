@@ -131,7 +131,7 @@ function publicJob(job) {
     startedAt: job.startedAt,
     completedAt: job.completedAt,
     error: job.error,
-    artifact: job.artifact ? { ...job.artifact, absolutePath: undefined } : null,
+    artifact: job.status === 'completed' && job.artifact ? { ...job.artifact, absolutePath: undefined } : null,
   };
 }
 
@@ -225,7 +225,7 @@ export class AnchorReferenceGenerationService {
   artifact(jobId) {
     const job = this.jobs.get(jobId);
     if (!job) throw serviceError('not_found', 'reference generation job was not found');
-    if (!job.artifact) throw serviceError('not_found', 'reference artifact is not ready');
+    if (job.status !== 'completed' || !job.artifact) throw serviceError('not_found', 'reference artifact is not ready');
     return job.artifact;
   }
 
@@ -352,7 +352,7 @@ export class AnchorReferenceGenerationService {
     const relativePath = relative(resolve(this.projectRoot, '.makewatch'), outputPath).replaceAll('\\', '/');
     const assetNodeId = `asset.${sha256.slice(0, 24)}`;
     const completedAt = new Date().toISOString();
-    job.artifact = {
+    const artifact = {
       assetNodeId,
       generationNodeId,
       filename: `${safePart(target.id)}${extension}`,
@@ -378,7 +378,8 @@ export class AnchorReferenceGenerationService {
     });
     snapshot = await this.bridge.snapshot();
     this.#assertInputsCurrent(snapshot, job, 'before canonical reference registration');
-    await this.#registerAssetAndLinkTarget(snapshot, target.id, assetNodeId, generationNodeId, job, job.artifact);
+    await this.#registerAssetAndLinkTarget(snapshot, target.id, assetNodeId, generationNodeId, job, artifact);
+    job.artifact = artifact;
     job.progress = 95;
   }
 
