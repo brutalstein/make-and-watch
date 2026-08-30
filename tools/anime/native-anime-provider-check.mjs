@@ -19,7 +19,8 @@ try {
   const pythonResolver = async () => ({ python: 'python', launcher: 'python', numpy: '2.4.4', pillow: '12.2.0', opencv: '5.0.0' });
   const ffmpegResolver = async () => ({ ffmpeg: '/x/ffmpeg', ffprobe: '/x/ffprobe' });
   let workerRequest = null;
-  const workerRunner = async (_python, _workerPath, requestPath) => {
+  const workerRunner = async (_python, _workerPath, requestPath, options) => {
+    assert.equal(options.signal.aborted, false);
     workerRequest = JSON.parse(await readFile(requestPath, 'utf8'));
     await writeFile(workerRequest.outputFile, Buffer.alloc(64 * 1024, 9));
     return { payload: { framesSha256: 'f'.repeat(64), frameCount: workerRequest.shotAnim.frameCount, persistedIntermediateFrames: 0 } };
@@ -57,7 +58,10 @@ try {
     grain: 0.04,
   };
 
-  const artifact = await provider.generate({ shot: { id: 'shot.slice.01', strategy: 'I2V', durationSeconds: 4 }, shotAnim });
+  const artifact = await provider.generate(
+    { shot: { id: 'shot.slice.01', strategy: 'I2V', durationSeconds: 4 }, shotAnim },
+    { signal: new AbortController().signal },
+  );
   assert.equal(artifact.mediaType, 'video');
   assert.equal(artifact.sha256.length, 64);
   assert.equal(artifact.durationSeconds, 4.0);

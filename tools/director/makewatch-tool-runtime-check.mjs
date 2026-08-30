@@ -37,6 +37,7 @@ const temporalRuntime = {
   startTemporalShotGeneration: async ({ shotId, providerId }) => ({ job: { id: 'temporal-job', shotId, providerId, status: 'queued' } }),
   temporalJob: async ({ jobId }) => ({ job: { id: jobId, status: 'running' } }),
   temporalJobs: async () => ({ jobs: [] }),
+  cancelMediaJob: async ({ kind, jobId }) => ({ job: { id: jobId, kind, status: 'cancelled' } }),
 };
 const animeRuntime = {
   productionStatus: async () => ({ ready: true, compiler: { ready: true } }),
@@ -94,6 +95,11 @@ const started = JSON.parse(await handleConfiguredMakeWatchToolCall({
   namespace: 'makewatch_media', tool: 'shot_generate_video', arguments: { shotId: 'shot.1', providerId: 'framepack' },
 }));
 assert.equal(started.job.status, 'queued');
+
+const cancelledMedia = JSON.parse(await handleConfiguredMakeWatchToolCall({
+  namespace: 'makewatch_media', tool: 'media_job_cancel', arguments: { kind: 'temporal', jobId: 'job-1' },
+}));
+assert.equal(cancelledMedia.job.status, 'cancelled');
 
 const animeStatus = JSON.parse(await handleConfiguredMakeWatchToolCall({
   namespace: 'makewatch_anime', tool: 'production_status', arguments: {},

@@ -94,6 +94,9 @@ export class GenerationGatewayClient {
 
   temporalJob(jobId) { return this.request(`/temporal/jobs/${encodeURIComponent(jobId)}`); }
   temporalJobs(limit = 20) { return this.request(`/temporal/jobs?limit=${encodeURIComponent(String(limit))}`); }
+  cancelMediaJob(kind, jobId) {
+    return this.request(`/jobs/${encodeURIComponent(kind)}/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
+  }
 
   shotAnimPlan(shotId) { return this.request(`/anime/shots/${encodeURIComponent(shotId)}/plan`); }
   shotAnimCompile(shotId) {

@@ -314,6 +314,8 @@ export class SceneGenerationService {
       error: '',
       artifacts: [],
     };
+    job.abortController = new AbortController();
+    job.settled = new Promise((resolveSettled) => { job.resolveSettled = resolveSettled; });
     this.jobs.set(id, job);
     this.pending.push(id);
     this.#pruneJobs();
@@ -332,6 +334,21 @@ export class SceneGenerationService {
   get(jobId) {
     const job = this.jobs.get(jobId);
     if (!job) throw generationError('not_found', 'generation job was not found');
+    return publicJob(job);
+  }
+
+  async cancel(jobId) {
+    const job = this.jobs.get(jobId);
+    if (!job) throw generationError('not_found', 'generation job was not found');
+    if (job.status === 'queued') {
+      this.pending = this.pending.filter((id) => id !== job.id);
+      job.status = 'cancelled';
+      job.completedAt = new Date().toISOString();
+      job.resolveSettled();
+    } else if (job.status === 'running') {
+      job.abortController.abort();
+      await job.settled;
+    }
     return publicJob(job);
   }
 
@@ -363,23 +380,28 @@ export class SceneGenerationService {
     job.startedAt = new Date().toISOString();
     try {
       await this.#run(job);
+      job.abortController.signal.throwIfAborted();
       job.status = 'completed';
       job.progress = 100;
       job.completedAt = new Date().toISOString();
     } catch (error) {
-      job.status = 'failed';
-      job.error = (error instanceof Error ? error.message : String(error)).slice(0, 1200);
+      job.status = job.abortController.signal.aborted ? 'cancelled' : 'failed';
+      job.error = job.status === 'cancelled' ? '' : (error instanceof Error ? error.message : String(error)).slice(0, 1200);
       job.completedAt = new Date().toISOString();
     } finally {
       job.currentShotId = null;
       this.activeJobId = null;
+      job.resolveSettled();
       this.#pruneJobs();
       void this.#pump();
     }
   }
 
   async #run(job) {
-    await this.comfy.capabilities({ force: true });
+    const { signal } = job.abortController;
+    signal.throwIfAborted();
+    await this.comfy.capabilities({ force: true, signal });
+    signal.throwIfAborted();
     let snapshot = await this.bridge.snapshot();
     const scene = nodeById(snapshot, job.sceneId);
     if (!scene || scene.kind !== 'scene') throw new Error('scene was removed before generation started');
@@ -387,6 +409,7 @@ export class SceneGenerationService {
     if (shots.length !== job.shotCount) throw new Error('scene shot topology changed after the generation job was queued; retry on the live revision');
 
     for (let index = 0; index < shots.length; index += 1) {
+      signal.throwIfAborted();
       snapshot = await this.bridge.snapshot();
       const liveScene = nodeById(snapshot, scene.id);
       const shot = nodeById(snapshot, shots[index].id);
@@ -434,7 +457,9 @@ export class SceneGenerationService {
           cfg: Number(process.env.MAKEWATCH_PREVIEW_CFG ?? compiled.style.cfg),
           sampler: process.env.MAKEWATCH_PREVIEW_SAMPLER || compiled.style.sampler,
           filenamePrefix,
+          signal,
         });
+        signal.throwIfAborted();
 
         const extension = extname(generated.image.filename) || (generated.contentType.includes('jpeg') ? '.jpg' : '.png');
         const jobDirectory = join(this.artifactRoot, safeFilePart(liveScene.id), safeFilePart(job.id));
@@ -496,7 +521,7 @@ export class SceneGenerationService {
       } catch (error) {
         const fresh = await this.bridge.snapshot().catch(() => snapshot);
         await this.#setGenerationState(fresh, generationNodeId, liveScene, shot, {
-          status: 'failed',
+          status: signal.aborted ? 'cancelled' : 'failed',
           seed,
           promptHash,
           completedAt: new Date().toISOString(),
@@ -516,6 +541,7 @@ export class SceneGenerationService {
       job: publicJob(job),
       completedAt: new Date().toISOString(),
     }, null, 2), 'utf8');
+    signal.throwIfAborted();
   }
 
   async #setGenerationState(snapshot, generationNodeId, scene, shot, metadata) {

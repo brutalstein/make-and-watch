@@ -145,6 +145,13 @@ try {
     .sort();
   assert.deepEqual(canonicalDependenciesAfterStaleRun, canonicalDependenciesBeforeStaleRun, 'stale output must not attach a new canonical Asset');
 
+  const queuedService = new AnchorReferenceGenerationService({ bridge, comfy, scheduler, projectRoot: root });
+  queuedService.activeJobId = 'fixture-held';
+  const queued = await queuedService.start({ targetId: 'character.mira', stylePreset: 'anime-cinematic' });
+  const cancelled = await queuedService.cancel(queued.id);
+  assert.equal(cancelled.status, 'cancelled');
+  assert.equal(queuedService.pending.includes(queued.id), false);
+
   const character = snapshot.nodes.find((node) => node.id === 'character.mira');
   character.locked = true;
   await assert.rejects(

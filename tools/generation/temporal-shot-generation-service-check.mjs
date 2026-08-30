@@ -34,7 +34,7 @@ function fixtureSnapshot(shotRevision = 3) {
 async function waitFor(service, jobId) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const job = service.get(jobId);
-    if (job.status === 'completed' || job.status === 'failed') return job;
+    if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') return job;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   throw new Error('temporal service fixture timed out');
@@ -98,6 +98,7 @@ const service = new TemporalShotGenerationService({
 const started = await service.startShot({ shotId: 'shot.1', providerId: 'fixture' });
 const completed = await waitFor(service, started.id);
 assert.equal(completed.status, 'completed');
+assert.equal((await service.cancel(started.id)).status, 'completed');
 assert.equal(completed.artifact.assetNodeId, `asset.${'b'.repeat(24)}`);
 assert.equal(applies.length, 1);
 assert.equal(applies[0].context.source, 'temporal-shot-generation');
@@ -180,5 +181,37 @@ const layeredJob = await waitFor(layeredService, layeredStarted.id);
 assert.equal(layeredJob.status, 'completed');
 assert.equal(layeredRequest.inputs.startFrame, null);
 assert.equal(layeredRequest.shotAnim, shotAnim);
+
+const queuedService = new TemporalShotGenerationService({ bridge, registry, scheduler });
+queuedService.activeJobId = 'fixture-held';
+const queued = await queuedService.startShot({ shotId: 'shot.1', providerId: 'fixture' });
+const queuedCancelled = await queuedService.cancel(queued.id);
+assert.equal(queuedCancelled.status, 'cancelled');
+assert.equal(queuedService.pending.includes(queued.id), false);
+assert.equal((await queuedService.cancel(queued.id)).status, 'cancelled');
+
+const cancelledApplies = [];
+let runningSignal;
+const cancellableService = new TemporalShotGenerationService({
+  bridge: {
+    snapshot: async () => structuredClone(stable),
+    apply: async (...args) => { cancelledApplies.push(args); },
+  },
+  registry: {
+    statuses: registry.statuses,
+    generate: async (_providerId, _request, context) => {
+      runningSignal = context.signal;
+      return new Promise((_resolve, reject) => context.signal.addEventListener('abort', () => reject(context.signal.reason), { once: true }));
+    },
+  },
+  scheduler,
+  hardware: async () => ({ totalVramMb: 8192 }),
+});
+const running = await cancellableService.startShot({ shotId: 'shot.1', providerId: 'fixture' });
+for (let attempt = 0; attempt < 100 && !runningSignal; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+assert.equal(runningSignal?.aborted, false);
+const runningCancelled = await cancellableService.cancel(running.id);
+assert.equal(runningCancelled.status, 'cancelled');
+assert.equal(cancelledApplies.length, 0, 'cancelled temporal job cannot commit success provenance');
 
 console.log('temporal shot generation service checks passed');

@@ -23,7 +23,8 @@ try {
     hardware: { readyForAttempt: true, totalVramMb: 8192 },
     detail: 'ready',
   });
-  const workerRunner = async (_python, _workerPath, requestPath) => {
+  const workerRunner = async (_python, _workerPath, requestPath, options) => {
+    assert.equal(options.signal.aborted, false);
     const request = JSON.parse(await readFile(requestPath, 'utf8'));
     assert.equal(request.durationSeconds, 5);
     assert.equal(request.prompt, 'Alex turns toward the window.');
@@ -65,7 +66,7 @@ try {
     inputs: {
       startFrame: { id: 'asset.hero', relativePath: 'artifacts/hero.png', sha256: 'hero' },
     },
-  }, { hardware: { totalVramMb: 8192 } });
+  }, { hardware: { totalVramMb: 8192 }, signal: new AbortController().signal });
 
   assert.equal(releases, 1, 'FramePack must release resident ComfyUI models before launching');
   assert.equal(artifact.mediaType, 'video');

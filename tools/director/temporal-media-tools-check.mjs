@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 
+import { GenerationGatewayClient } from '../generation/gateway-api-client.mjs';
+
 import {
   handleTemporalMediaToolCall,
   temporalMediaDynamicToolSpecs,
@@ -18,6 +20,7 @@ const runtime = {
   startTemporalShotGeneration: async (input) => { calls.push(['start', input]); return { job: { id: 'job-temporal-1', status: 'queued' } }; },
   temporalJob: async (input) => { calls.push(['job', input]); return { job: { id: input.jobId, status: 'running', progress: 12 } }; },
   temporalJobs: async (input) => { calls.push(['jobs', input]); return { jobs: [] }; },
+  cancelMediaJob: async (input) => { calls.push(['cancel', input]); return { job: { id: input.jobId, status: 'cancelled' } }; },
 };
 
 const specs = temporalMediaDynamicToolSpecs();
@@ -29,6 +32,7 @@ for (const required of [
   'audio_provider',
   'reference_provider', 'reference_generate', 'reference_job', 'reference_jobs',
   'temporal_providers', 'shot_temporal_plan', 'shot_generate_video', 'temporal_job', 'temporal_jobs',
+  'media_job_cancel',
 ]) {
   assert.equal(names.has(required), true, `missing media tool ${required}`);
 }
@@ -116,6 +120,20 @@ assert.equal(job.job.progress, 12);
 await handleTemporalMediaToolCall({ namespace: 'makewatch_media', tool: 'temporal_jobs', arguments: {} }, runtime);
 assert.deepEqual(calls.at(-1), ['jobs', { limit: 20 }]);
 
+const cancelled = JSON.parse(await handleTemporalMediaToolCall({
+  namespace: 'makewatch_media', tool: 'media_job_cancel', arguments: { kind: 'anime', jobId: 'job-1' },
+}, runtime));
+assert.equal(cancelled.job.status, 'cancelled');
+assert.deepEqual(calls.at(-1), ['cancel', { kind: 'anime', jobId: 'job-1' }]);
+await assert.rejects(
+  handleTemporalMediaToolCall({ namespace: 'makewatch_media', tool: 'media_job_cancel', arguments: { kind: 'unknown', jobId: 'job-1' } }, runtime),
+  /kind must be one of/,
+);
+await assert.rejects(
+  handleTemporalMediaToolCall({ namespace: 'makewatch_media', tool: 'media_job_cancel', arguments: { kind: 'audio', jobId: 'job/1' } }, runtime),
+  /jobId is invalid/,
+);
+
 await assert.rejects(
   handleTemporalMediaToolCall({ namespace: 'makewatch_media', tool: 'shot_generate_video', arguments: { shotId: 'shot.1', providerId: '' } }, runtime),
   /providerId is required/,
@@ -124,5 +142,20 @@ await assert.rejects(
   handleTemporalMediaToolCall({ namespace: 'makewatch', tool: 'temporal_providers', arguments: {} }, runtime),
   /unknown media tool namespace/,
 );
+
+class CaptureClient extends GenerationGatewayClient {
+  constructor() {
+    super({ baseUrl: 'http://127.0.0.1:4178/api' });
+    this.calls = [];
+  }
+  async request(pathname, init = {}) {
+    this.calls.push({ pathname, init });
+    return { ok: true };
+  }
+}
+const client = new CaptureClient();
+await client.cancelMediaJob('reference', 'job:1');
+assert.equal(client.calls.at(-1).pathname, '/jobs/reference/job%3A1/cancel');
+assert.equal(client.calls.at(-1).init.method, 'POST');
 
 console.log('media tools check passed');

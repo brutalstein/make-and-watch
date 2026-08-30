@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 
@@ -104,32 +104,53 @@ async function releaseComfyGpu(baseUrl) {
   }
 }
 
-function runWorker(python, workerPath, requestPath, resultPath) {
+function terminateTree(child) {
+  if (!child?.pid) return;
+  if (process.platform === 'win32') {
+    spawnSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+    return;
+  }
+  try { process.kill(-child.pid, 'SIGKILL'); } catch {
+    try { child.kill('SIGKILL'); } catch { /* already gone */ }
+  }
+}
+
+function runWorker(python, workerPath, requestPath, resultPath, { signal } = {}) {
+  signal?.throwIfAborted();
   return new Promise((resolvePromise, reject) => {
     const child = spawn(python, [workerPath, requestPath, resultPath], {
       stdio: ['ignore', 'inherit', 'inherit'],
       windowsHide: true,
+      detached: process.platform !== 'win32',
       env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' },
     });
     let settled = false;
+    const aborted = () => terminateTree(child);
+    signal?.addEventListener('abort', aborted, { once: true });
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', aborted);
+    };
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      child.kill('SIGTERM');
+      terminateTree(child);
+      cleanup();
       reject(new Error('Chatterbox worker exceeded bounded synthesis runtime'));
     }, WORKER_TIMEOUT_MS);
     timer.unref();
     child.once('error', (error) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
-      reject(error);
+      cleanup();
+      reject(signal?.aborted ? audioError('cancelled', 'Chatterbox worker was cancelled') : error);
     });
     child.once('exit', (code) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
-      if (code === 0) resolvePromise();
+      cleanup();
+      if (signal?.aborted) reject(audioError('cancelled', 'Chatterbox worker was cancelled'));
+      else if (code === 0) resolvePromise();
       else reject(new Error(`Chatterbox worker exited with code ${code ?? 'unknown'}`));
     });
   });
@@ -151,13 +172,22 @@ function publicJob(job) {
 }
 
 export class AudioGenerationService {
-  constructor({ bridge, scheduler, projectRoot, artifactRoot, workerPath, comfyBaseUrl = 'http://127.0.0.1:8188' }) {
+  constructor({
+    bridge, scheduler, projectRoot, artifactRoot, workerPath,
+    comfyBaseUrl = 'http://127.0.0.1:8188',
+    runtimeResolver = ensureChatterboxRuntime,
+    gpuReleaser = releaseComfyGpu,
+    workerRunner = runWorker,
+  }) {
     this.bridge = bridge;
     this.scheduler = scheduler;
     this.projectRoot = resolve(projectRoot);
     this.artifactRoot = resolve(artifactRoot);
     this.workerPath = resolve(workerPath);
     this.comfyBaseUrl = comfyBaseUrl;
+    this.runtimeResolver = runtimeResolver;
+    this.gpuReleaser = gpuReleaser;
+    this.workerRunner = workerRunner;
     this.jobs = new Map();
     this.pending = [];
     this.activeJobId = null;
@@ -201,6 +231,8 @@ export class AudioGenerationService {
       error: '',
       artifact: null,
     };
+    job.abortController = new AbortController();
+    job.settled = new Promise((resolveSettled) => { job.resolveSettled = resolveSettled; });
     this.jobs.set(job.id, job);
     this.pending.push(job.id);
     this.#prune();
@@ -216,6 +248,21 @@ export class AudioGenerationService {
   get(jobId) {
     const job = this.jobs.get(jobId);
     if (!job) throw audioError('not_found', 'audio generation job was not found');
+    return publicJob(job);
+  }
+
+  async cancel(jobId) {
+    const job = this.jobs.get(jobId);
+    if (!job) throw audioError('not_found', 'audio generation job was not found');
+    if (job.status === 'queued') {
+      this.pending = this.pending.filter((id) => id !== job.id);
+      job.status = 'cancelled';
+      job.completedAt = new Date().toISOString();
+      job.resolveSettled();
+    } else if (job.status === 'running') {
+      if (!job.commitStarted) job.abortController.abort();
+      await job.settled;
+    }
     return publicJob(job);
   }
 
@@ -243,22 +290,30 @@ export class AudioGenerationService {
     job.status = 'running';
     job.startedAt = new Date().toISOString();
     try {
-      await this.scheduler.run({ kind: 'audio', id: job.id }, () => this.#run(job));
+      await this.scheduler.run({ kind: 'audio', id: job.id }, () => this.#run(job), { signal: job.abortController.signal });
+      job.abortController.signal.throwIfAborted();
       job.status = 'completed';
       job.progress = 100;
       job.completedAt = new Date().toISOString();
     } catch (error) {
-      job.status = 'failed';
-      job.error = (error instanceof Error ? error.message : String(error)).slice(0, 1600);
+      job.status = job.abortController.signal.aborted ? 'cancelled' : 'failed';
+      job.error = job.status === 'cancelled' ? '' : (error instanceof Error ? error.message : String(error)).slice(0, 1600);
       job.completedAt = new Date().toISOString();
+      if (job.status === 'cancelled') {
+        await this.#recordCancellation(job).catch(() => undefined);
+        if (job.workDirectory) await rm(job.workDirectory, { recursive: true, force: true }).catch(() => undefined);
+      }
     } finally {
       this.activeJobId = null;
+      job.resolveSettled();
       this.#prune();
       void this.#pump();
     }
   }
 
   async #run(job) {
+    const { signal } = job.abortController;
+    signal.throwIfAborted();
     let snapshot = await this.bridge.snapshot();
     const audio = nodeById(snapshot, job.audioId);
     if (!audio || audio.kind !== 'audio') throw new Error('audio node was removed before generation started');
@@ -289,11 +344,14 @@ export class AudioGenerationService {
       strategy: 'TTS_MULTILINGUAL_V3', status: 'running', seed, promptHash: textHash, startedAt, completedAt: '', error: '',
     });
 
-    const runtime = await ensureChatterboxRuntime();
+    const runtime = await this.runtimeResolver();
     if (!runtime.python) throw new Error('Chatterbox runtime has no Python executable');
-    await releaseComfyGpu(this.comfyBaseUrl);
+    signal.throwIfAborted();
+    await this.gpuReleaser(this.comfyBaseUrl);
+    signal.throwIfAborted();
 
     const directory = join(this.artifactRoot, safeFilePart(audio.id), safeFilePart(job.id));
+    job.workDirectory = directory;
     await mkdir(directory, { recursive: true });
     const requestPath = join(directory, 'request.json');
     const resultPath = join(directory, 'result.json');
@@ -310,7 +368,8 @@ export class AudioGenerationService {
     }, null, 2), 'utf8');
     job.progress = 20;
 
-    await runWorker(runtime.python, this.workerPath, requestPath, resultPath);
+    await this.workerRunner(runtime.python, this.workerPath, requestPath, resultPath, { signal });
+    signal.throwIfAborted();
     const worker = JSON.parse(await readFile(resultPath, 'utf8'));
     if (!worker.ok) throw new Error(worker.error || 'Chatterbox worker failed');
     job.progress = 80;
@@ -337,6 +396,7 @@ export class AudioGenerationService {
       voiceReferenceUsed: worker.voiceReferenceUsed === true,
     };
 
+    job.commitStarted = true;
     snapshot = await this.bridge.snapshot();
     await this.#setGeneration(snapshot, generationNodeId, audio, {
       targetKind: 'audio', targetId: audio.id, mediaType: 'audio', provider: 'chatterbox', model: String(worker.model),
@@ -350,6 +410,18 @@ export class AudioGenerationService {
       status: 'ready', provider: 'chatterbox', durationSeconds: String(worker.durationSeconds), generatedAsset: assetNodeId,
     });
     await rm(requestPath, { force: true }).catch(() => undefined);
+  }
+
+  async #recordCancellation(job) {
+    let snapshot = await this.bridge.snapshot();
+    const audio = nodeById(snapshot, job.audioId);
+    if (!audio || audio.kind !== 'audio') return;
+    await this.#setGeneration(snapshot, `generation.audio.${safeFilePart(audio.id)}`, audio, {
+      targetKind: 'audio', targetId: audio.id, mediaType: 'audio', provider: 'chatterbox',
+      strategy: 'TTS_MULTILINGUAL_V3', status: 'cancelled', completedAt: job.completedAt, error: '',
+    });
+    snapshot = await this.bridge.snapshot();
+    await this.#setAudioStatus(snapshot, nodeById(snapshot, audio.id), { status: 'cancelled', provider: 'chatterbox' });
   }
 
   async #setAudioStatus(snapshot, audio, metadataUpdates) {

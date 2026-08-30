@@ -109,6 +109,18 @@ async function animeProductionStatus() {
   };
 }
 
+function mediaJobService(kind) {
+  switch (kind) {
+    case 'visual': return sceneService;
+    case 'reference': return referenceService;
+    case 'audio': return audioService;
+    case 'temporal':
+    case 'anime': return temporalService;
+    case 'render': return renderService;
+    default: throw Object.assign(new Error('media job kind is invalid'), { code: 'invalid_argument' });
+  }
+}
+
 if (!Number.isInteger(port) || port < 1024 || port > 65535) {
   console.error(`[generation] invalid MAKEWATCH_GENERATION_PORT: ${process.env.MAKEWATCH_GENERATION_PORT ?? port}`);
   process.exit(2);
@@ -470,6 +482,13 @@ const server = createServer(async (request, response) => {
     const renderJobMatch = /^\/api\/render\/jobs\/([A-Za-z0-9-]+)$/.exec(url.pathname);
     if (request.method === 'GET' && renderJobMatch) {
       sendJson(request, response, 200, { job: renderService.get(renderJobMatch[1]) });
+      return;
+    }
+
+    const cancelJobMatch = /^\/api\/jobs\/(visual|reference|audio|temporal|anime|render)\/([^/]+)\/cancel$/.exec(url.pathname);
+    if (request.method === 'POST' && cancelJobMatch) {
+      const job = await mediaJobService(cancelJobMatch[1]).cancel(decodedId(cancelJobMatch[2], 'jobId'));
+      sendJson(request, response, 200, { job });
       return;
     }
 

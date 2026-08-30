@@ -1,6 +1,7 @@
 const NAMESPACE = 'makewatch_media';
 const MAX_RESULT_BYTES = 384 * 1024;
 const REFERENCE_STYLE_PRESETS = ['live-action-cinematic', 'anime-cinematic', 'illustration', 'stylized-3d'];
+const MEDIA_JOB_KINDS = ['visual', 'reference', 'audio', 'temporal', 'anime', 'render'];
 
 const functionTool = (name, description, inputSchema, deferLoading = false) => ({
   type: 'function',
@@ -112,6 +113,19 @@ export function temporalMediaDynamicToolSpecs() {
           properties: { limit: { type: 'integer', minimum: 1, maximum: 50 } },
         },
       ),
+      functionTool(
+        'media_job_cancel',
+        'Cancel one queued or running bounded media job. Running cancellation returns only after the owned worker or FFmpeg process has stopped; completed, failed and already-cancelled jobs are unchanged.',
+        {
+          type: 'object',
+          additionalProperties: false,
+          required: ['kind', 'jobId'],
+          properties: {
+            kind: { type: 'string', enum: MEDIA_JOB_KINDS },
+            jobId: { type: 'string', minLength: 1, maxLength: 180, pattern: '^[A-Za-z0-9._:-]+$' },
+          },
+        },
+      ),
     ],
   }];
 }
@@ -159,6 +173,18 @@ function boundedReferenceStyle(value) {
   const style = String(value);
   if (!REFERENCE_STYLE_PRESETS.includes(style)) throw new Error(`stylePreset must be one of ${REFERENCE_STYLE_PRESETS.join(', ')}`);
   return style;
+}
+
+function boundedJobKind(value) {
+  const kind = String(value ?? '');
+  if (!MEDIA_JOB_KINDS.includes(kind)) throw new Error(`kind must be one of ${MEDIA_JOB_KINDS.join(', ')}`);
+  return kind;
+}
+
+function boundedJobId(value) {
+  const id = boundedString(value, 'jobId', 180);
+  if (!/^[A-Za-z0-9._:-]+$/.test(id)) throw new Error('jobId is invalid; use the ID returned by the media start tool');
+  return id;
 }
 
 function boundedResult(value) {
@@ -217,6 +243,12 @@ export async function handleTemporalMediaToolCall(call, runtime) {
     case 'temporal_jobs':
       result = await runtime.temporalJobs({ limit: boundedLimit(input.limit) });
       break;
+    case 'media_job_cancel':
+      result = await runtime.cancelMediaJob({
+        kind: boundedJobKind(input.kind),
+        jobId: boundedJobId(input.jobId),
+      });
+      break;
     default:
       throw new Error(`unknown media tool: ${String(call.tool)}`);
   }
@@ -227,4 +259,5 @@ export const temporalMediaToolLimits = Object.freeze({
   namespace: NAMESPACE,
   maxResultBytes: MAX_RESULT_BYTES,
   referenceStylePresets: [...REFERENCE_STYLE_PRESETS],
+  mediaJobKinds: [...MEDIA_JOB_KINDS],
 });

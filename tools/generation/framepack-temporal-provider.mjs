@@ -76,7 +76,8 @@ function parseWorkerResult(stdout) {
   try { return JSON.parse(line.slice(RESULT_PREFIX.length)); } catch { return null; }
 }
 
-function runWorkerProcess(python, workerPath, requestPath, { cwd, timeoutMs = WORKER_TIMEOUT_MS } = {}) {
+function runWorkerProcess(python, workerPath, requestPath, { cwd, timeoutMs = WORKER_TIMEOUT_MS, signal } = {}) {
+  signal?.throwIfAborted();
   return new Promise((resolvePromise, reject) => {
     const child = spawn(python, [workerPath, '--request', requestPath], {
       cwd,
@@ -97,23 +98,34 @@ function runWorkerProcess(python, workerPath, requestPath, { cwd, timeoutMs = WO
     child.stdout?.on('data', (chunk) => { stdout = appendBounded(stdout, chunk); });
     child.stderr?.on('data', (chunk) => { stderr = appendBounded(stderr, chunk); });
     let settled = false;
+    const aborted = () => terminateTree(child);
+    signal?.addEventListener('abort', aborted, { once: true });
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', aborted);
+    };
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
       terminateTree(child);
+      cleanup();
       reject(providerError('timeout', `FramePack worker exceeded ${Math.round(timeoutMs / 60_000)} minute bounded runtime`));
     }, timeoutMs);
     timer.unref();
     child.once('error', (error) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
-      reject(error);
+      cleanup();
+      reject(signal?.aborted ? providerError('cancelled', 'FramePack worker was cancelled') : error);
     });
     child.once('exit', (code) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      cleanup();
+      if (signal?.aborted) {
+        reject(providerError('cancelled', 'FramePack worker was cancelled'));
+        return;
+      }
       const payload = parseWorkerResult(stdout);
       if (code === 0 && payload?.ok === true) {
         resolvePromise({ payload: payload.result, stdout, stderr });
@@ -212,6 +224,8 @@ export class FramePackTemporalProvider {
   }
 
   async generate(request, context = {}) {
+    const { signal } = context;
+    signal?.throwIfAborted();
     if (request?.shot?.strategy !== 'I2V') throw providerError('invalid_argument', 'FramePack v1 provider supports I2V only');
     const duration = Number(request.shot.durationSeconds);
     if (!Number.isFinite(duration) || duration < 1 || duration > MAX_FRAMEPACK_SHOT_SECONDS) {
@@ -261,7 +275,8 @@ export class FramePackTemporalProvider {
       if (memoryRelease?.requested && !memoryRelease?.released) {
         throw providerError('not_ready', `ComfyUI is reachable but could not release resident GPU models: ${memoryRelease.detail}`);
       }
-      const worker = await this.workerRunner(selected.python, this.workerPath, requestPath, { cwd: selected.root });
+      const worker = await this.workerRunner(selected.python, this.workerPath, requestPath, { cwd: selected.root, signal });
+      signal?.throwIfAborted();
       const info = await stat(outputPath);
       if (!info.isFile() || info.size <= 1024) throw providerError('provider_error', 'FramePack output file is missing or empty');
       const [sha256, media] = await Promise.all([

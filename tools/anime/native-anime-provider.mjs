@@ -71,7 +71,8 @@ function parseWorkerResult(stdout) {
 
 // ponytail: same generic subprocess plumbing FramePack's provider uses; one consumer,
 // so inlined rather than extracted to a shared module.
-function runWorkerProcess(python, workerPath, requestPath, { cwd, prefixArgs = [], timeoutMs = WORKER_TIMEOUT_MS } = {}) {
+function runWorkerProcess(python, workerPath, requestPath, { cwd, prefixArgs = [], timeoutMs = WORKER_TIMEOUT_MS, signal } = {}) {
+  signal?.throwIfAborted();
   return new Promise((resolvePromise, reject) => {
     const child = spawn(python, [...prefixArgs, workerPath, '--request', requestPath], {
       cwd,
@@ -86,23 +87,34 @@ function runWorkerProcess(python, workerPath, requestPath, { cwd, prefixArgs = [
     child.stdout?.on('data', (chunk) => { stdout = appendBounded(stdout, chunk); });
     child.stderr?.on('data', (chunk) => { stderr = appendBounded(stderr, chunk); });
     let settled = false;
+    const aborted = () => terminateTree(child);
+    signal?.addEventListener('abort', aborted, { once: true });
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', aborted);
+    };
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
       terminateTree(child);
+      cleanup();
       reject(providerError('timeout', `native-anime worker exceeded ${Math.round(timeoutMs / 60_000)} minute bounded runtime`));
     }, timeoutMs);
     timer.unref();
     child.once('error', (error) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
-      reject(error);
+      cleanup();
+      reject(signal?.aborted ? providerError('cancelled', 'native-anime worker was cancelled') : error);
     });
     child.once('exit', (code) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      cleanup();
+      if (signal?.aborted) {
+        reject(providerError('cancelled', 'native-anime worker was cancelled'));
+        return;
+      }
       const payload = parseWorkerResult(stdout);
       if (code === 0 && payload?.ok === true) {
         resolvePromise({ payload: payload.result, stdout, stderr });
@@ -221,7 +233,9 @@ export class NativeAnimeTemporalProvider {
     };
   }
 
-  async generate(request, _context = {}) {
+  async generate(request, context = {}) {
+    const { signal } = context;
+    signal?.throwIfAborted();
     if (request?.shot?.strategy !== 'I2V') throw providerError('invalid_argument', 'native-anime provider supports I2V only');
     const durationSeconds = Number(request.shot.durationSeconds);
     if (!Number.isFinite(durationSeconds) || durationSeconds < 1 || durationSeconds > MAX_SHOT_SECONDS) {
@@ -278,7 +292,9 @@ export class NativeAnimeTemporalProvider {
       const worker = await this.workerRunner(python.launcher, this.workerPath, requestPath, {
         cwd: this.projectRoot,
         prefixArgs: python.prefixArgs ?? [],
+        signal,
       });
+      signal?.throwIfAborted();
       const info = await stat(outputPath);
       if (!info.isFile() || info.size <= 1024) throw providerError('provider_error', 'native-anime output file is missing or empty');
       const [sha256, media] = await Promise.all([

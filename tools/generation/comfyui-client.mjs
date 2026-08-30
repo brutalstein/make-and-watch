@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8188';
 const DEFAULT_TIMEOUT_MS = 180_000;
@@ -10,6 +11,11 @@ const DEFAULT_POLL_MS = 750;
 const DEFAULT_REQUEST_TIMEOUT_MS = Number(process.env.MAKEWATCH_COMFYUI_REQUEST_TIMEOUT_MS ?? 120_000);
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
+
+function boundedSignal(signal, timeoutMs) {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
 
 function localBaseUrl(value) {
   const url = new URL(value || DEFAULT_BASE_URL);
@@ -217,9 +223,10 @@ export class ComfyUiClient {
       response = await fetch(this.url(pathname), {
         ...init,
         headers: { 'Content-Type': 'application/json', ...(init.headers ?? {}) },
-        signal: init.signal ?? AbortSignal.timeout(Math.min(this.timeoutMs, DEFAULT_REQUEST_TIMEOUT_MS)),
+        signal: boundedSignal(init.signal, Math.min(this.timeoutMs, DEFAULT_REQUEST_TIMEOUT_MS)),
       });
     } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') throw error;
       const reason = error instanceof Error ? error.message : String(error);
       if (error instanceof Error && error.name === 'TimeoutError') {
         throw new Error(
@@ -238,7 +245,7 @@ export class ComfyUiClient {
     return payload;
   }
 
-  async uploadImage({ bytes, filename = 'reference.png', contentType = 'image/png' }) {
+  async uploadImage({ bytes, filename = 'reference.png', contentType = 'image/png', signal }) {
     const payloadBytes = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes ?? []);
     if (!payloadBytes.length || payloadBytes.length > MAX_IMAGE_BYTES) throw new Error('ComfyUI reference upload is empty or exceeds the bounded image limit');
     const form = new FormData();
@@ -250,9 +257,10 @@ export class ComfyUiClient {
       response = await fetch(this.url('/upload/image'), {
         method: 'POST',
         body: form,
-        signal: AbortSignal.timeout(60_000),
+        signal: boundedSignal(signal, 60_000),
       });
     } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') throw error;
       throw new Error(`ComfyUI reference upload failed: ${error instanceof Error ? error.message : String(error)}`);
     }
     const payload = parseJsonBytes(await boundedResponse(response, MAX_JSON_BYTES), '/upload/image');
@@ -264,18 +272,18 @@ export class ComfyUiClient {
     return { name: payload.name, subfolder, type: payload.type ?? 'input', imageName };
   }
 
-  async objectInfo(className) {
-    const payload = await this.json(`/object_info/${encodeURIComponent(className)}`);
+  async objectInfo(className, { signal } = {}) {
+    const payload = await this.json(`/object_info/${encodeURIComponent(className)}`, { signal });
     return payload?.[className] ?? null;
   }
 
-  async capabilities({ force = false } = {}) {
+  async capabilities({ force = false, signal } = {}) {
     const now = Date.now();
     if (!force && this.cachedCapabilities && now - this.capabilitiesCachedAt < 15_000) return this.cachedCapabilities;
-    await this.json('/prompt');
+    await this.json('/prompt', { signal });
     const [checkpointInfo, samplerInfo] = await Promise.all([
-      this.objectInfo('CheckpointLoaderSimple'),
-      this.objectInfo('KSampler'),
+      this.objectInfo('CheckpointLoaderSimple', { signal }),
+      this.objectInfo('KSampler', { signal }),
     ]);
     const checkpoints = requiredChoices(checkpointInfo, 'ckpt_name');
     if (checkpoints.length === 0) throw new Error('ComfyUI is online but no CheckpointLoaderSimple checkpoints are installed');
@@ -298,20 +306,21 @@ export class ComfyUiClient {
     return this.cachedCapabilities;
   }
 
-  async queuePrompt(prompt, promptId = randomUUID(), clientId = randomUUID()) {
+  async queuePrompt(prompt, promptId = randomUUID(), clientId = randomUUID(), { signal } = {}) {
     const payload = await this.json('/prompt', {
       method: 'POST',
       body: JSON.stringify({ prompt, prompt_id: promptId, client_id: clientId }),
-      signal: AbortSignal.timeout(15_000),
+      signal: boundedSignal(signal, 15_000),
     });
     const acceptedId = typeof payload?.prompt_id === 'string' ? payload.prompt_id : promptId;
     return { promptId: acceptedId, clientId };
   }
 
-  async waitForHistory(promptId) {
+  async waitForHistory(promptId, { signal } = {}) {
     const deadline = Date.now() + this.timeoutMs;
     while (Date.now() < deadline) {
-      const payload = await this.json(`/history/${encodeURIComponent(promptId)}`);
+      signal?.throwIfAborted();
+      const payload = await this.json(`/history/${encodeURIComponent(promptId)}`, { signal });
       const history = payload?.[promptId];
       if (history) {
         const status = history.status ?? {};
@@ -322,7 +331,7 @@ export class ComfyUiClient {
         if (history.outputs && Object.keys(history.outputs).length > 0) return history;
         if (status.completed === true) return history;
       }
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, this.pollMs));
+      await delay(this.pollMs, undefined, { signal });
     }
     throw new Error(`ComfyUI generation timed out after ${this.timeoutMs} ms`);
   }
@@ -336,24 +345,24 @@ export class ComfyUiClient {
     throw new Error('ComfyUI completed without an image output');
   }
 
-  async downloadImage(image) {
-    const response = await fetch(this.url('/view', { filename: image.filename, subfolder: image.subfolder, type: image.type }), { signal: AbortSignal.timeout(30_000) });
+  async downloadImage(image, { signal } = {}) {
+    const response = await fetch(this.url('/view', { filename: image.filename, subfolder: image.subfolder, type: image.type }), { signal: boundedSignal(signal, 30_000) });
     if (!response.ok) throw new Error(`ComfyUI image download failed with HTTP ${response.status}`);
     const bytes = await boundedResponse(response, MAX_IMAGE_BYTES);
     const contentType = response.headers.get('content-type') || 'image/png';
     return { bytes, contentType };
   }
 
-  async runImageWorkflow(workflow) {
-    const queued = await this.queuePrompt(workflow);
-    const history = await this.waitForHistory(queued.promptId);
+  async runImageWorkflow(workflow, { signal } = {}) {
+    const queued = await this.queuePrompt(workflow, undefined, undefined, { signal });
+    const history = await this.waitForHistory(queued.promptId, { signal });
     const image = this.firstImage(history);
-    const downloaded = await this.downloadImage(image);
+    const downloaded = await this.downloadImage(image, { signal });
     return { queued, image, downloaded };
   }
 
-  async generateStoryboardFrame({ prompt, negativePrompt, seed, width = 768, height = 432, steps, cfg, sampler, filenamePrefix }) {
-    const capabilities = await this.capabilities();
+  async generateStoryboardFrame({ prompt, negativePrompt, seed, width = 768, height = 432, steps, cfg, sampler, filenamePrefix, signal }) {
+    const capabilities = await this.capabilities({ signal });
     const requestedSampler = sampler && capabilities.samplers?.includes(sampler) ? sampler : capabilities.sampler;
     const workflow = buildStoryboardWorkflow({
       checkpoint: capabilities.checkpoint,
@@ -368,7 +377,7 @@ export class ComfyUiClient {
       scheduler: capabilities.scheduler,
       filenamePrefix,
     });
-    const { queued, image, downloaded } = await this.runImageWorkflow(workflow);
+    const { queued, image, downloaded } = await this.runImageWorkflow(workflow, { signal });
     return {
       promptId: queued.promptId,
       checkpoint: capabilities.checkpoint,
@@ -380,10 +389,10 @@ export class ComfyUiClient {
     };
   }
 
-  async generateReferenceImage({ sourceBytes, sourceFilename, sourceContentType, prompt, negativePrompt, seed, denoise = 0.58, steps, cfg, sampler, filenamePrefix }) {
-    const capabilities = await this.capabilities();
+  async generateReferenceImage({ sourceBytes, sourceFilename, sourceContentType, prompt, negativePrompt, seed, denoise = 0.58, steps, cfg, sampler, filenamePrefix, signal }) {
+    const capabilities = await this.capabilities({ signal });
     const requestedSampler = sampler && capabilities.samplers?.includes(sampler) ? sampler : capabilities.sampler;
-    const uploaded = await this.uploadImage({ bytes: sourceBytes, filename: sourceFilename, contentType: sourceContentType });
+    const uploaded = await this.uploadImage({ bytes: sourceBytes, filename: sourceFilename, contentType: sourceContentType, signal });
     const workflow = buildReferenceImageWorkflow({
       checkpoint: capabilities.checkpoint,
       uploadedImage: uploaded.imageName,
@@ -397,7 +406,7 @@ export class ComfyUiClient {
       scheduler: capabilities.scheduler,
       filenamePrefix,
     });
-    const { queued, image, downloaded } = await this.runImageWorkflow(workflow);
+    const { queued, image, downloaded } = await this.runImageWorkflow(workflow, { signal });
     return {
       promptId: queued.promptId,
       checkpoint: capabilities.checkpoint,

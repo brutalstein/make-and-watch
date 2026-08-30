@@ -204,6 +204,8 @@ export class AnchorReferenceGenerationService {
       error: '',
       artifact: null,
     };
+    job.abortController = new AbortController();
+    job.settled = new Promise((resolveSettled) => { job.resolveSettled = resolveSettled; });
     this.jobs.set(job.id, job);
     this.pending.push(job.id);
     this.#prune();
@@ -219,6 +221,21 @@ export class AnchorReferenceGenerationService {
   get(jobId) {
     const job = this.jobs.get(jobId);
     if (!job) throw serviceError('not_found', 'reference generation job was not found');
+    return publicJob(job);
+  }
+
+  async cancel(jobId) {
+    const job = this.jobs.get(jobId);
+    if (!job) throw serviceError('not_found', 'reference generation job was not found');
+    if (job.status === 'queued') {
+      this.pending = this.pending.filter((id) => id !== job.id);
+      job.status = 'cancelled';
+      job.completedAt = new Date().toISOString();
+      job.resolveSettled();
+    } else if (job.status === 'running') {
+      job.abortController.abort();
+      await job.settled;
+    }
     return publicJob(job);
   }
 
@@ -246,17 +263,23 @@ export class AnchorReferenceGenerationService {
     job.status = 'running';
     job.startedAt = new Date().toISOString();
     try {
-      await this.scheduler.run({ kind: 'reference', id: job.id }, () => this.#run(job));
+      await this.scheduler.run(
+        { kind: 'reference', id: job.id },
+        () => this.#run(job),
+        { signal: job.abortController.signal },
+      );
+      job.abortController.signal.throwIfAborted();
       job.status = 'completed';
       job.progress = 100;
       job.completedAt = new Date().toISOString();
     } catch (error) {
-      job.status = 'failed';
-      job.error = (error instanceof Error ? error.message : String(error)).slice(0, 1800);
+      job.status = job.abortController.signal.aborted ? 'cancelled' : 'failed';
+      job.error = job.status === 'cancelled' ? '' : (error instanceof Error ? error.message : String(error)).slice(0, 1800);
       job.completedAt = new Date().toISOString();
       await this.#recordFailure(job).catch(() => undefined);
     } finally {
       this.activeJobId = null;
+      job.resolveSettled();
       this.#prune();
       void this.#pump();
     }
@@ -280,6 +303,8 @@ export class AnchorReferenceGenerationService {
   }
 
   async #run(job) {
+    const { signal } = job.abortController;
+    signal.throwIfAborted();
     let snapshot = await this.bridge.snapshot();
     let { target, source } = this.#assertInputsCurrent(snapshot, job, 'before generation started');
     const series = seriesForTarget(snapshot, target);
@@ -319,6 +344,7 @@ export class AnchorReferenceGenerationService {
         steps: job.stylePreset === 'anime-cinematic' ? 28 : 24,
         cfg: 6,
         filenamePrefix: `MakeWatch/reference/${safePart(target.id)}`,
+        signal,
       });
     } else {
       generated = await this.comfy.generateStoryboardFrame({
@@ -330,8 +356,10 @@ export class AnchorReferenceGenerationService {
         steps: 26,
         cfg: 6.5,
         filenamePrefix: `MakeWatch/reference/${safePart(target.id)}`,
+        signal,
       });
     }
+    signal.throwIfAborted();
     job.progress = 75;
 
     const bytes = Buffer.from(generated.bytes);
@@ -470,8 +498,8 @@ export class AnchorReferenceGenerationService {
       type: 'node.patch',
       id: existing.id,
       expectedRevision: existing.revision,
-      metadataUpdates: { status: 'failed', completedAt: job.completedAt ?? new Date().toISOString(), error: job.error },
-    }], { actor: 'system', source: 'reference-generation', reason: `record failed reference generation for ${job.targetId}` }, snapshot.projectRevision);
+      metadataUpdates: { status: job.status, completedAt: job.completedAt ?? new Date().toISOString(), error: job.error },
+    }], { actor: 'system', source: 'reference-generation', reason: `record terminal reference generation for ${job.targetId}` }, snapshot.projectRevision);
   }
 }
 

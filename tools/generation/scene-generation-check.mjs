@@ -140,6 +140,13 @@ try {
   assert.equal(second.artifacts[0].seed, first.artifacts[0].seed);
   assert.equal(comfy.inputs[1].seed, comfy.inputs[0].seed);
 
+  const queuedService = new SceneGenerationService({ bridge, comfy, artifactRoot: directory });
+  queuedService.activeJobId = 'fixture-held';
+  const queued = await queuedService.startScene('scene.001');
+  const cancelled = await queuedService.cancel(queued.id);
+  assert.equal(cancelled.status, 'cancelled');
+  assert.equal(queuedService.pending.includes(queued.id), false);
+
   bridge.state.nodes.push({ id: 'scene.empty', kind: 'scene', title: 'Empty', metadata: {}, revision: 1, approval: 'draft', locked: false, stale: false });
   await assert.rejects(() => service.startScene('scene.empty'), /no linked shot/);
   console.log('scene generation service check: passed');

@@ -114,6 +114,8 @@ export class TemporalShotGenerationService {
       generationNodeId: null,
       artifact: null,
     };
+    job.abortController = new AbortController();
+    job.settled = new Promise((resolveSettled) => { job.resolveSettled = resolveSettled; });
     this.jobs.set(job.id, job);
     this.pending.push(job.id);
     this.#prune();
@@ -132,6 +134,21 @@ export class TemporalShotGenerationService {
   get(jobId) {
     const job = this.jobs.get(jobId);
     if (!job) throw serviceError('not_found', 'temporal generation job was not found');
+    return publicJob(job);
+  }
+
+  async cancel(jobId) {
+    const job = this.jobs.get(jobId);
+    if (!job) throw serviceError('not_found', 'temporal generation job was not found');
+    if (job.status === 'queued') {
+      this.pending = this.pending.filter((id) => id !== job.id);
+      job.status = 'cancelled';
+      job.completedAt = new Date().toISOString();
+      job.resolveSettled();
+    } else if (job.status === 'running') {
+      if (!job.commitStarted) job.abortController.abort();
+      await job.settled;
+    }
     return publicJob(job);
   }
 
@@ -156,21 +173,25 @@ export class TemporalShotGenerationService {
     job.progress = 5;
     try {
       await this.#run(job);
+      job.abortController.signal.throwIfAborted();
       job.status = 'completed';
       job.progress = 100;
       job.completedAt = new Date().toISOString();
     } catch (error) {
-      job.status = 'failed';
-      job.error = (error instanceof Error ? error.message : String(error)).slice(0, 1600);
+      job.status = job.abortController.signal.aborted ? 'cancelled' : 'failed';
+      job.error = job.status === 'cancelled' ? '' : (error instanceof Error ? error.message : String(error)).slice(0, 1600);
       job.completedAt = new Date().toISOString();
     } finally {
       this.activeJobId = null;
+      job.resolveSettled();
       this.#prune();
       void this.#pump();
     }
   }
 
   async #run(job) {
+    const { signal } = job.abortController;
+    signal.throwIfAborted();
     const before = await this.bridge.snapshot();
     const hardware = await this.hardware();
     const requestBuilder = this.providerRequestBuilders[job.providerId];
@@ -187,7 +208,7 @@ export class TemporalShotGenerationService {
 
     let providerInputAssetIds = [];
     if (requestBuilder) {
-      const built = await requestBuilder({ snapshot: before, request, job: publicJob(job), hardware });
+      const built = await requestBuilder({ snapshot: before, request, job: publicJob(job), hardware, signal });
       if (!built?.request || typeof built.request !== 'object' || !Array.isArray(built.inputAssetIds)) {
         throw serviceError('provider_error', `temporal request builder for ${job.providerId} returned an invalid result`);
       }
@@ -198,8 +219,10 @@ export class TemporalShotGenerationService {
     job.progress = 10;
     const result = await this.scheduler.run(
       { kind: 'temporal-video', id: job.id },
-      () => this.registry.generate(job.providerId, request, { hardware }),
+      () => this.registry.generate(job.providerId, request, { hardware, signal }),
+      { signal },
     );
+    signal.throwIfAborted();
     job.progress = 85;
 
     const fresh = await this.bridge.snapshot();
@@ -297,6 +320,7 @@ export class TemporalShotGenerationService {
     commands.push({ type: 'node.markFresh', id: generationNodeId });
     if (!existingAsset) commands.push({ type: 'node.markFresh', id: assetNodeId });
 
+    job.commitStarted = true;
     await this.bridge.apply(commands, {
       actor: 'system',
       source: 'temporal-shot-generation',

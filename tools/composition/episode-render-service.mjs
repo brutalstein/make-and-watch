@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { copyFile, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { cpus } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
@@ -35,12 +35,25 @@ async function exists(path) {
   try { return (await stat(path)).isFile(); } catch { return false; }
 }
 
-function runProcess(command, args, { cwd, timeoutMs = PROCESS_TIMEOUT_MS } = {}) {
+function terminateTree(child) {
+  if (!child?.pid) return;
+  if (process.platform === 'win32') {
+    spawnSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+    return;
+  }
+  try { process.kill(-child.pid, 'SIGKILL'); } catch {
+    try { child.kill('SIGKILL'); } catch { /* already gone */ }
+  }
+}
+
+function runProcess(command, args, { cwd, timeoutMs = PROCESS_TIMEOUT_MS, signal } = {}) {
+  signal?.throwIfAborted();
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, {
       cwd,
       stdio: ['ignore', 'ignore', 'pipe'],
       windowsHide: true,
+      detached: process.platform !== 'win32',
       env: { ...process.env, AV_LOG_FORCE_NOCOLOR: '1' },
     });
     let stderr = '';
@@ -48,24 +61,32 @@ function runProcess(command, args, { cwd, timeoutMs = PROCESS_TIMEOUT_MS } = {})
       stderr = `${stderr}${chunk.toString('utf8')}`.slice(-12_000);
     });
     let settled = false;
+    const aborted = () => terminateTree(child);
+    signal?.addEventListener('abort', aborted, { once: true });
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', aborted);
+    };
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      child.kill('SIGTERM');
+      terminateTree(child);
+      cleanup();
       reject(new Error(`${basename(command)} exceeded bounded render runtime`));
     }, timeoutMs);
     timer.unref();
     child.once('error', (error) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
-      reject(error);
+      cleanup();
+      reject(signal?.aborted ? renderError('cancelled', 'FFmpeg render was cancelled') : error);
     });
     child.once('exit', (code) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
-      if (code === 0) resolvePromise();
+      cleanup();
+      if (signal?.aborted) reject(renderError('cancelled', 'FFmpeg render was cancelled'));
+      else if (code === 0) resolvePromise();
       else reject(new Error(`${basename(command)} exited with code ${code ?? 'unknown'}${stderr ? `: ${stderr}` : ''}`));
     });
   });
@@ -191,11 +212,19 @@ export function buildTransitionGraph(plans) {
 }
 
 export class EpisodeRenderService {
-  constructor({ bridge, projectRoot, artifactRoot, cacheRoot }) {
+  constructor({
+    bridge, projectRoot, artifactRoot, cacheRoot,
+    compositionCompiler = compileEpisodeComposition,
+    ffmpegResolver = ensureFfmpegRuntime,
+    processRunner = runProcess,
+  }) {
     this.bridge = bridge;
     this.projectRoot = resolve(projectRoot);
     this.artifactRoot = resolve(artifactRoot);
     this.cacheRoot = resolve(cacheRoot);
+    this.compositionCompiler = compositionCompiler;
+    this.ffmpegResolver = ffmpegResolver;
+    this.processRunner = processRunner;
     this.jobs = new Map();
     this.pending = [];
     this.activeJobId = null;
@@ -203,7 +232,7 @@ export class EpisodeRenderService {
 
   async status(episodeId) {
     const snapshot = await this.bridge.snapshot();
-    return compileEpisodeComposition(snapshot, episodeId);
+    return this.compositionCompiler(snapshot, episodeId);
   }
 
   async startEpisode(episodeId) {
@@ -229,6 +258,8 @@ export class EpisodeRenderService {
       error: '',
       artifact: null,
     };
+    job.abortController = new AbortController();
+    job.settled = new Promise((resolveSettled) => { job.resolveSettled = resolveSettled; });
     this.jobs.set(job.id, job);
     this.pending.push(job.id);
     this.#prune();
@@ -244,6 +275,21 @@ export class EpisodeRenderService {
   get(jobId) {
     const job = this.jobs.get(jobId);
     if (!job) throw renderError('not_found', 'episode render job was not found');
+    return publicJob(job);
+  }
+
+  async cancel(jobId) {
+    const job = this.jobs.get(jobId);
+    if (!job) throw renderError('not_found', 'episode render job was not found');
+    if (job.status === 'queued') {
+      this.pending = this.pending.filter((id) => id !== job.id);
+      job.status = 'cancelled';
+      job.completedAt = new Date().toISOString();
+      job.resolveSettled();
+    } else if (job.status === 'running') {
+      if (!job.commitStarted) job.abortController.abort();
+      await job.settled;
+    }
     return publicJob(job);
   }
 
@@ -272,29 +318,37 @@ export class EpisodeRenderService {
     job.startedAt = new Date().toISOString();
     try {
       await this.#render(job);
+      job.abortController.signal.throwIfAborted();
       job.status = 'completed';
       job.progress = 100;
       job.completedAt = new Date().toISOString();
     } catch (error) {
-      job.status = 'failed';
-      job.error = (error instanceof Error ? error.message : String(error)).slice(0, 3000);
+      job.status = job.abortController.signal.aborted ? 'cancelled' : 'failed';
+      job.error = job.status === 'cancelled' ? '' : (error instanceof Error ? error.message : String(error)).slice(0, 3000);
       job.completedAt = new Date().toISOString();
+      if (job.status === 'cancelled' && job.jobDirectory) {
+        await rm(job.jobDirectory, { recursive: true, force: true }).catch(() => undefined);
+      }
     } finally {
       job.currentSceneId = null;
       this.activeJobId = null;
+      job.resolveSettled();
       this.#prune();
       void this.#pump();
     }
   }
 
   async #render(job) {
-    const runtime = await ensureFfmpegRuntime();
+    const { signal } = job.abortController;
+    signal.throwIfAborted();
+    const runtime = await this.ffmpegResolver();
     const ffmpeg = runtime.ffmpeg;
     const snapshot = await this.bridge.snapshot();
-    const manifest = compileEpisodeComposition(snapshot, job.episodeId);
+    const manifest = this.compositionCompiler(snapshot, job.episodeId);
     if (!manifest.ready) throw new Error(`episode changed after queueing and is no longer render-ready: ${manifest.issues.slice(0, 5).join(' | ')}`);
 
     const jobDirectory = join(this.artifactRoot, safeFilePart(job.episodeId), safeFilePart(job.id));
+    job.jobDirectory = jobDirectory;
     const workDirectory = join(jobDirectory, 'work');
     const sceneCacheDirectory = join(this.cacheRoot, 'scenes');
     await mkdir(workDirectory, { recursive: true });
@@ -303,6 +357,7 @@ export class EpisodeRenderService {
     const sceneMasters = [];
     for (let index = 0; index < manifest.scenes.length; index += 1) {
       const scene = manifest.scenes[index];
+      signal.throwIfAborted();
       job.currentSceneId = scene.id;
       job.progress = Math.floor((index / Math.max(1, manifest.scenes.length)) * 90);
       const cacheKey = sceneCacheKey(manifest, scene);
@@ -323,13 +378,14 @@ export class EpisodeRenderService {
     const concatPath = join(workDirectory, 'episode-scenes.ffconcat');
     await writeFile(concatPath, ['ffconcat version 1.0', ...sceneMasters.map((path) => concatLine(path))].join('\n'), 'utf8');
     const outputPath = join(jobDirectory, `${safeFilePart(job.episodeId)}-preview.mp4`);
-    await runProcess(ffmpeg, [
+    await this.#runProcess(ffmpeg, [
       '-y', '-hide_banner', '-loglevel', 'error',
       '-f', 'concat', '-safe', '0', '-i', concatPath,
       '-map', '0:v:0', '-map', '0:a:0',
       '-c', 'copy', '-movflags', '+faststart',
       outputPath,
     ]);
+    signal.throwIfAborted();
     job.progress = 96;
 
     const bytes = await readFile(outputPath);
@@ -352,8 +408,14 @@ export class EpisodeRenderService {
       renderer: 'ffmpeg-temporal-video-v3',
       cachedScenes: job.cachedScenes,
     };
+    job.commitStarted = true;
     await this.#registerEpisodeArtifact(generationNodeId, assetNodeId, job, manifest);
     await rm(workDirectory, { recursive: true, force: true }).catch(() => undefined);
+  }
+
+  #runProcess(command, args, options = {}) {
+    const signal = this.jobs.get(this.activeJobId)?.abortController.signal;
+    return this.processRunner(command, args, { ...options, signal });
   }
 
   async #renderScene(ffmpeg, manifest, scene, workDirectory, outputPath) {
@@ -376,7 +438,7 @@ export class EpisodeRenderService {
     const visual = join(workDirectory, 'visual.mp4');
     if (transitions) {
       const graph = buildTransitionGraph(transitions);
-      await runProcess(ffmpeg, [
+      await this.#runProcess(ffmpeg, [
         '-y', '-hide_banner', '-loglevel', 'error',
         ...shotSegments.flatMap((path) => ['-i', path]),
         '-filter_complex', graph.filter,
@@ -387,7 +449,7 @@ export class EpisodeRenderService {
     } else {
       const shotList = join(workDirectory, 'shots.ffconcat');
       await writeFile(shotList, ['ffconcat version 1.0', ...shotSegments.map((path) => concatLine(path))].join('\n'), 'utf8');
-      await runProcess(ffmpeg, [
+      await this.#runProcess(ffmpeg, [
         '-y', '-hide_banner', '-loglevel', 'error',
         '-f', 'concat', '-safe', '0', '-i', shotList,
         '-c', 'copy', visual,
@@ -398,7 +460,7 @@ export class EpisodeRenderService {
     await this.#renderSceneAudio(ffmpeg, scene, audio);
     const temporaryOutput = `${outputPath}.partial.mp4`;
     await mkdir(dirname(outputPath), { recursive: true });
-    await runProcess(ffmpeg, [
+    await this.#runProcess(ffmpeg, [
       '-y', '-hide_banner', '-loglevel', 'error',
       '-i', visual, '-i', audio,
       '-map', '0:v:0', '-map', '1:a:0',
@@ -426,7 +488,7 @@ export class EpisodeRenderService {
     const stretch = duration / authoredDuration;
     const timing = Math.abs(stretch - 1) > 0.000001 ? `setpts=${stretch.toFixed(8)}*PTS,` : 'setpts=PTS-STARTPTS,';
     const filter = `${timing}${scaleFilter(manifest.profile)},fps=${fps},trim=duration=${duration.toFixed(6)},setpts=PTS-STARTPTS,format=yuv420p`;
-    await runProcess(ffmpeg, [
+    await this.#runProcess(ffmpeg, [
       '-y', '-hide_banner', '-loglevel', 'error', '-i', input,
       '-vf', filter,
       '-an', '-c:v', 'libx264', '-preset', VIDEO_PRESET, '-crf', VIDEO_CRF,
@@ -438,7 +500,7 @@ export class EpisodeRenderService {
     const duration = Math.max(0.04, Number(scene.durationSeconds));
     const cues = scene.audio.filter((cue) => cue.media?.mediaType === 'audio');
     if (cues.length === 0) {
-      await runProcess(ffmpeg, [
+      await this.#runProcess(ffmpeg, [
         '-y', '-hide_banner', '-loglevel', 'error',
         '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000',
         '-t', duration.toFixed(6), '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', output,
@@ -464,7 +526,7 @@ export class EpisodeRenderService {
       '-map', '[aout]', '-c:a', 'aac', '-b:a', '192k', '-ac', '2', '-ar', '48000',
       output,
     );
-    await runProcess(ffmpeg, args);
+    await this.#runProcess(ffmpeg, args);
   }
 
   async #registerEpisodeArtifact(generationNodeId, assetNodeId, job, manifest) {

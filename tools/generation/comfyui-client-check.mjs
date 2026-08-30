@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 
-import { buildReferenceImageWorkflow, buildStoryboardWorkflow } from './comfyui-client.mjs';
+import { buildReferenceImageWorkflow, buildStoryboardWorkflow, ComfyUiClient } from './comfyui-client.mjs';
 
 const workflow = buildStoryboardWorkflow({
   checkpoint: 'model.safetensors',
@@ -51,5 +51,12 @@ assert.equal(reference['6'].inputs.seed, 1337);
 assert.deepEqual(reference['7'].inputs.samples, ['6', 0]);
 assert.deepEqual(reference['8'].inputs.images, ['7', 0]);
 assert.equal(reference['8'].inputs.filename_prefix, 'MakeWatch/reference/mira');
+
+const cancellable = new ComfyUiClient({ timeoutMs: 10_000, pollMs: 100 });
+cancellable.json = async () => ({});
+const controller = new AbortController();
+const waiting = cancellable.waitForHistory('prompt-1', { signal: controller.signal });
+controller.abort();
+await assert.rejects(waiting, (error) => error?.name === 'AbortError');
 
 console.log('comfyui client contract check: passed');

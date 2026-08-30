@@ -28,6 +28,8 @@ Assert-NativeSuccess "pnpm install"
 Step 3 7 "Local bridge syntax"
 pnpm bridge:check
 Assert-NativeSuccess "pnpm bridge:check"
+pnpm runtime:cancel-check
+Assert-NativeSuccess "pnpm runtime:cancel-check"
 
 Step 4 7 "Strict TypeScript contracts"
 pnpm typecheck

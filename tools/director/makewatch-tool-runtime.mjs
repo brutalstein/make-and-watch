@@ -27,6 +27,7 @@ function createTemporalRuntime(client = new GenerationGatewayClient()) {
     startTemporalShotGeneration: ({ shotId, providerId }) => client.startTemporalShot(shotId, providerId),
     temporalJob: ({ jobId }) => client.temporalJob(jobId),
     temporalJobs: ({ limit }) => client.temporalJobs(limit),
+    cancelMediaJob: ({ kind, jobId }) => client.cancelMediaJob(kind, jobId),
   };
 }
 
