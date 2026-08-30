@@ -39,8 +39,6 @@ Before the current reference audit the local media stack had already progressed 
 - deterministic FFmpeg preview/render assembly with camera motion, transitions, timed audio and Scene cache behavior;
 - native Generation/Asset provenance for completed outputs.
 
-These paths remain active; current work extends rather than replaces them.
-
 ### Release-blocking bugs found during this audit
 
 1. **Canonical reference generation service was dead in the product path.**
@@ -48,25 +46,18 @@ These paths remain active; current work extends rather than replaces them.
    - Media gateway did not instantiate it or expose HTTP routes.
    - Shared gateway client did not expose it.
    - Codex dynamic tools could not invoke it.
-   - Result: CI could be green while the intended user feature was unreachable.
 
 2. **Stale canonical-reference race.**
    - Target/source revisions were checked before inference but not again after the expensive ComfyUI call.
-   - A Character/Location edited during generation could receive output produced from the older revision.
 
 3. **Failed job could expose an artifact.**
    - Artifact metadata was assigned before final native canonical registration.
-   - A later registration failure could leave a failed job with a publicly retrievable artifact.
 
 4. **Content-addressed artifact reuse lacked full path verification.**
-   - A pre-existing hash path was not required to be a regular file whose bytes re-hash to the expected SHA-256.
 
 5. **Workflow `Add Scene` dead action.**
-   - In a non-empty workflow with no Episode, pane context menu displayed `Add Scene` but pressing it raised `Create an Episode before adding a Scene.`
-   - This violated the product UX rule that visible actions must be actionable or explicitly disabled for a real state reason.
 
 6. **Documentation drift.**
-   - Compact Director/provider/media docs still described older read-only/future-worker assumptions and could mislead future agents even though runtime capabilities had advanced.
 
 ### Fixes committed to `main`
 
@@ -91,70 +82,164 @@ AnchorReferenceGenerationService
         +--> Character/Location -> generated Asset dependency
 ```
 
-New media API/tool surface:
+Reference safety was hardened with revision rechecks, stale rejection, non-public failed artifacts, content re-hashing and immutable sources.
 
-- `GET /api/reference/provider`
-- `POST /api/reference/generate`
-- `GET /api/reference/jobs`
-- `GET /api/reference/jobs/:jobId`
-- `GET /api/reference/artifacts/:jobId`
-- `makewatch_media.reference_provider`
-- `makewatch_media.reference_generate`
-- `makewatch_media.reference_job`
-- `makewatch_media.reference_jobs`
+Workflow `Add Scene` became self-sufficient and mutation controls were aligned with busy/lock state.
 
-Reference styles currently exposed:
+### Verification
 
-- `live-action-cinematic`
-- `anime-cinematic`
-- `illustration`
-- `stylized-3d`
+Release checkpoint `596f6c7e4ec59a3705219368797b6563e66e73e7` passed CI run #771 on Studio/Director, TypeScript/build, Linux native and Windows native.
 
-Reference safety was hardened:
+---
 
-- target/source revisions are rechecked before inference, after inference and before canonical registration;
-- stale jobs fail and do not attach output;
-- failed/running jobs do not publish artifacts;
-- artifact is assigned to public job state only after native registration succeeds;
-- existing content-addressed file paths are re-hashed before reuse;
-- non-file hash-path collisions fail with integrity error;
-- source reference remains immutable.
+## 2026-08-30 04:26 TRT — Animated-still retirement + temporal-only anime direction
 
-Workflow UX was hardened:
+### Product decision
 
-- `Add Scene` now creates missing Series/Episode scope and the new Scene in one native transaction when necessary;
-- clean projects keep the dedicated Quick Start Episode path;
-- Episode/Scene lock state disables dependent actions;
-- mutation actions consistently respect the shared busy state.
+The animated-still/slideshow path is permanently retired as final Shot media.
 
-Tests added/expanded:
+Make & Watch must not complete a visual Shot by:
 
-- reference media dynamic tool presence and input bounds;
-- runtime forwarding for reference provider/generate/job operations;
-- stale Character mutation during inference must fail;
-- stale output must not add a new canonical Asset dependency;
-- failed stale job must not expose an artifact;
-- previous temporal media tool coverage remains in the same namespace.
+- looping one still image;
+- applying FFmpeg zoom/pan/push/orbit to a still;
+- creating a Ken Burns-style clip;
+- concatenating independently generated still frames as if they were coherent animation;
+- freezing/cloning the final frame of a short video to hide missing duration.
 
-### Documentation synchronized
+The target is real temporal anime video.
 
-Updated on this checkpoint:
+### New final Shot contract
 
-- `AI_DIRECTOR_CONTEXT.md`
-- `DIRECTOR_PROVIDERS.md`
-- `MEDIA_PIPELINE.md`
-- this `DEVELOPMENT_LOG.md`
+Only these final strategies remain active:
 
-They now describe the same authority/model/multimodal/reference/temporal behavior as the runtime.
+```text
+I2V
+FLF2V
+VIDEO
+```
 
-### Verification status at time of writing
+New Shots default to `I2V`.
 
-All changes are being committed directly to `main` per release instruction. Final release status is **not** declared by this log entry itself. The exact final `main` SHA must pass the repository CI after the last documentation/code commit:
+Scene policy is temporal-only:
 
-- Studio `Bridge and Director checks`
-- Studio TypeScript typecheck
-- Studio production build
-- Native core Linux configure/build/test
-- Native core Windows configure/build/test
+- `i2v-first`;
+- `keyframe-controlled`;
+- `provider-native-video`.
 
-Any later fix generated by those checks must receive a new log entry or an amendment below before release is called green.
+T2I/img2img remain valid **preparation** tools for canonical references, hero/start frames and FLF2V end frames. They do not count as final Shot media.
+
+### Removed runtime path
+
+Deleted:
+
+- `tools/composition/camera-motion.mjs`;
+- `tools/composition/motion-check.mjs`;
+- renderer branch that accepted `mediaType=image`;
+- image loop/zoompan final Shot rendering;
+- video `tpad=stop_mode=clone` freeze-tail padding;
+- composition fallback from I2V/VIDEO to image Assets.
+
+The root quality gate no longer protects the deleted animated-still implementation and instead runs temporal transition/cache checks.
+
+### Composition is now fail-closed
+
+Every renderable Shot must have:
+
+1. `I2V`, `FLF2V`, or `VIDEO` strategy;
+2. ready video Generation;
+3. ready non-stale video Asset;
+4. measured positive duration metadata;
+5. generated duration sufficient for the authored Shot duration within one-frame tolerance.
+
+A hero image alone makes the Shot **not ready**.
+
+If temporal output is too short, Make & Watch requires regeneration rather than freezing the tail.
+
+### Renderer behavior
+
+Episode rendering consumes real video Shot Assets only.
+
+It still owns deterministic editorial tasks:
+
+- resolution/FPS normalization;
+- cuts/fades/dissolves;
+- Scene cache;
+- timed audio mixing;
+- Episode concatenation;
+- final MP4 hashing/provenance.
+
+When a dissolve needs a small overlap extension, the renderer uses a bounded slight PTS time-stretch instead of a frozen-frame clone.
+
+### Active schema cleanup
+
+The temporal capability overlay is now authoritative not only for fields but also for current Shot/Scene purpose and primary output text. Studio and Codex therefore see a temporal-video-only production model rather than the historical “clip or animated still” wording.
+
+The stable base capability table may preserve legacy project-reading history internally, but its old strategy/output semantics are overridden by the active temporal schema and cannot satisfy runtime readiness.
+
+### Anime production design
+
+Created `project_brain/ANIME_TEMPORAL_PIPELINE.md` as the quality roadmap.
+
+It records technical/theoretical direction for:
+
+- model-sheet style Character reference packages;
+- recurring Location reference packages;
+- Series style bible and color script;
+- short editorial Shot grammar;
+- hero frame as key drawing;
+- I2V as default and FLF2V for controlled pose-to-pose endpoints;
+- chronological temporal prompts;
+- primary/secondary/follow-through motion hierarchy;
+- segment tail handoff and future continuity QC;
+- line/palette/identity/geometry drift checks;
+- bounded candidate generation and acceptance;
+- anime-specific deterministic compositing;
+- restrained dialogue motion versus action/sakuga direction;
+- future audio-driven dialogue/lip behavior;
+- future pose/motion-reference providers;
+- 8 GB-class sequential GPU choreography;
+- cross-Episode accepted-reference promotion;
+- explicit rejection of fake still-video fallbacks.
+
+Official future-provider research references are recorded separately from current implementation so documentation does not imply unsupported runtimes already work.
+
+### Director behavior
+
+`AI_DIRECTOR_CONTEXT.md` now makes temporal completion explicit:
+
+```text
+prepare references
+ -> prepare hero/end frames
+ -> temporal plan
+ -> temporal video job
+ -> poll + verify video Asset
+ -> Episode composition
+ -> repair failures
+ -> Episode render
+```
+
+The Director must never claim visual completion merely because Scene hero images were produced.
+
+### Tests changed
+
+CI now asserts:
+
+- Shot strategies are exactly I2V/FLF2V/VIDEO;
+- default new Shot strategy is I2V;
+- legacy STILL_MOTION/T2I/COMPOSITE cannot enter temporal execution;
+- still-only Shot data cannot satisfy Episode readiness;
+- missing video blocks readiness;
+- short video blocks readiness rather than being freeze-padded;
+- transition/cache logic is tested using real video media semantics.
+
+### Verification status
+
+This entry records the migration before final release verification. The exact final `main` SHA after all code/documentation changes must pass:
+
+- Bridge and Director checks;
+- Studio TypeScript typecheck;
+- Studio production build;
+- Native Linux configure/build/test;
+- Native Windows configure/build/test.
+
+Do not call this temporal-only checkpoint released until that exact-head CI is green.
