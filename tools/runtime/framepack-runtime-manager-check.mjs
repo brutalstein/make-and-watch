@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import {
   discoverFramePackInstallations,
   framePackHardwareAssessment,
+  framePackRuntimeConstants,
   framePackRuntimeStatus,
 } from './framepack-runtime-manager.mjs';
 
@@ -19,6 +20,7 @@ try {
   const installations = await discoverFramePackInstallations();
   assert.equal(installations[0].root, root);
   assert.equal(installations[0].kind, 'source');
+  assert.equal(installations[0].modelCache.likelyReady, false);
 
   const eightGb = framePackHardwareAssessment({ gpuName: 'NVIDIA GeForce RTX 5070 Laptop GPU', totalVramMb: 8192 });
   assert.equal(eightGb.readyForAttempt, true);
@@ -29,11 +31,20 @@ try {
   const insufficient = framePackHardwareAssessment({ gpuName: 'NVIDIA RTX', totalVramMb: 4096 });
   assert.equal(insufficient.readyForAttempt, false);
 
-  const status = await framePackRuntimeStatus({ gpuName: 'NVIDIA RTX 5070', totalVramMb: 8192 });
+  let status = await framePackRuntimeStatus({ gpuName: 'NVIDIA RTX 5070', totalVramMb: 8192 });
   assert.equal(status.installed, true);
+  assert.equal(status.modelsReady, false);
+  assert.match(status.detail, /will not trigger.*30\+ GB download implicitly/i);
   assert.equal(status.automaticBootstrap, false);
   assert.equal(status.bootstrapPolicy, 'explicit-only');
   assert.ok(status.modelDownloadWarningGb >= 30);
+
+  for (const repo of framePackRuntimeConstants.requiredHfCacheRepos) {
+    await mkdir(join(root, 'hf_download', 'hub', repo), { recursive: true });
+  }
+  status = await framePackRuntimeStatus({ gpuName: 'NVIDIA RTX 5070', totalVramMb: 8192 });
+  assert.equal(status.modelsReady, true);
+  assert.match(status.detail, /offline execution can be attempted/i);
 } finally {
   if (priorHome === undefined) delete process.env.MAKEWATCH_FRAMEPACK_HOME;
   else process.env.MAKEWATCH_FRAMEPACK_HOME = priorHome;
