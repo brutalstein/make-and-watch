@@ -34,6 +34,8 @@ pnpm anime:semantic-check
 Assert-NativeSuccess "pnpm anime:semantic-check"
 pnpm anime:m3-check
 Assert-NativeSuccess "pnpm anime:m3-check"
+pnpm anime:m5-check
+Assert-NativeSuccess "pnpm anime:m5-check"
 
 Step 4 7 "Strict TypeScript contracts"
 pnpm typecheck
