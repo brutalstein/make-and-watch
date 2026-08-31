@@ -247,6 +247,7 @@ export async function planShotAnim(snapshot, shotId, { projectRoot, readFile = r
       const location = locations.find(({ id: locationId }) => locationId === environment.locationId);
       if (!location) issues.push({ code: 'environment_location_mismatch', message: `EnvironmentPackage ${environmentAsset.id} does not belong to the Shot Location` });
       else if (location.revision !== environment.locationRevision) issues.push({ code: 'environment_revision_mismatch', message: `EnvironmentPackage ${environmentAsset.id} targets Location revision ${environment.locationRevision}, current is ${location.revision}` });
+      else if (!dependsOn(index, location.id, environmentAsset.id)) issues.push({ code: 'environment_not_promoted', message: `EnvironmentPackage ${environmentAsset.id} is not a promoted dependency of ${location.id}; run location_package_validate({ promote: true })` });
       await Promise.all(environment.plates.map((plate) => checkReferencedImage(index, projectRoot, readFile, plate, issues, `Environment plate ${plate.id}`)));
     } catch (error) {
       issues.push(issueFrom(error, 'invalid_environment_package', `EnvironmentPackage ${environmentAsset.id}`));

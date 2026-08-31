@@ -148,6 +148,7 @@ async function fixture({ mutateRig, alignmentAudioSha, shotMetadata = {} } = {})
     { dependent: 'shot.1', dependency: 'location.cafe' },
     { dependent: 'shot.1', dependency: 'audio.dialogue.aya.001' },
     { dependent: 'character.aya', dependency: 'asset.rig' },
+    { dependent: 'location.cafe', dependency: 'asset.environment' },
   ];
   return { root, snapshot: { schemaVersion: 1, projectRevision: 42, nodes, dependencies } };
 }
@@ -186,6 +187,11 @@ try {
   const draftPlan = await planShotAnim(draftRig, 'shot.1', { projectRoot: readyFixture.root });
   assert.equal(draftPlan.ready, false);
   assert.ok(draftPlan.issues.some(({ code }) => code === 'rig_not_promoted'));
+
+  const draftEnvironment = structuredClone(readyFixture.snapshot);
+  draftEnvironment.dependencies = draftEnvironment.dependencies.filter((edge) => !(edge.dependent === 'location.cafe' && edge.dependency === 'asset.environment'));
+  const draftEnvPlan = await planShotAnim(draftEnvironment, 'shot.1', { projectRoot: readyFixture.root });
+  assert.ok(draftEnvPlan.issues.some(({ code }) => code === 'environment_not_promoted'));
 } finally {
   await rm(readyFixture.root, { recursive: true, force: true });
 }
