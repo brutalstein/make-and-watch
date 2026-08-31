@@ -90,6 +90,15 @@ const locationPackageValidateInput = Object.freeze({
   required: ['packageAssetId', 'expectedLocationRevision'],
   properties: { packageAssetId: idProp(), expectedLocationRevision: revisionProp, promote: { type: 'boolean' } },
 });
+const motionRetargetPlanInput = Object.freeze({
+  type: 'object', additionalProperties: false,
+  required: ['characterId', 'clipAssetId'],
+  properties: {
+    characterId: idProp(),
+    clipAssetId: idProp(),
+    expectedCharacterRevision: revisionProp,
+  },
+});
 
 export function animeProductionDynamicToolSpecs() {
   return [{
@@ -147,6 +156,18 @@ export function animeProductionDynamicToolSpecs() {
         'location_package_validate',
         'Run the deterministic registration/depth/parallax QC worker on a draft EnvironmentPackage, persist its report and contact sheet, and — only with promote:true and a matching expectedLocationRevision — approve it and link it to the Location.',
         locationPackageValidateInput,
+        true,
+      ),
+      functionTool(
+        'motion_clip_list',
+        'List the hand-authored native-anime motion library clips and any makewatch.motionClip/1 Assets already registered in the project graph. Writes no project state.',
+        { type: 'object', additionalProperties: false, properties: {} },
+        true,
+      ),
+      functionTool(
+        'motion_retarget_plan',
+        'Dry-run retargeting one registered MotionClip Asset onto a Character\'s promoted limb CharacterRig: reports covered/missing bones, rig-domain pose escalations and whether a corrective redraw is required. Writes no project state.',
+        motionRetargetPlanInput,
         true,
       ),
     ],
@@ -266,6 +287,19 @@ export async function handleAnimeProductionToolCall(call, runtime) {
         packageAssetId: graphId(input.packageAssetId, 'packageAssetId'),
         expectedLocationRevision: revisionNumber(input.expectedLocationRevision, 'expectedLocationRevision'),
         promote: input.promote === true,
+      });
+      break;
+    case 'motion_clip_list':
+      result = await runtime.motionClipList();
+      break;
+    case 'motion_retarget_plan':
+      result = await runtime.motionRetargetPlan({
+        characterId: graphId(input.characterId, 'characterId'),
+        clipAssetId: graphId(input.clipAssetId, 'clipAssetId'),
+        expectedCharacterRevision:
+          input.expectedCharacterRevision === undefined || input.expectedCharacterRevision === null
+            ? undefined
+            : revisionNumber(input.expectedCharacterRevision, 'expectedCharacterRevision'),
       });
       break;
     default:

@@ -150,10 +150,10 @@
 
 **Files:** Modify `tools/director/anime-production-tools.mjs`, `-check.mjs`, `tools/generation/gateway-api-client.mjs`, `tools/generation/server.mjs`.
 
-- [ ] **Step 1: Checks** — `motion_clip_list`, `motion_retarget_plan` schemas (`additionalProperties:false`, retarget requires `characterId` + `clipAssetId`), dispatch, gateway pathnames.
-- [ ] **Step 2: Implement** deferred tools + runtime methods + client methods + bounded `GET /anime/motion-clips`, `GET /anime/characters/:id/motion-plan` routes.
-- [ ] **Step 3: Verify** — `node tools/director/anime-production-tools-check.mjs && node tools/director/makewatch-tool-runtime-check.mjs`.
-- [ ] **Step 4: Commit** `feat(director): expose motion retargeting tools`.
+- [x] **Step 1: Checks** — `motion_clip_list` / `motion_retarget_plan` schemas (`additionalProperties:false`, retarget requires `characterId` + `clipAssetId`), both `deferLoading`, dispatch (incl. optional `expectedCharacterRevision` and a `clipAssetId is required` reject), `CaptureClient` pathnames.
+- [x] **Step 2: Implement** deferred tools + `createAnimeRuntime` methods + `GenerationGatewayClient.motionClipList`/`motionRetargetPlan` + server routes `GET /api/anime/motion-clips` → `MotionClipService.list()` and `GET /api/anime/characters/:id/motion-plan?clipAssetId=…` → `MotionClipService.retargetPlan()` (server instantiates `MotionClipService`). Deviation: the `motion-plan` route requires `clipAssetId` (400 otherwise) — it is the retarget dry-run only; `register`/`validate`/per-character overview stay unexposed (write paths / not needed for the Director read surface).
+- [x] **Step 3: Verify** — `anime-production-tools-check` + `makewatch-tool-runtime-check` + `critical-path` + `codex-app-server` + `codex-exec-runtime` + `makewatch-tools-check` green; `node --check` on all four modified modules.
+- [x] **Step 4: Commit** `feat(director): expose motion retargeting tools`.
 
 ---
 

@@ -129,6 +129,14 @@ export class GenerationGatewayClient {
       body: JSON.stringify({ expectedLocationRevision, promote: promote === true }),
     });
   }
+  motionClipList() { return this.request('/anime/motion-clips'); }
+  motionRetargetPlan({ characterId, clipAssetId, expectedCharacterRevision } = {}) {
+    const params = new URLSearchParams({ clipAssetId: String(clipAssetId ?? '') });
+    if (Number.isInteger(expectedCharacterRevision)) {
+      params.set('expectedCharacterRevision', String(expectedCharacterRevision));
+    }
+    return this.request(`/anime/characters/${encodeURIComponent(characterId)}/motion-plan?${params.toString()}`);
+  }
 
   startScene(sceneId) { return this.request('/scenes', { method: 'POST', body: JSON.stringify({ sceneId }) }); }
   startAudio(audioId) { return this.request('/audio', { method: 'POST', body: JSON.stringify({ audioId }) }); }

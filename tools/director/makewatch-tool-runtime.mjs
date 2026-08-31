@@ -42,6 +42,8 @@ function createAnimeRuntime(client) {
     locationPackagePlan: (input) => client.locationPackagePlan(input),
     locationPackageBuild: (input) => client.locationPackageBuild(input),
     locationPackageValidate: (input) => client.locationPackageValidate(input),
+    motionClipList: () => client.motionClipList(),
+    motionRetargetPlan: (input) => client.motionRetargetPlan(input),
   };
 }
 

@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 
 import { CharacterRigService } from '../anime/character-rig-service.mjs';
 import { EnvironmentPackageService } from '../anime/environment-package-service.mjs';
+import { MotionClipService } from '../anime/motion-clip-service.mjs';
 import { NativeAnimeTemporalProvider } from '../anime/native-anime-provider.mjs';
 import { buildShotAnimRequest } from '../anime/shot-anim-compiler.mjs';
 import { ShotAnimCompilationService } from '../anime/shot-anim-compilation-service.mjs';
@@ -94,6 +95,7 @@ const shotAnimService = new ShotAnimCompilationService({ projectRoot: root, brid
 const semanticPackageWorkerPath = resolve(root, 'tools/anime/semantic-package-worker.py');
 const characterRigService = new CharacterRigService({ projectRoot: root, bridge, workerPath: semanticPackageWorkerPath });
 const environmentPackageService = new EnvironmentPackageService({ projectRoot: root, bridge, workerPath: semanticPackageWorkerPath });
+const motionClipService = new MotionClipService({ projectRoot: root, bridge });
 
 async function animeProductionStatus() {
   const [providers, audio] = await Promise.all([
@@ -503,6 +505,29 @@ const server = createServer(async (request, response) => {
         packageAssetId,
         expectedLocationRevision: body.expectedLocationRevision,
         promote: body.promote === true,
+      }));
+      return;
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/anime/motion-clips') {
+      sendJson(request, response, 200, await motionClipService.list());
+      return;
+    }
+    const motionPlanMatch = /^\/api\/anime\/characters\/([^/]+)\/motion-plan$/.exec(url.pathname);
+    if (request.method === 'GET' && motionPlanMatch) {
+      const characterId = decodedId(motionPlanMatch[1], 'characterId');
+      const clipParam = url.searchParams.get('clipAssetId');
+      if (!clipParam) {
+        throw Object.assign(new Error('clipAssetId is required'), { code: 'invalid_argument' });
+      }
+      const clipAssetId = boundedId(clipParam, 'clipAssetId');
+      const revisionParam = url.searchParams.get('expectedCharacterRevision');
+      const expectedCharacterRevision =
+        revisionParam === null || revisionParam === '' ? undefined : Number(revisionParam);
+      sendJson(request, response, 200, await motionClipService.retargetPlan({
+        characterId,
+        clipAssetId,
+        expectedCharacterRevision,
       }));
       return;
     }

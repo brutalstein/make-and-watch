@@ -18,6 +18,8 @@ const runtime = {
   locationPackagePlan: async (input) => { calls.push(['pkg-plan', input]); return { locationId: input.locationId, missingPlates: [] }; },
   locationPackageBuild: async (input) => { calls.push(['pkg-build', input]); return { job: { id: 'job-pkg', status: 'completed', packageAssetId: 'asset.pkg' } }; },
   locationPackageValidate: async (input) => { calls.push(['pkg-validate', input]); return { reportAssetId: 'asset.report', passed: true, promoted: input.promote === true }; },
+  motionClipList: async () => { calls.push(['motion-list', {}]); return { library: [{ libraryClipId: 'walk' }], registered: [] }; },
+  motionRetargetPlan: async (input) => { calls.push(['motion-retarget', input]); return { clipId: 'walk.neutral.loop', coveredBones: ['thigh_l'], missingBones: [], correctiveRedrawRequired: false }; },
 };
 
 const specs = animeProductionDynamicToolSpecs();
@@ -28,6 +30,7 @@ assert.deepEqual(specs[0].tools.map(({ name }) => name), [
   'production_status', 'shot_anim_plan', 'shot_anim_compile',
   'character_rig_plan', 'character_rig_build', 'character_rig_validate',
   'location_package_plan', 'location_package_build', 'location_package_validate',
+  'motion_clip_list', 'motion_retarget_plan',
 ]);
 for (const tool of specs[0].tools) {
   assert.equal(tool.inputSchema.additionalProperties, false);
@@ -44,9 +47,13 @@ assert.ok(toolByName.location_package_validate.inputSchema.required.includes('ex
 assert.equal(toolByName.character_rig_build.inputSchema.properties.states.maxItems, 128);
 assert.equal(toolByName.location_package_build.inputSchema.properties.plates.minItems, 3);
 for (const name of ['character_rig_plan', 'character_rig_build', 'character_rig_validate',
-  'location_package_plan', 'location_package_build', 'location_package_validate']) {
+  'location_package_plan', 'location_package_build', 'location_package_validate',
+  'motion_clip_list', 'motion_retarget_plan']) {
   assert.equal(toolByName[name].deferLoading, true, `${name} should defer loading`);
 }
+assert.equal(toolByName.motion_clip_list.inputSchema.additionalProperties, false);
+assert.deepEqual(toolByName.motion_retarget_plan.inputSchema.required, ['characterId', 'clipAssetId']);
+assert.equal(toolByName.motion_retarget_plan.inputSchema.additionalProperties, false);
 
 const status = JSON.parse(await handleAnimeProductionToolCall({
   namespace: 'makewatch_anime', tool: 'production_status', arguments: {},
@@ -129,6 +136,36 @@ const pkgValidated = JSON.parse(await handleAnimeProductionToolCall({
 assert.equal(pkgValidated.promoted, false);
 assert.deepEqual(calls.at(-1), ['pkg-validate', { packageAssetId: 'asset.pkg', expectedLocationRevision: 3, promote: false }]);
 
+const motionList = JSON.parse(await handleAnimeProductionToolCall({
+  namespace: 'makewatch_anime', tool: 'motion_clip_list', arguments: {},
+}, runtime));
+assert.equal(motionList.library[0].libraryClipId, 'walk');
+assert.deepEqual(calls.at(-1), ['motion-list', {}]);
+
+const motionRetarget = JSON.parse(await handleAnimeProductionToolCall({
+  namespace: 'makewatch_anime',
+  tool: 'motion_retarget_plan',
+  arguments: { characterId: 'character.aya', clipAssetId: 'asset.walk', expectedCharacterRevision: 4 },
+}, runtime));
+assert.equal(motionRetarget.correctiveRedrawRequired, false);
+assert.deepEqual(calls.at(-1), ['motion-retarget', { characterId: 'character.aya', clipAssetId: 'asset.walk', expectedCharacterRevision: 4 }]);
+
+const motionRetargetNoRev = JSON.parse(await handleAnimeProductionToolCall({
+  namespace: 'makewatch_anime',
+  tool: 'motion_retarget_plan',
+  arguments: { characterId: 'character.aya', clipAssetId: 'asset.walk' },
+}, runtime));
+assert.equal(motionRetargetNoRev.clipId, 'walk.neutral.loop');
+assert.deepEqual(calls.at(-1), ['motion-retarget', { characterId: 'character.aya', clipAssetId: 'asset.walk', expectedCharacterRevision: undefined }]);
+
+await assert.rejects(
+  handleAnimeProductionToolCall({
+    namespace: 'makewatch_anime', tool: 'motion_retarget_plan',
+    arguments: { characterId: 'character.aya' },
+  }, runtime),
+  /clipAssetId is required/,
+);
+
 await assert.rejects(
   handleAnimeProductionToolCall({
     namespace: 'makewatch_anime', tool: 'character_rig_build',
@@ -200,5 +237,12 @@ assert.equal(client.calls.at(-1).pathname, '/anime/environment-packages');
 await client.locationPackageValidate({ packageAssetId: 'asset.pkg', expectedLocationRevision: 3 });
 assert.equal(client.calls.at(-1).pathname, '/anime/environment-packages/asset.pkg/validate');
 assert.equal(JSON.parse(client.calls.at(-1).init.body).promote, false);
+
+await client.motionClipList();
+assert.equal(client.calls.at(-1).pathname, '/anime/motion-clips');
+await client.motionRetargetPlan({ characterId: 'character.aya', clipAssetId: 'asset.walk', expectedCharacterRevision: 4 });
+assert.equal(client.calls.at(-1).pathname, '/anime/characters/character.aya/motion-plan?clipAssetId=asset.walk&expectedCharacterRevision=4');
+await client.motionRetargetPlan({ characterId: 'character.aya', clipAssetId: 'asset.walk' });
+assert.equal(client.calls.at(-1).pathname, '/anime/characters/character.aya/motion-plan?clipAssetId=asset.walk');
 
 console.log('anime production tools check passed');
