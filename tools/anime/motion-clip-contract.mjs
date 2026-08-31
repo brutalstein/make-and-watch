@@ -120,7 +120,7 @@ function normalizeEvents(value, skeleton, frameCount) {
 
 function normalizeRootMotion(value, frameCount) {
   if (value === undefined || value === null) return [];
-  if (!Array.isArray(value) || value.length < 1 || value.length > MAX_KEYS) invalid('MotionClip.rootMotion must be a bounded array');
+  if (!Array.isArray(value) || value.length > MAX_KEYS) invalid('MotionClip.rootMotion must be a bounded array');
   let priorFrame = -1;
   return value.map((raw, index) => {
     const key = object(raw, `MotionClip.rootMotion[${index}]`);

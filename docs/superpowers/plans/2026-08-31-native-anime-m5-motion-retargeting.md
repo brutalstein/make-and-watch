@@ -116,11 +116,11 @@
 
 **Files:** Create `tools/anime/motion-clip-service.mjs`, `-check.mjs`, `tools/anime/motion-library/{walk,turn,sit,reach,strike}.json`, `tools/anime/motion-library/PROVENANCE.md`.
 
-- [ ] **Step 1: Checks** — `register` persists a content-addressed `makewatch.motionClip/1` asset (draft), attaches Generation provenance, no raster copy; `list` returns library + registered clips; `retargetPlan({ clipAssetId, characterId })` reports covered/missing bones and any domain escalation without writing state; stale rig revision and lock are rejected; duplicate content hash is idempotent.
-- [ ] **Step 2: Author** the five starter clips by hand (short, loopable where sensible), each with a `PROVENANCE.md` line stating it is hand-authored, not motion-captured.
-- [ ] **Step 3: Implement** the service on the M2 job/bridge pattern (`plan`/`register`/`validate`); validate every clip through `validateMotionClip` on load.
-- [ ] **Step 4: Verify** — `node tools/anime/motion-clip-service-check.mjs`.
-- [ ] **Step 5: Commit** `feat(anime): manage reusable motion clips`.
+- [x] **Step 1: Checks** — `register` persists a content-addressed `makewatch.motionClip/1` asset (draft) with `handAuthored` Generation provenance, no raster; `list` returns library + registered; `retargetPlan({ clipAssetId, characterId })` reports covered/missing bones + `domainEscalationCount` and writes nothing; a clip needing a bone the rig lacks sets `correctiveRedrawRequired`; stale `expectedCharacterRevision` and a locked Character are rejected; a skeleton-less rig is rejected; duplicate content hash is idempotent (`created:false`).
+- [x] **Step 2: Author** `walk` (loop), `turn`, `sit`, `reach`, `strike` — hand-keyed bone rotations, `PROVENANCE.md` states each is hand-authored, not mocap/DWPose.
+- [x] **Step 3: Implement** `MotionClipService` (`plan`/`list`/`register`/`retargetPlan`/`validate`) — synchronous register (no GPU, no job queue); every library clip runs through `validateMotionClip` on load. Also fixed `normalizeRootMotion` to round-trip an empty `[]` (was rejecting its own output).
+- [x] **Step 4: Verify** — `node tools/anime/motion-clip-service-check.mjs` → passed; `anime:m5-check` green.
+- [x] **Step 5: Commit** `feat(anime): manage reusable motion clips`.
 
 ---
 
