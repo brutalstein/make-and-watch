@@ -22,7 +22,27 @@ function node(id, kind, metadata = {}, extra = {}) {
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const jsonBytes = (value) => Buffer.from(JSON.stringify(value, null, 2), 'utf8');
 
-async function fixture({ mutateRig, alignmentAudioSha, shotMetadata = {} } = {}) {
+const MOTION_SKELETON = {
+  bones: [
+    { id: 'root', parent: null, rest: { x: 0, y: 0, rot: 0, len: 0 } },
+    { id: 'hip', parent: 'root', rest: { x: 0, y: 0, rot: 0, len: 0 } },
+    { id: 'spine', parent: 'root', rest: { x: 0, y: 0, rot: 0, len: 90 } },
+    { id: 'upper_arm_r', parent: 'spine', rest: { x: 90, y: 0, rot: 0, len: 105 } },
+    { id: 'forearm_r', parent: 'upper_arm_r', rest: { x: 105, y: 0, rot: 0, len: 98 } },
+    { id: 'thigh_l', parent: 'hip', rest: { x: 0, y: 0, rot: 0, len: 135 } },
+    { id: 'shin_l', parent: 'thigh_l', rest: { x: 135, y: 0, rot: 0, len: 128 } },
+    { id: 'foot_l', parent: 'shin_l', rest: { x: 128, y: 0, rot: 0, len: 38 } },
+  ],
+};
+const reachClip = {
+  schema: 'makewatch.motionClip/1', clipId: 'reach.forward.right', fps: 24, frameCount: 20,
+  skeleton: MOTION_SKELETON,
+  channels: { bone: { upper_arm_r: [{ f: 0, deg: -10 }, { f: 14, deg: 64, ease: 'easeInOut' }, { f: 19, deg: 58 }] } },
+  events: [{ f: 0, kind: 'footPlant', bone: 'foot_l' }, { f: 14, kind: 'contact' }],
+  rootMotion: [{ f: 0, x: 0, y: 0 }, { f: 19, x: 6, y: 0 }],
+};
+
+async function fixture({ mutateRig, alignmentAudioSha, shotMetadata = {}, motion } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'makewatch-shot-anim-'));
   const mediaRoot = join(root, '.makewatch');
   await mkdir(join(mediaRoot, 'artifacts', 'anime'), { recursive: true });
@@ -58,6 +78,16 @@ async function fixture({ mutateRig, alignmentAudioSha, shotMetadata = {} } = {})
     ],
     validDomain: { headAngleX: [-24, 24], headAngleY: [-16, 16], headAngleZ: [-14, 14] },
   };
+  if (motion) {
+    rig = {
+      ...rig,
+      skeleton: motion.skeleton ?? MOTION_SKELETON,
+      states: [
+        ...rig.states,
+        { ...state('upper_arm_r.NEUTRAL', 'upper_arm_r'), parentBone: 'upper_arm_r', restAngleDeg: 0 },
+      ],
+    };
+  }
   if (mutateRig) rig = mutateRig(structuredClone(rig));
 
   const environment = {
@@ -103,6 +133,7 @@ async function fixture({ mutateRig, alignmentAudioSha, shotMetadata = {} } = {})
     ['artifacts/anime/rig.json', jsonBytes(rig)],
     ['artifacts/anime/environment.json', jsonBytes(environment)],
     ['artifacts/anime/alignment.json', jsonBytes(alignment)],
+    ...(motion ? [['artifacts/anime/motion.json', jsonBytes(motion.clip ?? reachClip)]] : []),
   ]);
   for (const [relativePath, bytes] of files) {
     const absolute = join(mediaRoot, ...relativePath.split('/'));
@@ -127,6 +158,7 @@ async function fixture({ mutateRig, alignmentAudioSha, shotMetadata = {} } = {})
       actingCurves: '{"headAngleX":[{"t":0,"v":0},{"t":4,"v":12}],"eyeLookX":[{"t":0,"v":0},{"t":2,"v":-0.5}]}',
       cameraKeyframes: '[{"t":0,"x":0,"y":0,"zoom":1},{"t":4,"x":0,"y":-0.01,"zoom":1.03}]',
       subtitleTextTr: 'Daha erken söylemeliydin.', subtitleStartSeconds: '0.5', subtitleEndSeconds: '3.8',
+      ...(motion ? { characterMotion: JSON.stringify({ 'character.aya': { motionClipAssetId: 'asset.motion', ...(motion.spec ?? {}) } }) } : {}),
       ...shotMetadata,
     }, { revision: 9 }),
     node('character.aya', 'character', { outfitState: 'school-uniform' }, { revision: 7 }),
@@ -141,6 +173,11 @@ async function fixture({ mutateRig, alignmentAudioSha, shotMetadata = {} } = {})
     asset('asset.rig', 'json', 'artifacts/anime/rig.json', files.get('artifacts/anime/rig.json'), 'character-rig'),
     asset('asset.environment', 'json', 'artifacts/anime/environment.json', files.get('artifacts/anime/environment.json'), 'environment-package'),
     asset('asset.alignment', 'json', 'artifacts/anime/alignment.json', files.get('artifacts/anime/alignment.json'), 'dialogue-alignment'),
+    ...(motion ? [node('asset.motion', 'asset', {
+      mediaType: 'json', role: 'native-anime-motion-clip', schema: 'makewatch.motionClip/1',
+      relativePath: 'artifacts/anime/motion.json', sha256: hash(files.get('artifacts/anime/motion.json')),
+      clipId: (motion.clip ?? reachClip).clipId,
+    }, { approval: motion.approval ?? 'approved' })] : []),
   ];
   const dependencies = [
     { dependent: 'shot.1', dependency: 'scene.1' },
@@ -194,6 +231,56 @@ try {
   assert.ok(draftEnvPlan.issues.some(({ code }) => code === 'environment_not_promoted'));
 } finally {
   await rm(readyFixture.root, { recursive: true, force: true });
+}
+
+// --- M5 Task 6: retargeted motion ---
+const motionFixture = await fixture({ motion: {} });
+try {
+  const plan = await planShotAnim(motionFixture.snapshot, 'shot.1', { projectRoot: motionFixture.root });
+  assert.equal(plan.ready, true, 'shot with a promoted MotionClip compiles');
+  assert.ok(plan.inputAssetIds.includes('asset.motion'));
+
+  const compiled = await buildShotAnimRequest(motionFixture.snapshot, 'shot.1', { projectRoot: motionFixture.root });
+  assert.equal(compiled.shotAnim.motion.length, 1);
+  const m = compiled.shotAnim.motion[0];
+  assert.equal(m.characterId, 'character.aya');
+  assert.ok(m.boneCurves.upper_arm_r?.length >= 2, 'baked bone curve present');
+  assert.ok(m.events.some((e) => e.kind === 'contact'), 'clip events carried through');
+  assert.ok(m.rootMotion.length >= 2);
+  const limbLayer = compiled.shotAnim.layers.find((l) => l.id === 'character.aya.upper_arm_r.NEUTRAL');
+  assert.equal(limbLayer.bone, 'upper_arm_r', 'limb layer bone-parented');
+  // dialogue / eyes / mouth untouched alongside motion
+  assert.equal(compiled.shotAnim.dialogue[0].audioPath, 'artifacts/anime/line.wav');
+  assert.ok(compiled.shotAnim.layers.some((l) => l.part === 'mouth'));
+  assert.ok(compiled.shotAnim.layers.some((l) => l.part === 'eyes_l' || l.part === 'eyes_r' || l.part === 'eyes'));
+} finally {
+  await rm(motionFixture.root, { recursive: true, force: true });
+}
+
+const draftClipFixture = await fixture({ motion: { approval: 'draft' } });
+try {
+  const plan = await planShotAnim(draftClipFixture.snapshot, 'shot.1', { projectRoot: draftClipFixture.root });
+  assert.equal(plan.ready, false, 'a draft MotionClip is rejected');
+  assert.ok(plan.issues.some(({ code }) => code === 'unapproved_asset'));
+} finally {
+  await rm(draftClipFixture.root, { recursive: true, force: true });
+}
+
+const missingBoneFixture = await fixture({ motion: { clip: {
+  schema: 'makewatch.motionClip/1', clipId: 'wag.tail', fps: 24, frameCount: 8,
+  skeleton: { bones: [
+    { id: 'root', parent: null, rest: { x: 0, y: 0, rot: 0, len: 0 } },
+    { id: 'tail', parent: 'root', rest: { x: 0, y: 0, rot: 0, len: 40 } },
+  ] },
+  channels: { bone: { tail: [{ f: 0, deg: -20 }, { f: 7, deg: 20 }] } },
+} } });
+try {
+  const plan = await planShotAnim(missingBoneFixture.snapshot, 'shot.1', { projectRoot: missingBoneFixture.root });
+  assert.equal(plan.ready, false);
+  const blocker = plan.issues.find(({ code }) => code === 'motion_bone_missing');
+  assert.ok(blocker && blocker.blocker === 'corrective_redraw' && /tail/.test(blocker.message));
+} finally {
+  await rm(missingBoneFixture.root, { recursive: true, force: true });
 }
 
 const missingClosedFixture = await fixture({ mutateRig: (rig) => ({ ...rig, states: rig.states.filter(({ id }) => id !== 'mouth.CLOSED') }) });

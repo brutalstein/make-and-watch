@@ -128,10 +128,10 @@
 
 **Files:** Modify `tools/anime/native-anime-contract.mjs`, `-check.mjs`, `tools/anime/shot-anim-compiler.mjs`, `-check.mjs`.
 
-- [ ] **Step 1: Checks** — a Shot with `character.motion.motionClipAssetId` compiles to a ShotAnim carrying baked bone curves + events; a draft (unpromoted) clip is rejected; a clip needing a bone the rig lacks yields a `corrective_redraw` blocker naming the frame; dialogue/eye/mouth channels are unchanged alongside motion.
-- [ ] **Step 2: Implement** resolution of one promoted `MotionClip` per character, retarget via Task 4, merge bone curves into the per-character curve set, surface `domainEscalations` as compiler `correctiveKeys` + issues.
-- [ ] **Step 3: Verify** — `node tools/anime/shot-anim-compiler-check.mjs && npm run anime:semantic-check`.
-- [ ] **Step 4: Commit** `feat(anime): compile shots with retargeted motion`.
+- [x] **Step 1: Checks** — `native-anime-contract-check`: a ShotAnim `motion[]` block (skeleton + `boneCurves` + events + rootMotion) validates, an out-of-skeleton bone curve / cyclic skeleton / unknown event kind are rejected, `layers[].bone` carried. `shot-anim-compiler-check`: a Shot with `characterMotion` compiles to a ShotAnim carrying baked bone curves + `contact` event + a bone-parented limb layer, dialogue/eyes/mouth intact; a `draft` clip → `unapproved_asset`; a clip driving a bone the rig lacks → `motion_bone_missing` blocker `corrective_redraw`.
+- [x] **Step 2: Implement** — `validateShotAnim` gains `motion` + `layers[].bone` (via shared `normalizeBoneTree`). `planShotAnim` parses `shot.metadata.characterMotion` `{characterId:{motionClipAssetId,timeScale?,loop?,screenAnchor?}}`, resolves each promoted clip through `assetIssue` (draft/stale rejected), retargets via Task 4, and raises `corrective_redraw` issues for `missing_bone` notes and (when no correctiveKeys) the first `domainEscalation`; `motion_clip_too_long` guards over-length clips. `buildShotAnimRequest` emits the `motion[]` block + limb layers; head/body/eye/mouth layers and `actingCurves` untouched.
+- [x] **Step 3: Verify** — `shot-anim-compiler-check` + `native-anime-contract-check` + `anime:semantic-check` + provider/compilation-service checks green.
+- [x] **Step 4: Commit** `feat(anime): compile shots with retargeted motion`.
 
 ---
 
