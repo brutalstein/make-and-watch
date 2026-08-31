@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
 
+import { boneName, normalizeBoneTree } from './bone-tree.mjs';
+
 const SHA256 = /^[a-f0-9]{64}$/;
 const ID = /^[A-Za-z0-9._:-]+$/;
 const APPROVED = new Set(['approved', 'locked']);
@@ -70,10 +72,37 @@ function normalizedStates(value) {
       pivot: pair(state.pivot ?? [0.5, 0.5], `states[${index}].pivot`, 0, 1),
       z: finite(state.z ?? index, `states[${index}].z`, -10000, 10000),
       attachTo: state.attachTo === undefined || state.attachTo === null || state.attachTo === '' ? null : id(state.attachTo, `states[${index}].attachTo`, 100),
+      parentBone: state.parentBone === undefined || state.parentBone === null || state.parentBone === '' ? null : boneName(state.parentBone, `states[${index}].parentBone`),
+      restAngleDeg: state.restAngleDeg === undefined || state.restAngleDeg === null ? null : finite(state.restAngleDeg, `states[${index}].restAngleDeg`, -3600, 3600),
     };
   });
   if (new Set(states.map((state) => state.id)).size !== states.length) invalid('duplicate state IDs are not allowed');
   return states;
+}
+
+const DOMAIN_OPS = new Set(['>', '>=', '<', '<=', '==']);
+
+function normalizedCombinedDomain(value) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > 64) invalid('validDomains.combined must be an array of <= 64 rules');
+  return value.map((raw, index) => {
+    const rule = object(raw, `validDomains.combined[${index}]`);
+    const whenIn = object(rule.if, `validDomains.combined[${index}].if`);
+    const thenIn = object(rule.then, `validDomains.combined[${index}].then`);
+    const when = {};
+    for (const [key, spec] of Object.entries(whenIn)) {
+      if (!Array.isArray(spec) || spec.length !== 2 || !DOMAIN_OPS.has(String(spec[0]))) {
+        invalid(`validDomains.combined[${index}].if.${key} must be [op, number]`);
+      }
+      when[boneName(key, `validDomains.combined[${index}].if key`)] = [String(spec[0]), finite(spec[1], `validDomains.combined[${index}].if.${key}[1]`, -10000, 10000)];
+    }
+    const then = {};
+    for (const [key, range] of Object.entries(thenIn)) {
+      then[boneName(key, `validDomains.combined[${index}].then key`)] = pair(range, `validDomains.combined[${index}].then.${key}`, -10000, 10000);
+    }
+    if (!Object.keys(when).length || !Object.keys(then).length) invalid(`validDomains.combined[${index}] needs an if and a then entry`);
+    return { if: when, then };
+  });
 }
 
 function normalizedDomains(value) {
@@ -88,12 +117,27 @@ function stringList(value, label) {
 
 export function normalizeCharacterRigBuildInput(value) {
   const input = object(value, 'CharacterRig build input');
+  const states = normalizedStates(input.states);
+  const domainSource = object(input.validDomains ?? input.validDomain ?? {}, 'validDomains');
+  const { combined, ...simpleDomains } = domainSource;
+
+  const skeleton = input.skeleton === undefined || input.skeleton === null
+    ? null
+    : normalizeBoneTree(input.skeleton, 'skeleton');
+  for (const state of states) {
+    if (state.parentBone === null) continue;
+    if (!skeleton) invalid(`states ${state.id} has parentBone but no skeleton was supplied`);
+    if (!skeleton.ids.has(state.parentBone)) invalid(`states ${state.id} parentBone ${state.parentBone} is not in the skeleton`);
+  }
+
   return {
     characterId: id(input.characterId, 'characterId'),
     expectedRevision: integer(input.expectedRevision, 'character'),
     outfitState: id(input.outfitState, 'outfitState', 100),
-    states: normalizedStates(input.states),
-    validDomain: normalizedDomains(input.validDomains ?? input.validDomain),
+    states,
+    skeleton: skeleton ? { bones: skeleton.bones } : null,
+    validDomain: normalizedDomains(simpleDomains),
+    validDomainCombined: normalizedCombinedDomain(combined ?? input.validDomainCombined),
   };
 }
 

@@ -130,4 +130,52 @@ assert.throws(() => validateAnimeAcceptanceReport({ ...validAcceptance, passed: 
 assert.ok(Object.isFrozen(validateCharacterRig(validRig)));
 assert.ok(Object.isFrozen(validateCharacterRig(validRig).states));
 
+// --- M5 Task 3: optional skeleton + limb states + validDomain.combined ---
+assert.equal(validateCharacterRig(validRig).skeleton, null, 'dialogue-only rig has no skeleton');
+assert.deepEqual(validateCharacterRig(validRig).validDomainCombined, [], 'no combined rules by default');
+
+const armSkeleton = {
+  bones: [
+    { id: 'hip', parent: null, rest: { x: 0, y: 0, rot: 0, len: 0 } },
+    { id: 'upper_arm_r', parent: 'hip', rest: { x: 0, y: 0, rot: 0, len: 120 } },
+    { id: 'forearm_r', parent: 'upper_arm_r', rest: { x: 120, y: 0, rot: 0, len: 110 } },
+  ],
+};
+const limbRig = {
+  ...validRig,
+  skeleton: armSkeleton,
+  states: [...validRig.states, { ...state('upper_arm_r.NEUTRAL', 'upper_arm_r'), parentBone: 'upper_arm_r', restAngleDeg: -12 }],
+  validDomain: {
+    ...validRig.validDomain,
+    upper_arm_r: [-150, 40],
+    combined: [{ if: { forearm_r: ['<', -10] }, then: { upper_arm_r: [-90, 0] } }],
+  },
+};
+const builtLimb = validateCharacterRig(limbRig);
+assert.equal(builtLimb.skeleton.bones.length, 3);
+assert.equal(builtLimb.skeleton.bones[0].id, 'hip', 'skeleton emitted parents-first');
+assert.equal(builtLimb.states.at(-1).parentBone, 'upper_arm_r');
+assert.equal(builtLimb.states.at(-1).restAngleDeg, -12);
+assert.equal(builtLimb.validDomainCombined.length, 1, 'combined rule parsed, not skipped');
+assert.deepEqual(builtLimb.validDomainCombined[0].if.forearm_r, ['<', -10]);
+assert.deepEqual(builtLimb.validDomainCombined[0].then.upper_arm_r, [-90, 0]);
+assert.ok(!('combined' in builtLimb.validDomain), 'combined split out of validDomain');
+
+assert.throws(
+  () => validateCharacterRig({ ...limbRig, states: [...validRig.states, { ...state('upper_arm_r.NEUTRAL', 'upper_arm_r'), parentBone: 'tail' }] }),
+  /parentBone .*not in the skeleton/,
+);
+assert.throws(
+  () => validateCharacterRig({ ...validRig, states: [...validRig.states, { ...state('upper_arm_r.NEUTRAL', 'upper_arm_r'), parentBone: 'upper_arm_r' }] }),
+  /carries no skeleton/,
+);
+assert.throws(
+  () => validateCharacterRig({ ...validRig, skeleton: { bones: [{ id: 'a', parent: 'b', rest: {} }, { id: 'b', parent: 'a', rest: {} }] } }),
+  /cycle|exactly one root/,
+);
+assert.throws(
+  () => validateCharacterRig({ ...validRig, validDomain: { ...validRig.validDomain, combined: [{ if: { forearm_r: ['~', 1] }, then: { upper_arm_r: [0, 1] } }] } }),
+  /\[op, number\]/,
+);
+
 console.log('native anime asset contract checks passed');

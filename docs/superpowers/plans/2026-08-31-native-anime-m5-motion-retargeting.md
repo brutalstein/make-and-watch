@@ -92,10 +92,10 @@
 
 **Files:** Modify `tools/anime/native-anime-asset-contracts.mjs`, `-check.mjs`, `tools/anime/semantic-package-contract.mjs`, `tools/anime/character-rig-service.mjs`, `-check.mjs`.
 
-- [ ] **Step 1: Checks** — a dialogue-only rig (no skeleton) still validates. A rig with `skeleton.bones` + limb states (`semanticPart` in the pose-part set, `parentBone`, `restAngleDeg`) validates; a limb state whose `parentBone` is not in the skeleton fails; a skeleton with a cycle fails; `validDomain.combined` rules now parsed, not skipped.
-- [ ] **Step 2: Implement** the additive optional block on `validateCharacterRig` and `normalizeCharacterRigBuildInput`; `requiredStateIds()` unchanged (limbs optional). Persist skeleton + limb states in the built rig JSON.
-- [ ] **Step 3: Verify** focused rig checks + `anime:semantic-check`.
-- [ ] **Step 4: Commit** `feat(anime): rig carries an optional skeleton`.
+- [x] **Step 1: Checks** — dialogue-only rig (no skeleton) still validates (`skeleton: null`, `validDomainCombined: []`). A rig with `skeleton.bones` + limb states (`parentBone`, `restAngleDeg`) validates; `parentBone` not in the skeleton fails; `parentBone` with no skeleton fails; a cyclic skeleton fails; `validDomain.combined` rules parsed into `validDomainCombined` (both the asset contract and `normalizeCharacterRigBuildInput`).
+- [x] **Step 2: Implement** — new shared `tools/anime/bone-tree.mjs` `normalizeBoneTree` (also now backs `MotionClip.skeleton`, so clip and rig skeletons cannot drift). Additive optional block on `validateCharacterRig` + `normalizeCharacterRigBuildInput`; `requiredStateIds()` unchanged. `character-rig-service.#run` threads `skeleton`/`parentBone`/`restAngleDeg`/`validDomainCombined` into the built rig JSON.
+- [x] **Step 3: Verify** — `anime:semantic-check` + `anime:m5-check` + shot-anim compiler/provider checks all green.
+- [x] **Step 4: Commit** `feat(anime): rig carries an optional skeleton`.
 
 ---
 

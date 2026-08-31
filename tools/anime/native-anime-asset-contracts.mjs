@@ -1,7 +1,10 @@
+import { boneName, normalizeBoneTree } from './bone-tree.mjs';
+
 const SHA256 = /^[a-f0-9]{64}$/;
 const MOUTH_STATES = Object.freeze(['CLOSED', 'SMALL', 'A', 'I', 'U', 'E', 'O', 'WIDE']);
 const EYE_STATES = Object.freeze(['OPEN', 'HALF', 'CLOSED']);
 const GATE_STATES = new Set(['ready', 'blocked', 'running', 'passed', 'failed', 'needs_human_review']);
+const DOMAIN_OPS = new Set(['>', '>=', '<', '<=', '==']);
 
 export const nativeAnimeAssetSchemas = Object.freeze({
   characterRig: 'makewatch.characterRig/1',
@@ -88,6 +91,33 @@ function schema(value, name, label) {
   return input;
 }
 
+// `validDomain.combined`: [{ if: { chan: [op, n] }, then: { chan: [min, max] } }] —
+// a conditional angle constraint the retargeter checks per frame.
+function combinedDomainRules(value, label) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > 64) invalid(`${label} must be an array of <= 64 rules`);
+  return value.map((raw, index) => {
+    const rule = object(raw, `${label}[${index}]`);
+    const whenIn = object(rule.if, `${label}[${index}].if`);
+    const thenIn = object(rule.then, `${label}[${index}].then`);
+    const when = {};
+    for (const [key, spec] of Object.entries(whenIn)) {
+      if (!Array.isArray(spec) || spec.length !== 2 || !DOMAIN_OPS.has(String(spec[0]))) {
+        invalid(`${label}[${index}].if.${key} must be [op, number] with op one of ${[...DOMAIN_OPS].join(' ')}`);
+      }
+      when[boneName(key, `${label}[${index}].if key`)] = [String(spec[0]), number(spec[1], `${label}[${index}].if.${key}[1]`, -10000, 10000)];
+    }
+    const then = {};
+    for (const [key, range] of Object.entries(thenIn)) {
+      const normalized = pair(range, `${label}[${index}].then.${key}`, -10000, 10000);
+      if (normalized[1] < normalized[0]) invalid(`${label}[${index}].then.${key} must be ordered`);
+      then[boneName(key, `${label}[${index}].then key`)] = normalized;
+    }
+    if (!Object.keys(when).length || !Object.keys(then).length) invalid(`${label}[${index}] needs at least one if and one then entry`);
+    return { if: when, then };
+  });
+}
+
 export function validateCharacterRig(value) {
   const input = schema(value, nativeAnimeAssetSchemas.characterRig, 'CharacterRig');
   if (!Array.isArray(input.states) || input.states.length < 1 || input.states.length > 128) {
@@ -104,10 +134,23 @@ export function validateCharacterRig(value) {
       pivot: pair(state.pivot ?? [0.5, 0.5], `CharacterRig.states[${index}].pivot`, 0, 1),
       z: number(state.z ?? index, `CharacterRig.states[${index}].z`, -10000, 10000),
       attachTo: state.attachTo === undefined || state.attachTo === null ? null : text(state.attachTo, `CharacterRig.states[${index}].attachTo`, 100),
+      // optional skeletal binding: a limb sprite driven by a bone rotation
+      parentBone: state.parentBone === undefined || state.parentBone === null ? null : text(state.parentBone, `CharacterRig.states[${index}].parentBone`, 60),
+      restAngleDeg: state.restAngleDeg === undefined || state.restAngleDeg === null ? null : number(state.restAngleDeg, `CharacterRig.states[${index}].restAngleDeg`, -3600, 3600),
     };
   });
   unique(states.map(({ id }) => id), 'CharacterRig semantic state');
   const stateIds = new Set(states.map(({ id }) => id));
+
+  // optional skeleton (additive): a dialogue-only rig omits it entirely
+  const skeleton = input.skeleton === undefined || input.skeleton === null
+    ? null
+    : normalizeBoneTree(input.skeleton, 'CharacterRig.skeleton');
+  for (const state of states) {
+    if (state.parentBone === null) continue;
+    if (!skeleton) invalid(`CharacterRig.states ${state.id} has parentBone but the rig carries no skeleton`);
+    if (!skeleton.ids.has(state.parentBone)) invalid(`CharacterRig.states ${state.id} parentBone ${state.parentBone} is not in the skeleton`);
+  }
   const parts = new Set(states.map(({ semanticPart }) => semanticPart));
   if (!parts.has('body') && !parts.has('torso')) invalid('CharacterRig requires body or torso semantic state');
   if (!parts.has('face_base')) invalid('CharacterRig requires face_base semantic state');
@@ -130,6 +173,10 @@ export function validateCharacterRig(value) {
     if (normalized[1] < normalized[0]) invalid(`CharacterRig.validDomain.${key} must be ordered`);
     validDomain[text(key, 'CharacterRig valid-domain key', 80)] = normalized;
   }
+  const validDomainCombined = combinedDomainRules(
+    domainInput.combined ?? input.validDomainCombined,
+    'CharacterRig.validDomain.combined',
+  );
 
   return freeze({
     schema: nativeAnimeAssetSchemas.characterRig,
@@ -139,7 +186,9 @@ export function validateCharacterRig(value) {
     paletteFingerprint: sha256(input.paletteFingerprint, 'CharacterRig.paletteFingerprint'),
     canvas: canvas(input.canvas, 'CharacterRig.canvas'),
     states,
+    skeleton: skeleton ? { bones: skeleton.bones } : null,
     validDomain,
+    validDomainCombined,
   });
 }
 
