@@ -180,9 +180,11 @@ function normalizeMotion(raw, duration) {
         y: finiteNumber(key.y ?? 0, `shotAnim.motion[${index}].rootMotion[${keyIndex}].y`),
       };
     });
+    const pixelsPerUnit = Math.min(100, Math.max(0.01, finiteNumber(entry.pixelsPerUnit ?? 1, `shotAnim.motion[${index}].pixelsPerUnit`)));
     return {
       characterId: String(entry.characterId ?? '').slice(0, 160),
       fps: boundedInt(entry.fps ?? 24, `shotAnim.motion[${index}].fps`, MIN_FPS, MAX_FPS),
+      pixelsPerUnit,
       loop: entry.loop === true,
       screenAnchor: Array.isArray(entry.screenAnchor) && entry.screenAnchor.length === 2
         ? [finiteNumber(entry.screenAnchor[0], `shotAnim.motion[${index}].screenAnchor.x`), finiteNumber(entry.screenAnchor[1], `shotAnim.motion[${index}].screenAnchor.y`)]

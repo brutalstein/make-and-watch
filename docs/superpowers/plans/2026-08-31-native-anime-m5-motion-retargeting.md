@@ -137,12 +137,12 @@
 
 ### Task 7: Worker bone-chain FK
 
-**Files:** Modify `tools/anime/native-anime-worker.py`, `-selftest.py`; modify `package.json`; `scripts/verify.ps1`.
+**Files:** Modify `tools/anime/native-anime-worker.py`, `-selftest.py`; modify `package.json`. Deviations: also touched `native-anime-contract.mjs` + `shot-anim-compiler.mjs` (skeleton units → canvas pixels needs a `pixelsPerUnit` on each `motion` entry; the compiler derives it from the rig rest-pose height when unset). `scripts/verify.ps1` unchanged — the ffmpeg/numpy/cv2-dependent `native-anime-worker-selftest.py` stays a manual run; `anime:m5-check` gained only the worker AST-parse (matches the existing `bridge:check` guard).
 
-- [ ] **Step 1: Selftest** — a synthetic rig with `spine/hip/thigh_l/shin_l/foot_l` bone-parented limb layers + a short retargeted clip renders a deterministic MP4; decoded-frame SHA stable across two runs; a skeleton-less rig renders byte-identically to the pre-M5 path.
-- [ ] **Step 2: Implement** the FK bone chain in the per-layer transform stack: each limb layer resolves `M_bone` = product of parent-bone rotations about bone heads, inserted between `M_camera` and the existing local deform. Reuse `tools/anime/skeleton-kinematics.py`. Head-group / plates unchanged.
-- [ ] **Step 3: Verify** — `python tools/anime/native-anime-worker-selftest.py` twice; `anime:m5-check`.
-- [ ] **Step 4: Commit** `feat(anime): render retargeted limb motion`.
+- [x] **Step 1: Selftest** — `motion_shot` adds `char.hero.thigh`/`char.hero.shin` bone-parented layers + a hand-authored `motion` entry (thigh 0→32°, shin 0→-24°, root x drift); renders twice → identical `framesSha256`; a flat-curve variant renders a different hash (bone rotation actually moves pixels); the pre-existing skeleton-less render is byte-identical pre/post-M5 (`29ca4625…`, verified via `git stash`).
+- [x] **Step 2: Implement** — `build_motion_index` precomputes rest FK + screen placement per `motion` entry; per frame, `forward_kinematics(skeleton, sampled bone degs)` → `frame_joints`; each limb layer (`layer["motion"] is not None`) uses `bone_matrix` (shift authored head → FK head + root motion, rotate about head by world-angle delta) as its `local`, skipping the head-group/plate dispatch. `M = place @ local` unchanged. Reuses `skeleton-kinematics.py` via the existing `runpy` load.
+- [x] **Step 3: Verify** — `python tools/anime/native-anime-worker-selftest.py` (both scenarios passed); `pnpm anime:m5-check` green; contract/compiler/provider/compilation-service + `anime:semantic-check` + `anime:m3-check` green.
+- [x] **Step 4: Commit** `feat(anime): render retargeted limb motion`.
 
 ---
 

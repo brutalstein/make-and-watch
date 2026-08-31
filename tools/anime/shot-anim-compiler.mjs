@@ -10,6 +10,7 @@ import {
 } from './native-anime-asset-contracts.mjs';
 import { validateMotionClip } from './motion-clip-contract.mjs';
 import { retargetMotionClip } from './motion-retarget.mjs';
+import { forwardKinematics } from './skeleton-kinematics.mjs';
 
 const ACCEPTED_APPROVALS = new Set(['approved', 'locked']);
 const MAX_METADATA_JSON = 256_000;
@@ -394,20 +395,31 @@ export async function buildShotAnimRequest(snapshot, shotId, options = {}) {
       }))
       : [])),
   ];
-  const motion = motionResults.map(({ characterId, spec, baked }) => ({
-    characterId,
-    fps: shotFps,
-    loop: spec.loop === true,
-    screenAnchor: Array.isArray(spec.screenAnchor) && spec.screenAnchor.length === 2
-      ? [Number(spec.screenAnchor[0]) || 0, Number(spec.screenAnchor[1]) || 0]
-      : null,
-    skeleton: rigs.find((rig) => rig.characterId === characterId).skeleton,
-    boneCurves: Object.fromEntries(
-      Object.entries(baked.boneCurves).map(([bone, keys]) => [bone, keys.map((key) => ({ t: key.t, v: key.deg }))]),
-    ),
-    events: baked.events,
-    rootMotion: baked.rootMotion,
-  }));
+  const canvasHeight = finite(shot.metadata?.height, 1080);
+  const motion = motionResults.map(({ characterId, spec, baked }) => {
+    const rig = rigs.find((entry) => entry.characterId === characterId);
+    const restJoints = forwardKinematics(rig.skeleton);
+    const ys = Object.values(restJoints).flatMap((joint) => [joint.origin[1], joint.tip[1]]);
+    const span = Math.max(1, Math.max(...ys) - Math.min(...ys));
+    const pixelsPerUnit = Number.isFinite(Number(spec.pixelsPerUnit)) && Number(spec.pixelsPerUnit) > 0
+      ? Number(spec.pixelsPerUnit)
+      : (canvasHeight * 0.55) / span;
+    return {
+      characterId,
+      fps: shotFps,
+      pixelsPerUnit,
+      loop: spec.loop === true,
+      screenAnchor: Array.isArray(spec.screenAnchor) && spec.screenAnchor.length === 2
+        ? [Number(spec.screenAnchor[0]) || 0, Number(spec.screenAnchor[1]) || 0]
+        : null,
+      skeleton: rig.skeleton,
+      boneCurves: Object.fromEntries(
+        Object.entries(baked.boneCurves).map(([bone, keys]) => [bone, keys.map((key) => ({ t: key.t, v: key.deg }))]),
+      ),
+      events: baked.events,
+      rootMotion: baked.rootMotion,
+    };
+  });
   const compiledDialogue = dialogue.map(({ unit, audioAsset, alignmentAsset }) => ({
     id: unit.id,
     startSeconds: finite(unit.metadata?.startSeconds, 0),
