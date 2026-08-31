@@ -52,6 +52,10 @@ function dependenciesOf(index, id, kind) {
   return kind ? values.filter((node) => node.kind === kind) : values;
 }
 
+function dependsOn(index, dependent, dependencyId) {
+  return (index.dependencies.get(dependent) ?? []).some((node) => node.id === dependencyId);
+}
+
 function managedAssetPath(projectRoot, asset, label) {
   const mediaRoot = resolve(projectRoot, '.makewatch');
   const relativePath = String(asset?.metadata?.relativePath ?? '').replaceAll('\\', '/');
@@ -152,6 +156,9 @@ function domainIssues(rigs, curves, correctiveKeys) {
         if (Number.isFinite(value) && (value < range[0] || value > range[1])) {
           issues.push({
             code: 'pose_outside_valid_domain',
+            blocker: 'corrective_redraw',
+            characterId: rig.characterId,
+            channel,
             message: `${channel}=${value} exceeds ${rig.characterId} domain ${range[0]}..${range[1]}; corrective redraw required`,
           });
           break;
@@ -219,6 +226,7 @@ export async function planShotAnim(snapshot, shotId, { projectRoot, readFile = r
       if (!character) issues.push({ code: 'rig_character_mismatch', message: `CharacterRig ${asset.id} does not belong to a visible Character` });
       else if (character.revision !== loaded.value.characterRevision) issues.push({ code: 'rig_revision_mismatch', message: `CharacterRig ${asset.id} targets Character revision ${loaded.value.characterRevision}, current is ${character.revision}` });
       else if (String(character.metadata?.outfitState ?? 'default') !== loaded.value.outfitState) issues.push({ code: 'rig_outfit_mismatch', message: `CharacterRig ${asset.id} outfit does not match ${character.id}` });
+      else if (!dependsOn(index, character.id, asset.id)) issues.push({ code: 'rig_not_promoted', message: `CharacterRig ${asset.id} is not a promoted dependency of ${character.id}; run character_rig_validate({ promote: true })` });
       await Promise.all(loaded.value.states.map((state) => checkReferencedImage(index, projectRoot, readFile, state, issues, `CharacterRig state ${state.id}`)));
       rigs.push(loaded.value);
       rigAssets.push(asset);
@@ -239,6 +247,7 @@ export async function planShotAnim(snapshot, shotId, { projectRoot, readFile = r
       const location = locations.find(({ id: locationId }) => locationId === environment.locationId);
       if (!location) issues.push({ code: 'environment_location_mismatch', message: `EnvironmentPackage ${environmentAsset.id} does not belong to the Shot Location` });
       else if (location.revision !== environment.locationRevision) issues.push({ code: 'environment_revision_mismatch', message: `EnvironmentPackage ${environmentAsset.id} targets Location revision ${environment.locationRevision}, current is ${location.revision}` });
+      else if (!dependsOn(index, location.id, environmentAsset.id)) issues.push({ code: 'environment_not_promoted', message: `EnvironmentPackage ${environmentAsset.id} is not a promoted dependency of ${location.id}; run location_package_validate({ promote: true })` });
       await Promise.all(environment.plates.map((plate) => checkReferencedImage(index, projectRoot, readFile, plate, issues, `Environment plate ${plate.id}`)));
     } catch (error) {
       issues.push(issueFrom(error, 'invalid_environment_package', `EnvironmentPackage ${environmentAsset.id}`));

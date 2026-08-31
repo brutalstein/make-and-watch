@@ -1,0 +1,36 @@
+{
+  "fkSkeleton": {
+    "bones": [
+      { "id": "b0", "parent": null, "rest": { "x": 0, "y": 0, "rot": 0, "len": 100 } },
+      { "id": "b1", "parent": "b0", "rest": { "x": 100, "y": 0, "rot": 0, "len": 100 } },
+      { "id": "b2", "parent": "b1", "rest": { "x": 100, "y": 0, "rot": 0, "len": 100 } }
+    ]
+  },
+  "fkAnim": { "b1": 90 },
+  "fkExpected": {
+    "b0": { "origin": [0, 0], "tip": [100, 0], "worldDeg": 0 },
+    "b1": { "origin": [100, 0], "tip": [100, 100], "worldDeg": 90 },
+    "b2": { "origin": [100, 100], "tip": [100, 200], "worldDeg": 90 }
+  },
+  "ikCases": [
+    { "root": [0, 0], "upper": 100, "lower": 100, "target": [0, 200], "bend": 1,
+      "expect": { "upperWorldDeg": 90, "lowerRelDeg": 0, "reached": true } },
+    { "root": [0, 0], "upper": 100, "lower": 100, "target": [500, 0], "bend": 1,
+      "expect": { "upperWorldDeg": 0, "lowerRelDeg": 0, "reached": false } },
+    { "root": [0, 0], "upper": 100, "lower": 100, "target": [0, 100], "bend": 1,
+      "expect": { "upperWorldDeg": 30, "lowerRelDeg": 120, "reached": true } }
+  ],
+  "fabrik": {
+    "points": [[0, 0], [100, 0], [200, 0], [300, 0]],
+    "lengths": [100, 100, 100],
+    "target": [0, 200],
+    "expectLast": [0, 200]
+  },
+  "footLock": {
+    "hip": [0, 0], "thigh": 90, "shin": 85, "plantAnkle": [0, 175], "bend": 1,
+    "expectReached": true
+  },
+  "com": { "points": [[0, 0], [0, 100], [100, 100]], "expectX": 33.333333333333336 },
+  "tolerance": 1e-6,
+  "fabrikTolerance": 1e-3
+}

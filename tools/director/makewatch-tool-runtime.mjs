@@ -36,6 +36,12 @@ function createAnimeRuntime(client) {
     productionStatus: () => client.animeProductionStatus(),
     shotAnimPlan: ({ shotId }) => client.shotAnimPlan(shotId),
     shotAnimCompile: ({ shotId }) => client.shotAnimCompile(shotId),
+    characterRigPlan: (input) => client.characterRigPlan(input),
+    characterRigBuild: (input) => client.characterRigBuild(input),
+    characterRigValidate: (input) => client.characterRigValidate(input),
+    locationPackagePlan: (input) => client.locationPackagePlan(input),
+    locationPackageBuild: (input) => client.locationPackageBuild(input),
+    locationPackageValidate: (input) => client.locationPackageValidate(input),
   };
 }
 

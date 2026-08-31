@@ -147,6 +147,8 @@ async function fixture({ mutateRig, alignmentAudioSha, shotMetadata = {} } = {})
     { dependent: 'shot.1', dependency: 'character.aya' },
     { dependent: 'shot.1', dependency: 'location.cafe' },
     { dependent: 'shot.1', dependency: 'audio.dialogue.aya.001' },
+    { dependent: 'character.aya', dependency: 'asset.rig' },
+    { dependent: 'location.cafe', dependency: 'asset.environment' },
   ];
   return { root, snapshot: { schemaVersion: 1, projectRevision: 42, nodes, dependencies } };
 }
@@ -179,6 +181,17 @@ try {
   assert.ok(outsidePlan.issues.some(({ code, message }) => code === 'pose_outside_valid_domain' && /corrective redraw/i.test(message)));
 
   await assert.rejects(() => buildShotAnimRequest(missingEnvironment, 'shot.1', { projectRoot: readyFixture.root }), (error) => error.code === 'not_ready');
+
+  const draftRig = structuredClone(readyFixture.snapshot);
+  draftRig.dependencies = draftRig.dependencies.filter((edge) => !(edge.dependent === 'character.aya' && edge.dependency === 'asset.rig'));
+  const draftPlan = await planShotAnim(draftRig, 'shot.1', { projectRoot: readyFixture.root });
+  assert.equal(draftPlan.ready, false);
+  assert.ok(draftPlan.issues.some(({ code }) => code === 'rig_not_promoted'));
+
+  const draftEnvironment = structuredClone(readyFixture.snapshot);
+  draftEnvironment.dependencies = draftEnvironment.dependencies.filter((edge) => !(edge.dependent === 'location.cafe' && edge.dependency === 'asset.environment'));
+  const draftEnvPlan = await planShotAnim(draftEnvironment, 'shot.1', { projectRoot: readyFixture.root });
+  assert.ok(draftEnvPlan.issues.some(({ code }) => code === 'environment_not_promoted'));
 } finally {
   await rm(readyFixture.root, { recursive: true, force: true });
 }
