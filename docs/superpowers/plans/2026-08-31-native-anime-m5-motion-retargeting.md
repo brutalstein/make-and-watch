@@ -105,10 +105,10 @@
 
 **Interface:** `retargetMotionClip({ clip, targetRig, options }) -> { boneCurves, events, rootMotion, domainEscalations }`.
 
-- [ ] **Step 1: Checks** — bone-name correspondence maps source→target; per-limb length scale applied; a target missing a source bone drops that channel and records a `missing_bone` note; a retargeted frame outside `targetRig.validDomain` produces a `domainEscalations[{ frame, channel, value }]` entry; foot-lock keeps a planted ankle within tol of its plant position across the plant window; identical inputs → identical output.
-- [ ] **Step 2: Implement** using the Task 2 JS kinematics: sample every clip frame, map bone rotations, scale translations by limb-length ratio, run foot-lock IK during `footPlant` windows, preserve COM x, convert `f` frames to `t` seconds at the ShotAnim fps, emit step/linear bone curves.
-- [ ] **Step 3: Verify** — `node tools/anime/motion-retarget-check.mjs`.
-- [ ] **Step 4: Commit** `feat(anime): retarget motion clips onto rigs`.
+- [x] **Step 1: Checks** — bone-name correspondence maps source→target; per-limb length scale applied; a target missing a source bone drops that channel and records a `missing_bone` note; a retargeted frame outside `targetRig.validDomain` produces a `domainEscalations[{ frame, channel, value }]` entry; foot-lock keeps a planted ankle within tol of its plant position across the plant window; identical inputs → identical output. Also: `validDomain.combined` rules parsed; `event_bone_dropped` note; `timeScale` retimes uniformly.
+- [x] **Step 2: Implement** using the Task 2 JS kinematics: sample every clip frame, map bone rotations, scale translations by limb-length ratio, run foot-lock IK during `footPlant` windows, preserve COM x, convert `f` frames to `t` seconds at the ShotAnim fps, emit step/linear bone curves. Output also carries `paramCurves` (face/eye/mouth channels pass through untouched) and `notes`.
+- [x] **Step 3: Verify** — `node tools/anime/motion-retarget-check.mjs` → `motion retarget check: passed`; `pnpm anime:m5-check` green.
+- [x] **Step 4: Commit** `feat(anime): retarget motion clips onto rigs`.
 
 ---
 
