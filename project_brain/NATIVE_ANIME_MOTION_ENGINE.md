@@ -730,8 +730,10 @@ output. Claiming that would be unserious.** What it can and cannot do:
 - **Milestone 3 — subtitle layer:** deterministic Turkish subtitle render in
   `EpisodeRenderService` + WebVTT sidecar; reading-speed solver; forced-narrative for
   on-screen Japanese text.
-- **Milestone 4 — motion retargeting (B):** MotionClip schema; skeleton IK / FABRIK /
-  foot-lock; DWPose extraction; a starter walk / turn / sit / reach library.
+- **Milestone 4 — motion retargeting (B) [code implemented; render proof GPU/human-gated]:**
+  MotionClip schema; skeleton IK / FABRIK / foot-lock; a starter walk / turn / sit /
+  reach / strike library. DWPose extraction and the two-character contact render proof
+  stay GPU/human-gated (plan Task 9).
 - **Milestone 5 — auto-rig + environment decomposition:** See-through integration for
   Character layers; Depth Anything V2 environment plate split; rig-validity predictor.
 - **Milestone 6 — anime compositing + cadence:** full FX toolkit; on-2s/on-3s
@@ -757,6 +759,36 @@ output. Claiming that would be unserious.** What it can and cannot do:
   EnvironmentPackage builder/depth split, and therefore no accepted semantic asset
   set for a real graph-authored Shot. M3 Japanese alignment/QC/corrective redraw and
   M4 one-minute acceptance are also not implemented.
+
+### 13.2 Milestone 4 / M5 motion-retargeting code verification (2026-08-31)
+
+Plan `docs/superpowers/plans/2026-08-31-native-anime-m5-motion-retargeting.md`,
+Tasks 1-8 landed on `feat/native-anime-motion-engine`:
+
+- `makewatch.motionClip/1` contract + deterministic 2D skeleton kinematics (FK,
+  two-bone IK, FABRIK, foot-lock, COM), mirrored JS/Python from one fixture vector.
+- `retargetMotionClip()` — bone-name correspondence, per-limb length scale, foot-lock
+  IK during `footPlant` windows, COM-x preservation, `f`->`t` retiming, rig
+  `validDomain` / `validDomain.combined` escalations, missing-bone -> `corrective_redraw`.
+- `CharacterRig` gains an optional `skeleton` + limb `states` (`parentBone`,
+  `restAngleDeg`); dialogue-only rigs still validate unchanged. Shared
+  `bone-tree.mjs` keeps clip and rig skeletons from drifting.
+- Hand-authored `walk` / `turn` / `sit` / `reach` / `strike` library (`PROVENANCE.md`);
+  `MotionClipService` content-addresses clips and plans retargets against a promoted rig.
+- `ShotAnim` carries `motion[]` + `layers[].bone`; the compiler retargets one promoted
+  clip per character and emits bone curves, limb layers and domain escalations without
+  touching head/eye/mouth/breathing/hair channels.
+- `native-anime-worker.py` drives bone-parented limb layers through a per-frame FK
+  chain (`bone_matrix`); a ShotAnim with no `motion` renders byte-identically to the
+  pre-M5 path (decoded-frame SHA `29ca4625cf5535db`, verified pre/post).
+- `makewatch_anime` Codex tools `motion_clip_list` + `motion_retarget_plan` (read-only)
+  over `GET /api/anime/motion-clips` and
+  `GET /api/anime/characters/:id/motion-plan?clipAssetId=…`.
+
+Gate: `pnpm bridge:check` green; `anime:m5-check` / `anime:semantic-check` /
+`anime:m3-check` green; `native-anime-worker-selftest.py` (base + motion scenarios)
+passed with ffmpeg present. Not yet done: Task 9 — the GPU/human-reviewed
+two-character contact-beat render, `verify.ps1` full pass, and `main` fast-forward.
 
 ---
 

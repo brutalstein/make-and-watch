@@ -4,6 +4,8 @@
 // clip owns no raster data and is retargeted onto a CharacterRig skeleton at
 // compile time. Normalization is deterministic: identical input -> identical bytes.
 
+import { normalizeBoneTree } from './bone-tree.mjs';
+
 const SCHEMA = 'makewatch.motionClip/1';
 const BONE_ID = /^[a-z][a-z0-9_]*$/;
 const PARAM_ID = /^[a-zA-Z][a-zA-Z0-9_]*$/;
@@ -45,59 +47,7 @@ function freezeDeep(value) {
 }
 
 function normalizeSkeleton(value) {
-  const input = object(value, 'MotionClip.skeleton');
-  if (!Array.isArray(input.bones) || input.bones.length < 1 || input.bones.length > MAX_BONES) {
-    invalid(`MotionClip.skeleton.bones must contain 1..${MAX_BONES} bones`);
-  }
-  const bones = input.bones.map((raw, index) => {
-    const bone = object(raw, `MotionClip.skeleton.bones[${index}]`);
-    const rest = object(bone.rest ?? {}, `MotionClip.skeleton.bones[${index}].rest`);
-    return {
-      id: boneName(bone.id, `MotionClip.skeleton.bones[${index}].id`),
-      parent: bone.parent === undefined || bone.parent === null ? null : boneName(bone.parent, `MotionClip.skeleton.bones[${index}].parent`),
-      rest: {
-        x: finiteNumber(rest.x ?? 0, `MotionClip.skeleton.bones[${index}].rest.x`, -100000, 100000),
-        y: finiteNumber(rest.y ?? 0, `MotionClip.skeleton.bones[${index}].rest.y`, -100000, 100000),
-        rot: finiteNumber(rest.rot ?? 0, `MotionClip.skeleton.bones[${index}].rest.rot`, -3600, 3600),
-        len: finiteNumber(rest.len ?? 0, `MotionClip.skeleton.bones[${index}].rest.len`, 0, 100000),
-      },
-    };
-  });
-
-  const ids = bones.map((bone) => bone.id);
-  if (new Set(ids).size !== ids.length) invalid('MotionClip.skeleton bone ids must be unique');
-  const idSet = new Set(ids);
-  const roots = bones.filter((bone) => bone.parent === null);
-  if (roots.length !== 1) invalid('MotionClip.skeleton must have exactly one root bone (parent: null)');
-  for (const bone of bones) {
-    if (bone.parent !== null && !idSet.has(bone.parent)) invalid(`MotionClip.skeleton bone ${bone.id} references missing parent ${bone.parent}`);
-    if (bone.parent === bone.id) invalid(`MotionClip.skeleton bone ${bone.id} cannot be its own parent`);
-  }
-  // acyclic: every bone must reach the root
-  const parentOf = new Map(bones.map((bone) => [bone.id, bone.parent]));
-  for (const start of ids) {
-    let cursor = start;
-    let hops = 0;
-    while (cursor !== null) {
-      cursor = parentOf.get(cursor) ?? null;
-      if (++hops > bones.length) invalid(`MotionClip.skeleton has a cycle through bone ${start}`);
-    }
-  }
-  // topological order: parents before children, deterministic
-  const ordered = [];
-  const placed = new Set();
-  while (ordered.length < bones.length) {
-    const before = ordered.length;
-    for (const bone of bones) {
-      if (placed.has(bone.id)) continue;
-      if (bone.parent === null || placed.has(bone.parent)) {
-        ordered.push(bone);
-        placed.add(bone.id);
-      }
-    }
-    if (ordered.length === before) invalid('MotionClip.skeleton could not be ordered (disconnected or cyclic)');
-  }
-  return { bones: ordered, ids: idSet, root: roots[0].id };
+  return normalizeBoneTree(value, 'MotionClip.skeleton');
 }
 
 function normalizeKeyframes(value, label, frameCount, valueKey, valueRange) {
@@ -170,7 +120,7 @@ function normalizeEvents(value, skeleton, frameCount) {
 
 function normalizeRootMotion(value, frameCount) {
   if (value === undefined || value === null) return [];
-  if (!Array.isArray(value) || value.length < 1 || value.length > MAX_KEYS) invalid('MotionClip.rootMotion must be a bounded array');
+  if (!Array.isArray(value) || value.length > MAX_KEYS) invalid('MotionClip.rootMotion must be a bounded array');
   let priorFrame = -1;
   return value.map((raw, index) => {
     const key = object(raw, `MotionClip.rootMotion[${index}]`);

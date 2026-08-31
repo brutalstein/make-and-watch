@@ -8,6 +8,9 @@ import {
   validateCharacterRig,
   validateEnvironmentPackage,
 } from './native-anime-asset-contracts.mjs';
+import { validateMotionClip } from './motion-clip-contract.mjs';
+import { retargetMotionClip } from './motion-retarget.mjs';
+import { forwardKinematics } from './skeleton-kinematics.mjs';
 
 const ACCEPTED_APPROVALS = new Set(['approved', 'locked']);
 const MAX_METADATA_JSON = 256_000;
@@ -235,6 +238,65 @@ export async function planShotAnim(snapshot, shotId, { projectRoot, readFile = r
     }
   }
 
+  // Retargeted skeletal motion: one promoted MotionClip per character, baked onto its rig.
+  let characterMotion = {};
+  try {
+    characterMotion = parseJson(shot.metadata?.characterMotion, {}, 'characterMotion');
+  } catch (error) {
+    issues.push(issueFrom(error, 'invalid_metadata', 'Shot characterMotion'));
+  }
+  if (!characterMotion || typeof characterMotion !== 'object' || Array.isArray(characterMotion)) characterMotion = {};
+  const shotDurationSeconds = finite(shot.metadata?.durationSeconds, 0);
+  const motionResults = [];
+  const rigByCharacter = new Map(rigs.map((rig) => [rig.characterId, rig]));
+  for (const [characterId, rawSpec] of Object.entries(characterMotion).slice(0, 8)) {
+    const spec = rawSpec && typeof rawSpec === 'object' ? rawSpec : {};
+    const rig = rigByCharacter.get(characterId);
+    if (!rig) {
+      issues.push({ code: 'motion_character_unmatched', message: `characterMotion names ${characterId}, which has no resolved CharacterRig` });
+      continue;
+    }
+    const clipAsset = assetIssue(index, spec.motionClipAssetId, 'json', issues, `MotionClip for ${characterId}`);
+    if (!clipAsset) continue;
+    inputAssetIds.push(clipAsset.id);
+    if (!rig.skeleton) {
+      issues.push({ code: 'motion_rig_no_skeleton', characterId, message: `CharacterRig for ${characterId} has no skeleton; rebuild it with limb bones before attaching motion` });
+      continue;
+    }
+    try {
+      const loaded = await loadStructuredAsset(projectRoot, clipAsset, readFile, validateMotionClip, `MotionClip ${clipAsset.id}`);
+      const timeScale = Number.isFinite(Number(spec.timeScale)) && Number(spec.timeScale) > 0 ? Number(spec.timeScale) : 1;
+      const baked = retargetMotionClip({ clip: loaded.value, targetRig: rig, options: { timeScale } });
+      if (baked.durationSeconds > shotDurationSeconds + 1e-6) {
+        issues.push({ code: 'motion_clip_too_long', characterId, message: `MotionClip ${loaded.value.clipId} runs ${baked.durationSeconds}s, longer than Shot ${id} (${shotDurationSeconds}s)` });
+        continue;
+      }
+      for (const note of baked.notes) {
+        if (note.code === 'missing_bone') {
+          issues.push({
+            code: 'motion_bone_missing',
+            blocker: 'corrective_redraw',
+            characterId,
+            message: `MotionClip ${loaded.value.clipId} drives bone ${note.bone}, absent from ${characterId}'s rig skeleton; corrective redraw required`,
+          });
+        }
+      }
+      if (!correctiveKeyIds.length && baked.domainEscalations.length) {
+        const first = baked.domainEscalations[0];
+        issues.push({
+          code: 'pose_outside_valid_domain',
+          blocker: 'corrective_redraw',
+          characterId,
+          channel: first.channel,
+          message: `${first.channel}=${first.value} at frame ${first.frame} exceeds ${characterId} valid domain; corrective redraw required`,
+        });
+      }
+      motionResults.push({ characterId, spec, clipId: loaded.value.clipId, clipAssetId: clipAsset.id, baked });
+    } catch (error) {
+      issues.push(issueFrom(error, 'invalid_motion_clip', `MotionClip ${clipAsset.id}`));
+    }
+  }
+
   const environmentId = cleanId(shot.metadata?.environmentPackageAssetId);
   if (!environmentId) issues.push({ code: 'missing_environment_package', message: `Shot ${id} has no EnvironmentPackage` });
   const environmentAsset = environmentId ? assetIssue(index, environmentId, 'json', issues, 'EnvironmentPackage') : null;
@@ -287,14 +349,16 @@ export async function planShotAnim(snapshot, shotId, { projectRoot, readFile = r
     projectRevision: snapshot.projectRevision,
     issues,
     inputAssetIds: uniqueInputAssetIds,
-    resolved: { shot, scene: sceneOwners[0] ?? null, rigs, rigAssets, environment, environmentAsset, dialogue, actingCurves, cameraKeyframes, correctiveKeyIds },
+    resolved: { shot, scene: sceneOwners[0] ?? null, rigs, rigAssets, environment, environmentAsset, dialogue, actingCurves, cameraKeyframes, correctiveKeyIds, motionResults },
   };
 }
 
 export async function buildShotAnimRequest(snapshot, shotId, options = {}) {
   const plan = await planShotAnim(snapshot, shotId, options);
   if (!plan.ready) throw compilerError('not_ready', `Shot ${plan.shotId} is not ready for native animation`, { issues: plan.issues });
-  const { shot, scene, rigs, environment, dialogue, actingCurves, cameraKeyframes, correctiveKeyIds } = plan.resolved;
+  const { shot, scene, rigs, environment, dialogue, actingCurves, cameraKeyframes, correctiveKeyIds, motionResults } = plan.resolved;
+  const shotFps = finite(shot.metadata?.fps, 24);
+  const motionByCharacter = new Map(motionResults.map((result) => [result.characterId, result]));
   const layers = [
     ...environment.plates.map((plate, index) => ({
       id: `environment.${plate.id}`,
@@ -317,7 +381,45 @@ export async function buildShotAnimRequest(snapshot, shotId, options = {}) {
         ? { segments: 3, stiffness: 0.28, damping: 0.12, gravity: 0.6, maxDeg: 22 }
         : null,
     }))),
+    // limb layers, bone-parented to the retargeted skeleton (only for rigs with motion)
+    ...rigs.flatMap((rig, rigIndex) => (motionByCharacter.has(rig.characterId)
+      ? rig.states.filter((state) => state.parentBone).map((state, stateIndex) => ({
+        id: `${rig.characterId}.${state.id}`,
+        part: state.semanticPart,
+        path: state.path,
+        z: 10 + rigIndex * 100 + 50 + state.z + stateIndex / 100,
+        parallax: 1,
+        pivot: state.pivot,
+        bone: state.parentBone,
+        curves: {},
+      }))
+      : [])),
   ];
+  const canvasHeight = finite(shot.metadata?.height, 1080);
+  const motion = motionResults.map(({ characterId, spec, baked }) => {
+    const rig = rigs.find((entry) => entry.characterId === characterId);
+    const restJoints = forwardKinematics(rig.skeleton);
+    const ys = Object.values(restJoints).flatMap((joint) => [joint.origin[1], joint.tip[1]]);
+    const span = Math.max(1, Math.max(...ys) - Math.min(...ys));
+    const pixelsPerUnit = Number.isFinite(Number(spec.pixelsPerUnit)) && Number(spec.pixelsPerUnit) > 0
+      ? Number(spec.pixelsPerUnit)
+      : (canvasHeight * 0.55) / span;
+    return {
+      characterId,
+      fps: shotFps,
+      pixelsPerUnit,
+      loop: spec.loop === true,
+      screenAnchor: Array.isArray(spec.screenAnchor) && spec.screenAnchor.length === 2
+        ? [Number(spec.screenAnchor[0]) || 0, Number(spec.screenAnchor[1]) || 0]
+        : null,
+      skeleton: rig.skeleton,
+      boneCurves: Object.fromEntries(
+        Object.entries(baked.boneCurves).map(([bone, keys]) => [bone, keys.map((key) => ({ t: key.t, v: key.deg }))]),
+      ),
+      events: baked.events,
+      rootMotion: baked.rootMotion,
+    };
+  });
   const compiledDialogue = dialogue.map(({ unit, audioAsset, alignmentAsset }) => ({
     id: unit.id,
     startSeconds: finite(unit.metadata?.startSeconds, 0),
@@ -345,6 +447,7 @@ export async function buildShotAnimRequest(snapshot, shotId, options = {}) {
     }] : [],
     cadence: { bodyKeys: String(shot.metadata?.bodyCadence ?? 'on-2'), mouth: 'discrete' },
     correctiveKeys: correctiveKeyIds.map((assetId) => ({ assetId })),
+    motion,
     grain: finite(shot.metadata?.grain, 0.03),
   });
   return {

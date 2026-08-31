@@ -1,0 +1,45 @@
+{
+  "schema": "makewatch.motionClip/1",
+  "clipId": "reach.forward.right",
+  "fps": 24,
+  "frameCount": 20,
+  "loopable": false,
+  "skeleton": {
+    "bones": [
+      { "id": "root", "parent": null, "rest": { "x": 0, "y": 0, "rot": 0, "len": 0 } },
+      { "id": "hip", "parent": "root", "rest": { "x": 0, "y": 0, "rot": 0, "len": 0 } },
+      { "id": "spine", "parent": "root", "rest": { "x": 0, "y": 0, "rot": 0, "len": 60 } },
+      { "id": "head", "parent": "spine", "rest": { "x": 60, "y": 0, "rot": 0, "len": 30 } },
+      { "id": "thigh_l", "parent": "hip", "rest": { "x": 0, "y": 0, "rot": 0, "len": 90 } },
+      { "id": "shin_l", "parent": "thigh_l", "rest": { "x": 90, "y": 0, "rot": 0, "len": 85 } },
+      { "id": "foot_l", "parent": "shin_l", "rest": { "x": 85, "y": 0, "rot": 0, "len": 25 } },
+      { "id": "thigh_r", "parent": "hip", "rest": { "x": 0, "y": 0, "rot": 0, "len": 90 } },
+      { "id": "shin_r", "parent": "thigh_r", "rest": { "x": 90, "y": 0, "rot": 0, "len": 85 } },
+      { "id": "foot_r", "parent": "shin_r", "rest": { "x": 85, "y": 0, "rot": 0, "len": 25 } },
+      { "id": "upper_arm_l", "parent": "spine", "rest": { "x": 55, "y": 0, "rot": 0, "len": 70 } },
+      { "id": "forearm_l", "parent": "upper_arm_l", "rest": { "x": 70, "y": 0, "rot": 0, "len": 65 } },
+      { "id": "upper_arm_r", "parent": "spine", "rest": { "x": 55, "y": 0, "rot": 0, "len": 70 } },
+      { "id": "forearm_r", "parent": "upper_arm_r", "rest": { "x": 70, "y": 0, "rot": 0, "len": 65 } }
+    ]
+  },
+  "channels": {
+    "bone": {
+      "upper_arm_r": [{ "f": 0, "deg": -10 }, { "f": 3, "deg": -24, "ease": "easeOut" }, { "f": 14, "deg": 64, "ease": "easeInOut" }, { "f": 19, "deg": 58 }],
+      "forearm_r": [{ "f": 0, "deg": 8 }, { "f": 14, "deg": -6 }, { "f": 19, "deg": -2 }],
+      "spine": [{ "f": 0, "deg": 0 }, { "f": 12, "deg": -8 }, { "f": 19, "deg": -5 }],
+      "head": [{ "f": 0, "deg": 0 }, { "f": 12, "deg": -6 }, { "f": 19, "deg": -4 }],
+      "upper_arm_l": [{ "f": 0, "deg": 10 }, { "f": 14, "deg": 16 }, { "f": 19, "deg": 14 }]
+    },
+    "param": {
+      "breathing": [{ "f": 0, "v": 0 }, { "f": 10, "v": 1 }, { "f": 19, "v": 0 }]
+    }
+  },
+  "events": [
+    { "f": 3, "kind": "anticipation" },
+    { "f": 0, "kind": "footPlant", "bone": "foot_l" },
+    { "f": 0, "kind": "footPlant", "bone": "foot_r" },
+    { "f": 14, "kind": "contact" },
+    { "f": 17, "kind": "recovery" }
+  ],
+  "rootMotion": [{ "f": 0, "x": 0, "y": 0 }, { "f": 19, "x": 6, "y": 0 }]
+}

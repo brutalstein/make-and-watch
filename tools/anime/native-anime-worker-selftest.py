@@ -127,6 +127,54 @@ def main() -> int:
         assert hashes[0] == hashes[1], f"renderer is not deterministic: {hashes}"
         assert len(hashes[0]) == 64
         print(f"native anime worker selftest passed (deterministic framesSha256={hashes[0][:16]}...)")
+
+        # ---- M5: retargeted limb motion renders deterministically and moves pixels
+        shape_layer(media / "anime" / "thigh.png", lambda d: d.rectangle([150, 100, 172, 150], fill=(120, 90, 200, 255)))
+        shape_layer(media / "anime" / "shin.png", lambda d: d.rectangle([150, 146, 170, 188], fill=(90, 150, 200, 255)))
+        skeleton = {"bones": [
+            {"id": "root", "parent": None, "rest": {"x": 0.0, "y": 0.0, "rot": 0.0, "len": 0.0}},
+            {"id": "hip", "parent": "root", "rest": {"x": 0.0, "y": 0.0, "rot": 0.0, "len": 0.0}},
+            {"id": "spine", "parent": "hip", "rest": {"x": 0.0, "y": 0.0, "rot": -90.0, "len": 40.0}},
+            {"id": "thigh_l", "parent": "hip", "rest": {"x": 0.0, "y": 0.0, "rot": 90.0, "len": 42.0}},
+            {"id": "shin_l", "parent": "thigh_l", "rest": {"x": 42.0, "y": 0.0, "rot": 0.0, "len": 38.0}},
+            {"id": "foot_l", "parent": "shin_l", "rest": {"x": 38.0, "y": 0.0, "rot": 0.0, "len": 12.0}},
+        ]}
+        motion_shot = json.loads(json.dumps(shot_anim))
+        motion_shot["shotId"] = "shot.motion"
+        motion_shot["layers"].append({"id": "char.hero.thigh", "part": "body", "path": "anime/thigh.png",
+                                      "z": 15, "parallax": 1.0, "bone": "thigh_l", "curves": {}})
+        motion_shot["layers"].append({"id": "char.hero.shin", "part": "body", "path": "anime/shin.png",
+                                      "z": 16, "parallax": 1.0, "bone": "shin_l", "curves": {}})
+        motion_shot["motion"] = [{
+            "characterId": "char.hero", "fps": FPS, "pixelsPerUnit": 1.4, "loop": False,
+            "screenAnchor": [0.5, 0.32], "skeleton": skeleton,
+            "boneCurves": {
+                "thigh_l": [{"t": 0.0, "v": 0.0}, {"t": 1.0, "v": 32.0, "ease": "easeInOut"}],
+                "shin_l": [{"t": 0.0, "v": 0.0}, {"t": 1.0, "v": -24.0, "ease": "easeInOut"}],
+            },
+            "events": [{"t": 0.5, "kind": "contact", "bone": "foot_l"}],
+            "rootMotion": [{"t": 0.0, "x": 0.0, "y": 0.0}, {"t": 1.0, "x": 5.0, "y": 0.0}],
+        }]
+
+        def render_motion(name: str, shot: dict) -> str:
+            out = tmp / f"{name}.mp4"
+            request = tmp / f"{name}.json"
+            request.write_text(json.dumps({
+                "shotAnim": shot, "projectMediaRoot": str(media), "outputFile": str(out),
+                "ffmpeg": shutil.which("ffmpeg"), "ffprobe": shutil.which("ffprobe"), "seed": 777,
+            }), encoding="utf-8")
+            return run(request)["framesSha256"]
+
+        motion_a = render_motion("motion0", motion_shot)
+        motion_b = render_motion("motion1", motion_shot)
+        assert motion_a == motion_b, f"motion render not deterministic: {motion_a} {motion_b}"
+
+        flat_shot = json.loads(json.dumps(motion_shot))
+        flat_shot["shotId"] = "shot.motionflat"
+        flat_shot["motion"][0]["boneCurves"] = {"thigh_l": [{"t": 0.0, "v": 0.0}], "shin_l": [{"t": 0.0, "v": 0.0}]}
+        flat_shot["motion"][0]["rootMotion"] = [{"t": 0.0, "x": 0.0, "y": 0.0}]
+        assert render_motion("motionflat", flat_shot) != motion_a, "bone curves did not animate the limb layers"
+        print(f"native anime motion selftest passed (framesSha256={motion_a[:16]}...)")
         return 0
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

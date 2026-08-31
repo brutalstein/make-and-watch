@@ -29,6 +29,37 @@ assert.throws(() => normalizeCharacterRigBuildInput({ ...rigInput, expectedRevis
 assert.throws(() => normalizeCharacterRigBuildInput({ ...rigInput, states: [{ id: 'mystery.DEFAULT', sourceAssetId: 'asset.x' }] }), /unknown semantic state/i);
 assert.throws(() => normalizeCharacterRigBuildInput({ ...rigInput, states: [{ ...rigInput.states[0], pivot: [0.5, 2] }] }), /pivot/i);
 
+// M5 Task 3: optional skeleton + limb binding + validDomains.combined
+assert.equal(rig.skeleton, null, 'dialogue-only build input has no skeleton');
+assert.deepEqual(rig.validDomainCombined, []);
+const limbInput = {
+  ...rigInput,
+  skeleton: { bones: [
+    { id: 'hip', parent: null, rest: { x: 0, y: 0, rot: 0, len: 0 } },
+    { id: 'upper_arm_r', parent: 'hip', rest: { x: 0, y: 0, rot: 0, len: 120 } },
+  ] },
+  states: [...rigInput.states, { id: 'upper_arm_r.NEUTRAL', sourceAssetId: 'asset.arm', parentBone: 'upper_arm_r', restAngleDeg: -12 }],
+  validDomains: { headAngleX: [-12, 12], combined: [{ if: { upper_arm_r: ['>', 30] }, then: { upper_arm_r: [0, 45] } }] },
+};
+const limb = normalizeCharacterRigBuildInput(limbInput);
+assert.equal(limb.skeleton.bones.length, 2);
+assert.equal(limb.states.at(-1).parentBone, 'upper_arm_r');
+assert.equal(limb.states.at(-1).restAngleDeg, -12);
+assert.equal(limb.validDomainCombined.length, 1);
+assert.ok(!('combined' in limb.validDomain));
+assert.throws(() => normalizeCharacterRigBuildInput({ ...limbInput, skeleton: { bones: [
+  { id: 'a', parent: 'b', rest: {} }, { id: 'b', parent: 'a', rest: {} },
+] } }), /cycle|exactly one root/);
+assert.throws(() => normalizeCharacterRigBuildInput({
+  ...rigInput,
+  states: [...rigInput.states, { id: 'upper_arm_r.NEUTRAL', sourceAssetId: 'asset.arm', parentBone: 'ghost' }],
+  skeleton: limbInput.skeleton,
+}), /not in the skeleton/);
+assert.throws(() => normalizeCharacterRigBuildInput({
+  ...rigInput,
+  states: [...rigInput.states, { id: 'upper_arm_r.NEUTRAL', sourceAssetId: 'asset.arm', parentBone: 'upper_arm_r' }],
+}), /no skeleton was supplied/);
+
 const environment = normalizeEnvironmentPackageBuildInput({
   locationId: 'location.school',
   expectedRevision: 3,

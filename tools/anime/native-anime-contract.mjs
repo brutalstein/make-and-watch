@@ -11,8 +11,12 @@
 // (buildShotAnimRequest) is a later milestone. Until that compiler exists, production
 // requests fail closed instead of silently degrading to an animated still.
 
+import { normalizeBoneTree } from './bone-tree.mjs';
+
 const RESULT_PREFIX = 'MW_TEMPORAL_RESULT_V1\t';
 const SHOT_ANIM_SCHEMA = 'makewatch.shotAnim/1';
+const MAX_MOTION_CHARACTERS = 8;
+const MOTION_EVENT_KINDS = new Set(['footPlant', 'footLift', 'contact', 'impact', 'anticipation', 'recovery', 'settle']);
 const MIN_SHOT_SECONDS = 1;
 const MAX_SHOT_SECONDS = 20;
 const MIN_FPS = 12;
@@ -123,6 +127,7 @@ function normalizeLayer(raw, index, duration) {
       ? [finiteNumber(raw.anchor[0], `layers[${index}].anchor.x`), finiteNumber(raw.anchor[1], `layers[${index}].anchor.y`)]
       : null,
     attachTo: raw.attachTo === undefined || raw.attachTo === null ? null : String(raw.attachTo).slice(0, 80),
+    bone: raw.bone === undefined || raw.bone === null ? null : String(raw.bone).slice(0, 60),
     dynamic: raw.dynamic && typeof raw.dynamic === 'object' ? {
       segments: boundedInt(raw.dynamic.segments ?? 3, `layers[${index}].dynamic.segments`, 1, 12),
       stiffness: Math.min(1, Math.max(0, finiteNumber(raw.dynamic.stiffness ?? 0.28, `layers[${index}].dynamic.stiffness`))),
@@ -132,6 +137,64 @@ function normalizeLayer(raw, index, duration) {
     } : null,
     curves: normalizeLayerCurves(raw.curves, `layers[${index}].curves`, duration),
   };
+}
+
+// Per-character retargeted skeletal motion baked by the ShotAnim compiler. The worker
+// walks `skeleton` with `boneCurves` (degrees, sampled in `t` seconds) to build each
+// limb layer's FK transform; `events` and `rootMotion` drive contacts and locomotion.
+function normalizeMotion(raw, duration) {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) throw contractError('invalid_argument', 'shotAnim.motion must be an array');
+  if (raw.length > MAX_MOTION_CHARACTERS) throw contractError('invalid_argument', `shotAnim.motion has more than ${MAX_MOTION_CHARACTERS} characters`);
+  return raw.map((entry, index) => {
+    if (!entry || typeof entry !== 'object') throw contractError('invalid_argument', `shotAnim.motion[${index}] must be an object`);
+    const skeleton = normalizeBoneTree(entry.skeleton, `shotAnim.motion[${index}].skeleton`);
+    const boneCurves = normalizeLayerCurves(entry.boneCurves, `shotAnim.motion[${index}].boneCurves`, duration);
+    for (const bone of Object.keys(boneCurves)) {
+      if (!skeleton.ids.has(bone)) throw contractError('invalid_argument', `shotAnim.motion[${index}].boneCurves references bone ${bone} not in the skeleton`);
+    }
+    const rawEvents = Array.isArray(entry.events) ? entry.events : [];
+    let previousT = -Infinity;
+    const events = rawEvents.map((event, eventIndex) => {
+      if (!event || typeof event !== 'object') throw contractError('invalid_argument', `shotAnim.motion[${index}].events[${eventIndex}] must be an object`);
+      const t = finiteNumber(event.t, `shotAnim.motion[${index}].events[${eventIndex}].t`);
+      if (t < 0 || t > duration + 1e-6) throw contractError('invalid_argument', `shotAnim.motion[${index}].events[${eventIndex}].t is outside the shot`);
+      if (t < previousT - 1e-6) throw contractError('invalid_argument', `shotAnim.motion[${index}].events must be sorted by t`);
+      previousT = t;
+      const kind = String(event.kind ?? '');
+      if (!MOTION_EVENT_KINDS.has(kind)) throw contractError('invalid_argument', `shotAnim.motion[${index}].events[${eventIndex}].kind is unknown`);
+      const bone = event.bone === undefined || event.bone === null ? null : String(event.bone).slice(0, 60);
+      if (bone && !skeleton.ids.has(bone)) throw contractError('invalid_argument', `shotAnim.motion[${index}].events[${eventIndex}] references bone ${bone} not in the skeleton`);
+      return { t, kind, bone };
+    });
+    const rawRoot = Array.isArray(entry.rootMotion) ? entry.rootMotion : [];
+    previousT = -Infinity;
+    const rootMotion = rawRoot.map((key, keyIndex) => {
+      if (!key || typeof key !== 'object') throw contractError('invalid_argument', `shotAnim.motion[${index}].rootMotion[${keyIndex}] must be an object`);
+      const t = finiteNumber(key.t, `shotAnim.motion[${index}].rootMotion[${keyIndex}].t`);
+      if (t < previousT - 1e-6) throw contractError('invalid_argument', `shotAnim.motion[${index}].rootMotion must be sorted by t`);
+      previousT = t;
+      return {
+        t,
+        x: finiteNumber(key.x ?? 0, `shotAnim.motion[${index}].rootMotion[${keyIndex}].x`),
+        y: finiteNumber(key.y ?? 0, `shotAnim.motion[${index}].rootMotion[${keyIndex}].y`),
+      };
+    });
+    const pixelsPerUnit = Math.min(100, Math.max(0.01, finiteNumber(entry.pixelsPerUnit ?? 1, `shotAnim.motion[${index}].pixelsPerUnit`)));
+    return {
+      characterId: String(entry.characterId ?? '').slice(0, 160),
+      fps: boundedInt(entry.fps ?? 24, `shotAnim.motion[${index}].fps`, MIN_FPS, MAX_FPS),
+      pixelsPerUnit,
+      loop: entry.loop === true,
+      screenAnchor: Array.isArray(entry.screenAnchor) && entry.screenAnchor.length === 2
+        ? [finiteNumber(entry.screenAnchor[0], `shotAnim.motion[${index}].screenAnchor.x`), finiteNumber(entry.screenAnchor[1], `shotAnim.motion[${index}].screenAnchor.y`)]
+        : null,
+      skeleton: { bones: skeleton.bones },
+      boneCurves,
+      events,
+      rootMotion,
+    };
+  });
 }
 
 function normalizeColor(raw, fallback) {
@@ -261,6 +324,7 @@ export function validateShotAnim(value) {
       mouth: String(value.cadence?.mouth ?? 'discrete'),
     },
     correctiveKeys: Array.isArray(value.correctiveKeys) ? value.correctiveKeys.length : 0,
+    motion: normalizeMotion(value.motion, durationSeconds),
   });
 }
 

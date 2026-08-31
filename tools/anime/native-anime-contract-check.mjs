@@ -36,6 +36,51 @@ assert.ok(ok.layers.find((l) => l.id === 'front_hair').dynamic, 'dynamic chain p
 assert.equal(ok.dialogue[0].audioPath, 'anime/slice/line.wav');
 assert.equal(ok.subtitles[0].endSeconds, 3.4);
 assert.ok(Object.isFrozen(ok));
+assert.deepEqual(ok.motion, [], 'motion defaults to empty');
+
+// --- M5 Task 6: retargeted motion block ---
+const motionSkeleton = {
+  bones: [
+    { id: 'hip', parent: null, rest: { x: 0, y: 0, rot: 0, len: 0 } },
+    { id: 'thigh_l', parent: 'hip', rest: { x: 0, y: 0, rot: 0, len: 90 } },
+    { id: 'shin_l', parent: 'thigh_l', rest: { x: 90, y: 0, rot: 0, len: 85 } },
+    { id: 'foot_l', parent: 'shin_l', rest: { x: 85, y: 0, rot: 0, len: 25 } },
+  ],
+};
+const withMotion = validateShotAnim({
+  ...base,
+  layers: [...base.layers, { id: 'aya.leg', part: 'thigh_l', path: 'anime/slice/leg.png', z: 15, bone: 'thigh_l', pivot: [0.5, 0.1] }],
+  motion: [{
+    characterId: 'character.aya',
+    fps: 24,
+    loop: true,
+    skeleton: motionSkeleton,
+    boneCurves: { thigh_l: [{ t: 0, v: -18 }, { t: 2, v: 22, ease: 'easeInOut' }, { t: 4, v: -18 }] },
+    events: [{ t: 0, kind: 'footPlant', bone: 'foot_l' }, { t: 2, kind: 'footLift', bone: 'foot_l' }],
+    rootMotion: [{ t: 0, x: 0, y: 0 }, { t: 4, x: 58, y: 0 }],
+  }],
+});
+assert.equal(withMotion.motion.length, 1);
+assert.equal(withMotion.motion[0].loop, true);
+assert.equal(withMotion.motion[0].boneCurves.thigh_l.length, 3);
+assert.equal(withMotion.motion[0].events[1].kind, 'footLift');
+assert.equal(withMotion.layers.find((l) => l.id === 'aya.leg').bone, 'thigh_l');
+// dialogue / eyes / mouth still intact alongside motion
+assert.equal(withMotion.dialogue[0].mouthSource, 'alignment');
+assert.ok(withMotion.layers.find((l) => l.part === 'mouth'));
+
+assert.throws(
+  () => validateShotAnim({ ...base, motion: [{ characterId: 'x', skeleton: motionSkeleton, boneCurves: { tail: [{ t: 0, v: 0 }] } }] }),
+  /bone tail not in the skeleton/,
+);
+assert.throws(
+  () => validateShotAnim({ ...base, motion: [{ characterId: 'x', skeleton: { bones: [{ id: 'a', parent: 'b', rest: {} }, { id: 'b', parent: 'a', rest: {} }] }, boneCurves: {} }] }),
+  /cycle|exactly one root/,
+);
+assert.throws(
+  () => validateShotAnim({ ...base, motion: [{ characterId: 'x', skeleton: motionSkeleton, boneCurves: {}, events: [{ t: 0, kind: 'nope' }] }] }),
+  /events\[0\]\.kind is unknown/,
+);
 
 const rejects = [
   [{ ...base, schema: 'nope' }, /schema must be/],

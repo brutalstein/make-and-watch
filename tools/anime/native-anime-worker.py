@@ -21,6 +21,7 @@ import argparse
 import hashlib
 import json
 import math
+import runpy
 import subprocess
 import sys
 import traceback
@@ -31,6 +32,11 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 RESULT_PREFIX = "MW_TEMPORAL_RESULT_V1\t"
+
+# Deterministic 2D skeletal FK for retargeted limb layers (M5). Loaded by path
+# because the file name is hyphenated; pure-math, no numpy dependency of its own.
+_KINEMATICS = runpy.run_path(str(Path(__file__).with_name("skeleton-kinematics.py")))
+forward_kinematics = _KINEMATICS["forward_kinematics"]
 
 HEAD_PARTS = {"head_group", "face_base", "eyes", "eyes_l", "eyes_r", "brows", "mouth",
               "front_hair", "side_hair_l", "side_hair_r"}
@@ -321,6 +327,7 @@ def prepare_shot_anim(shot_anim: dict) -> dict:
         key.setdefault("rot", 0.0)
     shot_anim.setdefault("dialogue", [])
     shot_anim.setdefault("subtitles", [])
+    shot_anim.setdefault("motion", [])
     for index, layer in enumerate(shot_anim.get("layers", [])):
         layer.setdefault("part", "body")
         layer.setdefault("parallax", 1.0)
@@ -328,6 +335,7 @@ def prepare_shot_anim(shot_anim: dict) -> dict:
         layer.setdefault("z", index)
         layer.setdefault("curves", {})
         layer.setdefault("anchor", None)
+        layer.setdefault("bone", None)
         if layer.get("dynamic"):
             dyn = layer["dynamic"]
             dyn.setdefault("segments", 3)
@@ -337,6 +345,52 @@ def prepare_shot_anim(shot_anim: dict) -> dict:
             dyn.setdefault("maxDeg", 22)
     shot_anim["layers"].sort(key=lambda item: item["z"])
     return shot_anim
+
+
+# ------------------------------------------------------------------- skeletal FK
+
+def build_motion_index(shot_anim: dict, w: float, h: float) -> dict:
+    """Precompute the rest pose and per-character placement for every `motion` entry."""
+    index = {}
+    for entry in shot_anim.get("motion", []):
+        skeleton = entry["skeleton"]
+        bone_ids = [bone["id"] for bone in skeleton["bones"]]
+        anchor = entry.get("screenAnchor") or [0.5, 0.5]
+        root_keys = entry.get("rootMotion", [])
+        index[entry["characterId"]] = {
+            "skeleton": skeleton,
+            "boneCurves": entry.get("boneCurves", {}),
+            "boneIds": bone_ids,
+            "rest": forward_kinematics(skeleton, {}),
+            "anchorPx": (anchor[0] * w, anchor[1] * h),
+            "ppu": float(entry.get("pixelsPerUnit", 1.0)),
+            "rootX": [{"t": key["t"], "v": key.get("x", 0.0)} for key in root_keys],
+            "rootY": [{"t": key["t"], "v": key.get("y", 0.0)} for key in root_keys],
+        }
+    return index
+
+
+def bone_matrix(entry: dict, joints_t: dict, bone_id: str, t: float) -> np.ndarray:
+    """Rigid-bone deform for a rest-pose sprite: shift its authored head to the FK
+    head (plus root motion) and rotate about that head by the bone's world-angle
+    change since rest. No skin/stretch — limited-animation limbs stay rigid."""
+    rest = entry["rest"][bone_id]
+    now = joints_t[bone_id]
+    ax, ay = entry["anchorPx"]
+    ppu = entry["ppu"]
+    root_x = sample_curve(entry["rootX"], t)
+    root_y = sample_curve(entry["rootY"], t)
+    head_rest = (ax + rest["origin"][0] * ppu, ay + rest["origin"][1] * ppu)
+    head_now = (ax + (now["origin"][0] + root_x) * ppu, ay + (now["origin"][1] + root_y) * ppu)
+    dtheta = now["worldDeg"] - rest["worldDeg"]
+    return _t(head_now[0] - head_rest[0], head_now[1] - head_rest[1]) @ rotate_about(dtheta, head_rest[0], head_rest[1])
+
+
+def _motion_entry_for(layer_id: str, bone_id: str, motion_index: dict):
+    for character_id, entry in motion_index.items():
+        if layer_id.startswith(character_id + ".") and bone_id in entry["rest"]:
+            return character_id, entry
+    return None
 
 
 def render(request: dict) -> dict:
@@ -362,6 +416,11 @@ def render(request: dict) -> dict:
             chain = VerletChain(dyn["segments"], seg_len=max(4.0, lh * 0.32 / dyn["segments"]),
                                 stiffness=dyn["stiffness"], damping=dyn["damping"], gravity=dyn["gravity"])
         layers.append({"spec": spec, "px": pixels, "w": lw, "h": lh, "chain": chain})
+
+    motion_index = build_motion_index(shot_anim, w, h)
+    for layer in layers:
+        bone_id = layer["spec"].get("bone")
+        layer["motion"] = _motion_entry_for(layer["spec"].get("id", ""), bone_id, motion_index) if bone_id else None
 
     alignments = {}
     for unit in shot_anim.get("dialogue", []):
@@ -402,6 +461,10 @@ def render(request: dict) -> dict:
             head_bob = sample_curve(head_bob_keys, t)
             blink = blink_value(t, blink_sched)
             openness = mouth_openness(t, dialogue, alignments)
+            frame_joints = {}
+            for character_id, entry in motion_index.items():
+                anim = {bone: sample_curve(entry["boneCurves"].get(bone, []), t) for bone in entry["boneIds"]}
+                frame_joints[character_id] = forward_kinematics(entry["skeleton"], anim)
             canvas = np.empty((h, w, 3), dtype=np.float32)
             canvas[:] = bg
 
@@ -420,7 +483,10 @@ def render(request: dict) -> dict:
                          @ rotate_about(crot * parallax, centre_x, centre_y))
 
                 local = np.eye(3)
-                if part == "plate":
+                if layer["motion"] is not None:
+                    character_id, entry = layer["motion"]
+                    local = bone_matrix(entry, frame_joints[character_id], spec["bone"], t)
+                elif part == "plate":
                     pass
                 elif part == "torso":
                     breathe = sample_curve(curves["breathe"], t) if "breathe" in curves else 0.0

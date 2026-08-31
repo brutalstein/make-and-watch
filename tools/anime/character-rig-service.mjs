@@ -281,6 +281,8 @@ export class CharacterRigService {
         pivot: state.pivot,
         z: state.z,
         attachTo: state.attachTo,
+        parentBone: state.parentBone,
+        restAngleDeg: state.restAngleDeg,
       });
     }
     signal.throwIfAborted();
@@ -297,7 +299,9 @@ export class CharacterRigService {
       paletteFingerprint,
       canvas: job.canvas,
       states: resolvedStates,
+      skeleton: job.input.skeleton ?? undefined,
       validDomain: job.input.validDomain,
+      validDomainCombined: job.input.validDomainCombined,
     });
 
     const bytes = Buffer.from(JSON.stringify(rig, null, 2), 'utf8');

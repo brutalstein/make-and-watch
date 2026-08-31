@@ -92,10 +92,10 @@
 
 **Files:** Modify `tools/anime/native-anime-asset-contracts.mjs`, `-check.mjs`, `tools/anime/semantic-package-contract.mjs`, `tools/anime/character-rig-service.mjs`, `-check.mjs`.
 
-- [ ] **Step 1: Checks** — a dialogue-only rig (no skeleton) still validates. A rig with `skeleton.bones` + limb states (`semanticPart` in the pose-part set, `parentBone`, `restAngleDeg`) validates; a limb state whose `parentBone` is not in the skeleton fails; a skeleton with a cycle fails; `validDomain.combined` rules now parsed, not skipped.
-- [ ] **Step 2: Implement** the additive optional block on `validateCharacterRig` and `normalizeCharacterRigBuildInput`; `requiredStateIds()` unchanged (limbs optional). Persist skeleton + limb states in the built rig JSON.
-- [ ] **Step 3: Verify** focused rig checks + `anime:semantic-check`.
-- [ ] **Step 4: Commit** `feat(anime): rig carries an optional skeleton`.
+- [x] **Step 1: Checks** — dialogue-only rig (no skeleton) still validates (`skeleton: null`, `validDomainCombined: []`). A rig with `skeleton.bones` + limb states (`parentBone`, `restAngleDeg`) validates; `parentBone` not in the skeleton fails; `parentBone` with no skeleton fails; a cyclic skeleton fails; `validDomain.combined` rules parsed into `validDomainCombined` (both the asset contract and `normalizeCharacterRigBuildInput`).
+- [x] **Step 2: Implement** — new shared `tools/anime/bone-tree.mjs` `normalizeBoneTree` (also now backs `MotionClip.skeleton`, so clip and rig skeletons cannot drift). Additive optional block on `validateCharacterRig` + `normalizeCharacterRigBuildInput`; `requiredStateIds()` unchanged. `character-rig-service.#run` threads `skeleton`/`parentBone`/`restAngleDeg`/`validDomainCombined` into the built rig JSON.
+- [x] **Step 3: Verify** — `anime:semantic-check` + `anime:m5-check` + shot-anim compiler/provider checks all green.
+- [x] **Step 4: Commit** `feat(anime): rig carries an optional skeleton`.
 
 ---
 
@@ -105,10 +105,10 @@
 
 **Interface:** `retargetMotionClip({ clip, targetRig, options }) -> { boneCurves, events, rootMotion, domainEscalations }`.
 
-- [ ] **Step 1: Checks** — bone-name correspondence maps source→target; per-limb length scale applied; a target missing a source bone drops that channel and records a `missing_bone` note; a retargeted frame outside `targetRig.validDomain` produces a `domainEscalations[{ frame, channel, value }]` entry; foot-lock keeps a planted ankle within tol of its plant position across the plant window; identical inputs → identical output.
-- [ ] **Step 2: Implement** using the Task 2 JS kinematics: sample every clip frame, map bone rotations, scale translations by limb-length ratio, run foot-lock IK during `footPlant` windows, preserve COM x, convert `f` frames to `t` seconds at the ShotAnim fps, emit step/linear bone curves.
-- [ ] **Step 3: Verify** — `node tools/anime/motion-retarget-check.mjs`.
-- [ ] **Step 4: Commit** `feat(anime): retarget motion clips onto rigs`.
+- [x] **Step 1: Checks** — bone-name correspondence maps source→target; per-limb length scale applied; a target missing a source bone drops that channel and records a `missing_bone` note; a retargeted frame outside `targetRig.validDomain` produces a `domainEscalations[{ frame, channel, value }]` entry; foot-lock keeps a planted ankle within tol of its plant position across the plant window; identical inputs → identical output. Also: `validDomain.combined` rules parsed; `event_bone_dropped` note; `timeScale` retimes uniformly.
+- [x] **Step 2: Implement** using the Task 2 JS kinematics: sample every clip frame, map bone rotations, scale translations by limb-length ratio, run foot-lock IK during `footPlant` windows, preserve COM x, convert `f` frames to `t` seconds at the ShotAnim fps, emit step/linear bone curves. Output also carries `paramCurves` (face/eye/mouth channels pass through untouched) and `notes`.
+- [x] **Step 3: Verify** — `node tools/anime/motion-retarget-check.mjs` → `motion retarget check: passed`; `pnpm anime:m5-check` green.
+- [x] **Step 4: Commit** `feat(anime): retarget motion clips onto rigs`.
 
 ---
 
@@ -116,11 +116,11 @@
 
 **Files:** Create `tools/anime/motion-clip-service.mjs`, `-check.mjs`, `tools/anime/motion-library/{walk,turn,sit,reach,strike}.json`, `tools/anime/motion-library/PROVENANCE.md`.
 
-- [ ] **Step 1: Checks** — `register` persists a content-addressed `makewatch.motionClip/1` asset (draft), attaches Generation provenance, no raster copy; `list` returns library + registered clips; `retargetPlan({ clipAssetId, characterId })` reports covered/missing bones and any domain escalation without writing state; stale rig revision and lock are rejected; duplicate content hash is idempotent.
-- [ ] **Step 2: Author** the five starter clips by hand (short, loopable where sensible), each with a `PROVENANCE.md` line stating it is hand-authored, not motion-captured.
-- [ ] **Step 3: Implement** the service on the M2 job/bridge pattern (`plan`/`register`/`validate`); validate every clip through `validateMotionClip` on load.
-- [ ] **Step 4: Verify** — `node tools/anime/motion-clip-service-check.mjs`.
-- [ ] **Step 5: Commit** `feat(anime): manage reusable motion clips`.
+- [x] **Step 1: Checks** — `register` persists a content-addressed `makewatch.motionClip/1` asset (draft) with `handAuthored` Generation provenance, no raster; `list` returns library + registered; `retargetPlan({ clipAssetId, characterId })` reports covered/missing bones + `domainEscalationCount` and writes nothing; a clip needing a bone the rig lacks sets `correctiveRedrawRequired`; stale `expectedCharacterRevision` and a locked Character are rejected; a skeleton-less rig is rejected; duplicate content hash is idempotent (`created:false`).
+- [x] **Step 2: Author** `walk` (loop), `turn`, `sit`, `reach`, `strike` — hand-keyed bone rotations, `PROVENANCE.md` states each is hand-authored, not mocap/DWPose.
+- [x] **Step 3: Implement** `MotionClipService` (`plan`/`list`/`register`/`retargetPlan`/`validate`) — synchronous register (no GPU, no job queue); every library clip runs through `validateMotionClip` on load. Also fixed `normalizeRootMotion` to round-trip an empty `[]` (was rejecting its own output).
+- [x] **Step 4: Verify** — `node tools/anime/motion-clip-service-check.mjs` → passed; `anime:m5-check` green.
+- [x] **Step 5: Commit** `feat(anime): manage reusable motion clips`.
 
 ---
 
@@ -128,21 +128,21 @@
 
 **Files:** Modify `tools/anime/native-anime-contract.mjs`, `-check.mjs`, `tools/anime/shot-anim-compiler.mjs`, `-check.mjs`.
 
-- [ ] **Step 1: Checks** — a Shot with `character.motion.motionClipAssetId` compiles to a ShotAnim carrying baked bone curves + events; a draft (unpromoted) clip is rejected; a clip needing a bone the rig lacks yields a `corrective_redraw` blocker naming the frame; dialogue/eye/mouth channels are unchanged alongside motion.
-- [ ] **Step 2: Implement** resolution of one promoted `MotionClip` per character, retarget via Task 4, merge bone curves into the per-character curve set, surface `domainEscalations` as compiler `correctiveKeys` + issues.
-- [ ] **Step 3: Verify** — `node tools/anime/shot-anim-compiler-check.mjs && npm run anime:semantic-check`.
-- [ ] **Step 4: Commit** `feat(anime): compile shots with retargeted motion`.
+- [x] **Step 1: Checks** — `native-anime-contract-check`: a ShotAnim `motion[]` block (skeleton + `boneCurves` + events + rootMotion) validates, an out-of-skeleton bone curve / cyclic skeleton / unknown event kind are rejected, `layers[].bone` carried. `shot-anim-compiler-check`: a Shot with `characterMotion` compiles to a ShotAnim carrying baked bone curves + `contact` event + a bone-parented limb layer, dialogue/eyes/mouth intact; a `draft` clip → `unapproved_asset`; a clip driving a bone the rig lacks → `motion_bone_missing` blocker `corrective_redraw`.
+- [x] **Step 2: Implement** — `validateShotAnim` gains `motion` + `layers[].bone` (via shared `normalizeBoneTree`). `planShotAnim` parses `shot.metadata.characterMotion` `{characterId:{motionClipAssetId,timeScale?,loop?,screenAnchor?}}`, resolves each promoted clip through `assetIssue` (draft/stale rejected), retargets via Task 4, and raises `corrective_redraw` issues for `missing_bone` notes and (when no correctiveKeys) the first `domainEscalation`; `motion_clip_too_long` guards over-length clips. `buildShotAnimRequest` emits the `motion[]` block + limb layers; head/body/eye/mouth layers and `actingCurves` untouched.
+- [x] **Step 3: Verify** — `shot-anim-compiler-check` + `native-anime-contract-check` + `anime:semantic-check` + provider/compilation-service checks green.
+- [x] **Step 4: Commit** `feat(anime): compile shots with retargeted motion`.
 
 ---
 
 ### Task 7: Worker bone-chain FK
 
-**Files:** Modify `tools/anime/native-anime-worker.py`, `-selftest.py`; modify `package.json`; `scripts/verify.ps1`.
+**Files:** Modify `tools/anime/native-anime-worker.py`, `-selftest.py`; modify `package.json`. Deviations: also touched `native-anime-contract.mjs` + `shot-anim-compiler.mjs` (skeleton units → canvas pixels needs a `pixelsPerUnit` on each `motion` entry; the compiler derives it from the rig rest-pose height when unset). `scripts/verify.ps1` unchanged — the ffmpeg/numpy/cv2-dependent `native-anime-worker-selftest.py` stays a manual run; `anime:m5-check` gained only the worker AST-parse (matches the existing `bridge:check` guard).
 
-- [ ] **Step 1: Selftest** — a synthetic rig with `spine/hip/thigh_l/shin_l/foot_l` bone-parented limb layers + a short retargeted clip renders a deterministic MP4; decoded-frame SHA stable across two runs; a skeleton-less rig renders byte-identically to the pre-M5 path.
-- [ ] **Step 2: Implement** the FK bone chain in the per-layer transform stack: each limb layer resolves `M_bone` = product of parent-bone rotations about bone heads, inserted between `M_camera` and the existing local deform. Reuse `tools/anime/skeleton-kinematics.py`. Head-group / plates unchanged.
-- [ ] **Step 3: Verify** — `python tools/anime/native-anime-worker-selftest.py` twice; `anime:m5-check`.
-- [ ] **Step 4: Commit** `feat(anime): render retargeted limb motion`.
+- [x] **Step 1: Selftest** — `motion_shot` adds `char.hero.thigh`/`char.hero.shin` bone-parented layers + a hand-authored `motion` entry (thigh 0→32°, shin 0→-24°, root x drift); renders twice → identical `framesSha256`; a flat-curve variant renders a different hash (bone rotation actually moves pixels); the pre-existing skeleton-less render is byte-identical pre/post-M5 (`29ca4625…`, verified via `git stash`).
+- [x] **Step 2: Implement** — `build_motion_index` precomputes rest FK + screen placement per `motion` entry; per frame, `forward_kinematics(skeleton, sampled bone degs)` → `frame_joints`; each limb layer (`layer["motion"] is not None`) uses `bone_matrix` (shift authored head → FK head + root motion, rotate about head by world-angle delta) as its `local`, skipping the head-group/plate dispatch. `M = place @ local` unchanged. Reuses `skeleton-kinematics.py` via the existing `runpy` load.
+- [x] **Step 3: Verify** — `python tools/anime/native-anime-worker-selftest.py` (both scenarios passed); `pnpm anime:m5-check` green; contract/compiler/provider/compilation-service + `anime:semantic-check` + `anime:m3-check` green.
+- [x] **Step 4: Commit** `feat(anime): render retargeted limb motion`.
 
 ---
 
@@ -150,10 +150,10 @@
 
 **Files:** Modify `tools/director/anime-production-tools.mjs`, `-check.mjs`, `tools/generation/gateway-api-client.mjs`, `tools/generation/server.mjs`.
 
-- [ ] **Step 1: Checks** — `motion_clip_list`, `motion_retarget_plan` schemas (`additionalProperties:false`, retarget requires `characterId` + `clipAssetId`), dispatch, gateway pathnames.
-- [ ] **Step 2: Implement** deferred tools + runtime methods + client methods + bounded `GET /anime/motion-clips`, `GET /anime/characters/:id/motion-plan` routes.
-- [ ] **Step 3: Verify** — `node tools/director/anime-production-tools-check.mjs && node tools/director/makewatch-tool-runtime-check.mjs`.
-- [ ] **Step 4: Commit** `feat(director): expose motion retargeting tools`.
+- [x] **Step 1: Checks** — `motion_clip_list` / `motion_retarget_plan` schemas (`additionalProperties:false`, retarget requires `characterId` + `clipAssetId`), both `deferLoading`, dispatch (incl. optional `expectedCharacterRevision` and a `clipAssetId is required` reject), `CaptureClient` pathnames.
+- [x] **Step 2: Implement** deferred tools + `createAnimeRuntime` methods + `GenerationGatewayClient.motionClipList`/`motionRetargetPlan` + server routes `GET /api/anime/motion-clips` → `MotionClipService.list()` and `GET /api/anime/characters/:id/motion-plan?clipAssetId=…` → `MotionClipService.retargetPlan()` (server instantiates `MotionClipService`). Deviation: the `motion-plan` route requires `clipAssetId` (400 otherwise) — it is the retarget dry-run only; `register`/`validate`/per-character overview stay unexposed (write paths / not needed for the Director read surface).
+- [x] **Step 3: Verify** — `anime-production-tools-check` + `makewatch-tool-runtime-check` + `critical-path` + `codex-app-server` + `codex-exec-runtime` + `makewatch-tools-check` green; `node --check` on all four modified modules.
+- [x] **Step 4: Commit** `feat(director): expose motion retargeting tools`.
 
 ---
 

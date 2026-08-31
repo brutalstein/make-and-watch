@@ -53,10 +53,13 @@ function round6(value) {
   return Number.isFinite(value) ? Number(value.toFixed(6)) : 0;
 }
 
-function checkDomain(channel, value, validDomain) {
-  const range = validDomain?.[channel];
-  if (!Array.isArray(range) || range.length !== 2) return true;
-  return value >= range[0] && value <= range[1];
+// escalate when a range exists (under either `bone.<id>` or bare `<id>`) and is broken
+function domainViolation(boneId, value, validDomain) {
+  for (const key of [`bone.${boneId}`, boneId]) {
+    const range = validDomain?.[key];
+    if (Array.isArray(range) && range.length === 2 && (value < range[0] || value > range[1])) return true;
+  }
+  return false;
 }
 
 // `validDomain.combined`: [{ if: { chan: ['>', n] }, then: { chan: [min, max] } }]
@@ -167,32 +170,33 @@ export function retargetMotionClip({ clip, targetRig, options = {} } = {}) {
     const targetDeg = {};
     for (const boneId of mappedBones) targetDeg[boneId] = sourceDeg[boneId];
 
-    // foot-lock: during a plant window drive that leg from hip->ankle IK on the target rig.
-    // Retarget writes the *world* thigh angle back as a relative anim delta on top of the
-    // thigh's rest pose (thigh parents off `hip`, so parentWorld carries no anim here).
+    // foot-lock: during a plant window drive that leg from hip->ankle IK on the target
+    // rig so the planted ankle never slides. Solve gives the thigh's *world* angle and
+    // the shin's angle relative to the thigh; convert both back to the bone convention's
+    // anim deltas (world = parentWorld . T . R(rest.rot + anim)).
     for (const window of plantWindows) {
       if (f < window.startF || f > window.endF || !window.side) continue;
       const side = window.side;
       const thighId = `thigh_${side}`;
       const shinId = `shin_${side}`;
-      if (!targetBones.has(thighId) || !targetBones.has(shinId) || !targetBones.has('hip')) continue;
-      const hipRest = forwardKinematics(targetRig.skeleton, {})[thighId]?.origin;
-      if (!hipRest) continue;
-      const thighLen = targetBones.get(thighId).rest.len;
-      const shinLen = targetBones.get(shinId).rest.len;
+      const thigh = targetBones.get(thighId);
+      const shin = targetBones.get(shinId);
+      if (!thigh || !shin || !targetBones.has('hip')) continue;
+      const jointsNow = forwardKinematics(targetRig.skeleton, targetDeg);
+      const hipJoint = jointsNow[thighId]?.origin;
+      const parentWorldDeg = jointsNow[thigh.parent]?.worldDeg ?? 0;
+      if (!hipJoint) continue;
       const bend = options.bendSigns?.[side] ?? 1;
-      const solved = solveFootLock(hipRest, thighLen, shinLen, window.plantWorld, bend);
-      const restThigh = targetBones.get(thighId).rest.rot;
-      targetDeg[thighId] = solved.thighWorldDeg - restThigh;
-      targetDeg[shinId] = solved.shinRelDeg;
+      const solved = solveFootLock(hipJoint, thigh.rest.len, shin.rest.len, window.plantWorld, bend);
+      targetDeg[thighId] = solved.thighWorldDeg - parentWorldDeg - thigh.rest.rot;
+      targetDeg[shinId] = solved.shinRelDeg - shin.rest.rot;
       if (!solved.reached) notes.push({ code: 'foot_lock_unreached', bone: window.bone, frame: f });
     }
 
     const t = round6((f / clip.fps) * timeScale);
     for (const boneId of mappedBones) {
-      const channel = `bone.${boneId}`;
-      if (!checkDomain(channel, targetDeg[boneId], validDomain) && !checkDomain(boneId, targetDeg[boneId], validDomain)) {
-        domainEscalations.push({ frame: f, t, channel, value: round6(targetDeg[boneId]) });
+      if (domainViolation(boneId, targetDeg[boneId], validDomain)) {
+        domainEscalations.push({ frame: f, t, channel: `bone.${boneId}`, value: round6(targetDeg[boneId]) });
       }
       boneCurves[boneId].push({ t, deg: round6(targetDeg[boneId]) });
     }

@@ -524,3 +524,48 @@ quality. Aggregate anime production readiness intentionally remains false. M2 mu
 build and validate reusable semantic CharacterRig and EnvironmentPackage assets on the
 real product machine. Japanese forced alignment, multi-mouth-state rendering, QC,
 corrective redraw and the one-minute acceptance run remain M3/M4 work.
+
+## 2026-08-31 — Native Anime motion retargeting (B / plan-M5) code landed
+
+### Implemented
+
+- `makewatch.motionClip/1` — provider-neutral skeletal JSON (bone-rotation + param
+  channels, contact/impact events, root motion). Deterministic normalize/validate.
+- 2D skeleton kinematics (FK, two-bone analytic IK, FABRIK, foot-lock, centre-of-mass)
+  as byte-mirrored JS and pure-`math` Python driven from one shared fixture vector, so
+  compile-time and render-time solvers cannot diverge.
+- `retargetMotionClip()` — maps a source skeleton to a target `CharacterRig` skeleton
+  by bone name, scales translations by per-limb length ratio, pins feet with IK during
+  `footPlant` windows, preserves COM-x, retimes `f` frames to `t` seconds, and
+  escalates any pose leaving `rig.validDomain` (or `validDomain.combined`) to a
+  `corrective_redraw` at that frame. A missing target bone is a blocker, never a guess.
+- `CharacterRig` / semantic build input gain an optional `skeleton` + limb `states`
+  (`parentBone`, `restAngleDeg`); dialogue-only rigs validate unchanged. Shared
+  `bone-tree.mjs` normalizer backs both the clip and rig skeletons.
+- Hand-authored starter library: `walk` (loop), `turn`, `sit`, `reach`, `strike`
+  (`tools/anime/motion-library/` + `PROVENANCE.md` — not mocap). `MotionClipService`
+  content-addresses a clip and plans a retarget against a promoted rig (no writes).
+- `ShotAnim` carries `motion[]` + `layers[].bone`; `buildShotAnimRequest()` retargets
+  one promoted clip per character, emits bone curves, bone-parented limb layers and
+  domain escalations, and leaves head/eye/mouth/breathing/hair channels untouched.
+- `native-anime-worker.py` runs a per-frame FK chain and rigidly deforms each
+  bone-parented limb layer (`bone_matrix`) between the camera and local-deform stages.
+- Codex: `makewatch_anime.motion_clip_list`, `motion_retarget_plan` (read-only) over
+  `GET /api/anime/motion-clips` and `/api/anime/characters/:id/motion-plan`.
+
+### Verification
+
+- `pnpm bridge:check` green (all bridge / runtime / generation / anime / director
+  checks). `anime:m5-check`, `anime:semantic-check`, `anime:m3-check` green.
+- `python tools/anime/native-anime-worker-selftest.py`: base render deterministic and
+  **byte-identical pre/post-M5** (decoded-frame SHA `29ca4625cf5535db`); the added
+  motion scenario is deterministic across two runs and a flat-curve variant renders a
+  different hash (the bone chain actually moves pixels).
+
+### Truth boundary / next
+
+Code infrastructure for B is complete; visual quality is unproven. Plan Task 9 —
+authoring/DWPose-extracting reviewed action clips, building two dialogue+limb rigs
+(needs M2 Task 6 art), rendering a two-character contact beat at `native-anime`,
+running QC, and the full `verify.ps1` pass + `main` fast-forward — is GPU/human-gated
+and not started. Aggregate anime production readiness stays false.
