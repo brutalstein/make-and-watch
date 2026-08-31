@@ -103,6 +103,33 @@ export class GenerationGatewayClient {
     return this.request(`/anime/shots/${encodeURIComponent(shotId)}/compile`, { method: 'POST' });
   }
 
+  characterRigPlan({ characterId, outfitState } = {}) {
+    const suffix = outfitState ? `?outfitState=${encodeURIComponent(outfitState)}` : '';
+    return this.request(`/anime/characters/${encodeURIComponent(characterId)}/rig-plan${suffix}`);
+  }
+  characterRigBuild(body = {}) {
+    return this.request('/anime/character-rigs', { method: 'POST', body: JSON.stringify(body) });
+  }
+  characterRigValidate({ rigAssetId, expectedCharacterRevision, promote } = {}) {
+    return this.request(`/anime/character-rigs/${encodeURIComponent(rigAssetId)}/validate`, {
+      method: 'POST',
+      body: JSON.stringify({ expectedCharacterRevision, promote: promote === true }),
+    });
+  }
+  locationPackagePlan({ locationId, stateId } = {}) {
+    const suffix = stateId ? `?stateId=${encodeURIComponent(stateId)}` : '';
+    return this.request(`/anime/locations/${encodeURIComponent(locationId)}/package-plan${suffix}`);
+  }
+  locationPackageBuild(body = {}) {
+    return this.request('/anime/environment-packages', { method: 'POST', body: JSON.stringify(body) });
+  }
+  locationPackageValidate({ packageAssetId, expectedLocationRevision, promote } = {}) {
+    return this.request(`/anime/environment-packages/${encodeURIComponent(packageAssetId)}/validate`, {
+      method: 'POST',
+      body: JSON.stringify({ expectedLocationRevision, promote: promote === true }),
+    });
+  }
+
   startScene(sceneId) { return this.request('/scenes', { method: 'POST', body: JSON.stringify({ sceneId }) }); }
   startAudio(audioId) { return this.request('/audio', { method: 'POST', body: JSON.stringify({ audioId }) }); }
   job(jobId) { return this.request(`/jobs/${encodeURIComponent(jobId)}`); }

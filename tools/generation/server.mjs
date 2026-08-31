@@ -2,6 +2,8 @@ import { createReadStream, existsSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { resolve } from 'node:path';
 
+import { CharacterRigService } from '../anime/character-rig-service.mjs';
+import { EnvironmentPackageService } from '../anime/environment-package-service.mjs';
 import { NativeAnimeTemporalProvider } from '../anime/native-anime-provider.mjs';
 import { buildShotAnimRequest } from '../anime/shot-anim-compiler.mjs';
 import { ShotAnimCompilationService } from '../anime/shot-anim-compilation-service.mjs';
@@ -89,6 +91,9 @@ const temporalService = new TemporalShotGenerationService({
   },
 });
 const shotAnimService = new ShotAnimCompilationService({ projectRoot: root, bridge });
+const semanticPackageWorkerPath = resolve(root, 'tools/anime/semantic-package-worker.py');
+const characterRigService = new CharacterRigService({ projectRoot: root, bridge, workerPath: semanticPackageWorkerPath });
+const environmentPackageService = new EnvironmentPackageService({ projectRoot: root, bridge, workerPath: semanticPackageWorkerPath });
 
 async function animeProductionStatus() {
   const [providers, audio] = await Promise.all([
@@ -101,8 +106,8 @@ async function animeProductionStatus() {
     compiler: { ready: true, schema: 'makewatch.shotAnim/1', graphBacked: true },
     renderer,
     audio,
-    characterRig: { ready: false, stage: 'planned-m2' },
-    environmentPackage: { ready: false, stage: 'planned-m2' },
+    characterRig: { ready: true, proven: false, stage: 'm2', operations: ['plan', 'build', 'validate'] },
+    environmentPackage: { ready: true, proven: false, stage: 'm2', operations: ['plan', 'build', 'validate'] },
     alignment: { ready: false, stage: 'planned-m3' },
     qc: { ready: false, stage: 'planned-m3' },
     acceptanceRunner: { ready: false, stage: 'planned-m4' },
@@ -447,6 +452,58 @@ const server = createServer(async (request, response) => {
     if (request.method === 'POST' && shotAnimCompileMatch) {
       const shotId = decodedId(shotAnimCompileMatch[1], 'shotId');
       sendJson(request, response, 201, await shotAnimService.compile(shotId));
+      return;
+    }
+
+    const characterRigPlanMatch = /^\/api\/anime\/characters\/([^/]+)\/rig-plan$/.exec(url.pathname);
+    if (request.method === 'GET' && characterRigPlanMatch) {
+      const characterId = decodedId(characterRigPlanMatch[1], 'characterId');
+      const outfitState = boundedText(url.searchParams.get('outfitState'), 'outfitState', 100) || undefined;
+      sendJson(request, response, 200, await characterRigService.plan({ characterId, outfitState }));
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/anime/character-rigs') {
+      const body = await readJson(request);
+      const { job } = await characterRigService.build(body);
+      await characterRigService.waitForIdle();
+      sendJson(request, response, 201, { job: characterRigService.job(job.id) });
+      return;
+    }
+    const characterRigValidateMatch = /^\/api\/anime\/character-rigs\/([^/]+)\/validate$/.exec(url.pathname);
+    if (request.method === 'POST' && characterRigValidateMatch) {
+      const rigAssetId = decodedId(characterRigValidateMatch[1], 'rigAssetId');
+      const body = await readJson(request);
+      sendJson(request, response, 200, await characterRigService.validate({
+        rigAssetId,
+        expectedCharacterRevision: body.expectedCharacterRevision,
+        promote: body.promote === true,
+      }));
+      return;
+    }
+
+    const packagePlanMatch = /^\/api\/anime\/locations\/([^/]+)\/package-plan$/.exec(url.pathname);
+    if (request.method === 'GET' && packagePlanMatch) {
+      const locationId = decodedId(packagePlanMatch[1], 'locationId');
+      const stateId = boundedText(url.searchParams.get('stateId'), 'stateId', 100) || undefined;
+      sendJson(request, response, 200, await environmentPackageService.plan({ locationId, stateId }));
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/anime/environment-packages') {
+      const body = await readJson(request);
+      const { job } = await environmentPackageService.build(body);
+      await environmentPackageService.waitForIdle();
+      sendJson(request, response, 201, { job: environmentPackageService.job(job.id) });
+      return;
+    }
+    const packageValidateMatch = /^\/api\/anime\/environment-packages\/([^/]+)\/validate$/.exec(url.pathname);
+    if (request.method === 'POST' && packageValidateMatch) {
+      const packageAssetId = decodedId(packageValidateMatch[1], 'packageAssetId');
+      const body = await readJson(request);
+      sendJson(request, response, 200, await environmentPackageService.validate({
+        packageAssetId,
+        expectedLocationRevision: body.expectedLocationRevision,
+        promote: body.promote === true,
+      }));
       return;
     }
 
